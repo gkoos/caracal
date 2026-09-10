@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+  generated:
+    name: Property and fuzz tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Property tests
+        run: npm run test:property
+
+      - name: Fuzz tests
+        run: npm run test:fuzz
+
+  integration-redis:
+    name: Redis integration tests
+    runs-on: ubuntu-latest
+    services:
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Redis integration tests
+        run: npm run test:integration -- --reporter=verbose test/integration/redis.integration.test.ts test/integration/bulkhead.redis.integration.test.ts test/integration/circuit-breaker.redis.integration.test.ts test/integration/coordinator-conformance.integration.test.ts test/integration/redis-acl.integration.test.ts
+        env:
+          CARACAL_REDIS_URL: redis://127.0.0.1:6379
+
+  integration-postgres:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: caracal
+          POSTGRES_PASSWORD: caracal
+          POSTGRES_DB: caracal_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U caracal"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      # Valkey is required for the distributed-bulkhead test inside the
+      # postgres suite (retains a distributed permit for a real timed-out
+      # PostgreSQL query).  Without it that test is unconditionally skipped.
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: PostgreSQL integration tests
+        run: npm run test:integration -- --reporter=verbose test/integration/postgres.integration.test.ts test/integration/fetch.integration.test.ts
+        env:
+          CARACAL_POSTGRES_URL: postgresql://caracal:caracal@127.0.0.1:5432/caracal_test
+          CARACAL_REDIS_URL: redis://127.0.0.1:6379

@@ -1,0 +1,30 @@
+# Local Valkey Cluster for the cluster integration suite.
+#
+# Three masters inside one container: the cluster bus talks over the
+# container's loopback, and the host connects through the published ports.
+# Start with `npm run redis:cluster:up`, run the suite with
+# `npm run test:integration:cluster`, and stop with `npm run redis:cluster:down`.
+#
+# The project name is distinct from compose.yaml so `redis:cluster:down` never
+# touches the standalone Valkey or PostgreSQL containers.
+name: caracal-cluster
+
+services:
+  valkey-cluster:
+    image: valkey/valkey:8-alpine
+    command: ["sh", "/cluster/start.sh"]
+    ports:
+      - "7000-7002:7000-7002"
+    volumes:
+      - ./docker/cluster/start.sh:/cluster/start.sh:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "valkey-cli -p 7000 cluster info | grep -q cluster_state:ok",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    tmpfs:
+      - /data

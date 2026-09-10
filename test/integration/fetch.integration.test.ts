@@ -1,0 +1,53 @@
+import { once } from "node:events"
+import { createServer } from "node:http"
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { fetchAdapter } from "../../src/fetch.js"
+import { operation, retry } from "../../src/index.js"
+
+let server: ReturnType<typeof createServer>
+let baseUrl: string
+let attempts = 0
+
+beforeEach(async () => {
+  attempts = 0
+  server = createServer((request, response) => {
+    if (request.url === "/flaky") {
+      attempts += 1
+      response.statusCode = attempts === 1 ? 503 : 200
+      response.end(attempts === 1 ? "unavailable" : "ok")
+      return
+    }
+
+    response.statusCode = 200
+    response.end("ok")
+  })
+  server.listen(0, "127.0.0.1")
+  await once(server, "listening")
+  const address = server.address()
+  if (address === null || typeof address === "string") {
+    throw new Error("Expected a TCP server address")
+  }
+  baseUrl = `http://127.0.0.1:${address.port}`
+})
+
+afterEach(async () => {
+  server.close()
+  await once(server, "close")
+})
+
+describe("fetch adapter integration", () => {
+  it("classifies a real 503 response and retries through Node fetch", async () => {
+    const subject = operation({
+      name: "real-fetch",
+      adapter: fetchAdapter(),
+      policies: [retry({ maxAttempts: 2 })],
+    })
+
+    const response = await subject.execute({ url: `${baseUrl}/flaky` })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("ok")
+    expect(attempts).toBe(2)
+  })
+})

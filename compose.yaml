@@ -1,0 +1,28 @@
+services:
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    tmpfs:
+      - /data
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: caracal
+      POSTGRES_PASSWORD: caracal
+      POSTGRES_DB: caracal
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U caracal -d caracal"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    tmpfs:
+      - /var/lib/postgresql/data

@@ -1,0 +1,127 @@
+{
+  "name": "caracal",
+  "version": "0.1.0",
+  "description": "Scoped distributed resilience for asynchronous operations.",
+  "keywords": [
+    "resilience",
+    "circuit-breaker",
+    "bulkhead",
+    "retry",
+    "timeout",
+    "fault-tolerance",
+    "distributed-systems",
+    "redis",
+    "concurrency",
+    "typescript"
+  ],
+  "homepage": "https://github.com/gkoos/caracal#readme",
+  "bugs": {
+    "url": "https://github.com/gkoos/caracal/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gkoos/caracal.git"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Gabor Koos",
+    "email": "gabor@gaborkoos.com",
+    "url": "https://gaborkoos.com"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./redis": {
+      "types": "./dist/redis.d.ts",
+      "import": "./dist/redis.js"
+    },
+    "./fetch": {
+      "types": "./dist/fetch.d.ts",
+      "import": "./dist/fetch.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres.d.ts",
+      "import": "./dist/postgres.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rimraf dist coverage",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:watch": "vitest",
+    "test:integration": "vitest run test/integration",
+    "test:property": "vitest run test/property",
+    "test:fuzz": "vitest run test/fuzz",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm test",
+    "test:all": "npm run check && npm run test:property && npm run test:fuzz && npm run test:integration",
+    "redis:up": "docker compose up -d valkey",
+    "redis:down": "docker compose down",
+    "redis:logs": "docker compose logs -f valkey",
+    "test:integration:redis": "node scripts/test-redis.mjs",
+    "node:check": "node scripts/check-node-version.mjs",
+    "precheck": "npm run node:check",
+    "postgres:up": "docker compose up -d --wait postgres",
+    "postgres:down": "docker compose down",
+    "test:integration:postgres": "node scripts/test-postgres.mjs",
+    "redis:cluster:up": "docker compose -f compose.cluster.yaml up -d --wait",
+    "redis:cluster:logs": "docker compose -f compose.cluster.yaml logs -f valkey-cluster",
+    "redis:cluster:down": "docker compose -f compose.cluster.yaml down",
+    "test:integration:cluster": "node scripts/test-redis-cluster.mjs",
+    "bench": "npm run build && node scripts/bench.mjs",
+    "audit:bundle": "npm run build && node scripts/audit-bundle.mjs",
+    "changeset": "changeset",
+    "version": "changeset version"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.12",
+    "@changesets/cli": "^3.0.2",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
+    "fast-check": "^4.0.0",
+    "ioredis": "^5.11.1",
+    "pg": "^8.23.0",
+    "rimraf": "^6.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.0.0",
+    "pg": ">=8.11 <9"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    }
+  }
+}
