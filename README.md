@@ -2,6 +2,16 @@
   <img src="docs/caracal.svg" alt="Caracal" width="140">
 </p>
 
+![npm](https://img.shields.io/npm/v/@gkoos/caracal)
+![Downloads](https://img.shields.io/npm/dm/@gkoos/caracal)
+![GitHub stars](https://img.shields.io/github/stars/gkoos/caracal?style=social)
+
+![Build](https://github.com/gkoos/caracal/actions/workflows/ci.yml/badge.svg)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gkoos/caracal/badge)](https://scorecard.dev/viewer/?uri=github.com/gkoos/caracal)
+
+![MIT](https://img.shields.io/npm/l/@gkoos/caracal)
+![Types](https://img.shields.io/npm/types/@gkoos/caracal)
+
 # Caracal
 
 **Scoped distributed resilience for asynchronous operations.**
