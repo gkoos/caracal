@@ -5,7 +5,7 @@ An adapter is an object that declares its capabilities and executes underlying w
 ## The Adapter interface
 
 ```ts
-import type { Adapter } from "caracal"
+import type { Adapter } from "@gkoos/caracal"
 
 const myAdapter: Adapter<MyArgs, MyResult> = {
   capabilities(args) {
@@ -66,10 +66,10 @@ The `context` object passed to `execute` contains:
 
 ## Contract test harness
 
-`caracal/testing` exports a runner-agnostic harness that verifies your adapter's declared behaviour. It imports no test runner, you can wire the generated checks into whichever framework you use.
+`@gkoos/caracal/testing` exports a runner-agnostic harness that verifies your adapter's declared behaviour. It imports no test runner, you can wire the generated checks into whichever framework you use.
 
 ```ts
-import { defineAdapterContractSuite } from "caracal/testing"
+import { defineAdapterContractSuite } from "@gkoos/caracal/testing"
 
 const suite = defineAdapterContractSuite({
   name: "my-adapter",
@@ -118,4 +118,4 @@ The harness checks that:
 
 The harness does not guarantee correctness in all edge cases, it verifies the contract as you have configured it. Think of it as a baseline, not a complete test suite. You should write additional tests for your adapter's specific error handling, edge cases, and any classification logic beyond the basics.
 
-`caracal/testing` has no runtime dependencies beyond `caracal` itself and imports no test framework. The internal test helpers under `test/support/` (in-memory coordinators, worker harness) are not exported and are not available to adapter authors.
+`@gkoos/caracal/testing` has no runtime dependencies beyond `@gkoos/caracal` itself and imports no test framework. The internal test helpers under `test/support/` (in-memory coordinators, worker harness) are not exported and are not available to adapter authors.

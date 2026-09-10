@@ -1,7 +1,7 @@
 /**
  * Third-party adapter API review.
  *
- * This test demonstrates the full `caracal/testing` contract suite being used
+ * This test demonstrates the full `@gkoos/caracal/testing` contract suite being used
  * as a third-party adapter author would use it: implementing an adapter from
  * scratch and running it through the harness without any knowledge of Caracal
  * internals.

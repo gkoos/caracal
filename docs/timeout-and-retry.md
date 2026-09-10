@@ -5,7 +5,7 @@ Timeout and retry are local-only policies, neither has a distributed variant or 
 ## Timeout
 
 ```ts
-import { timeout } from "caracal"
+import { timeout } from "@gkoos/caracal"
 
 timeout({ ms: 5_000 })
 ```
@@ -19,7 +19,7 @@ An internal admission signal separately cancels queued bulkhead waiters and prev
 ## Retry
 
 ```ts
-import { retry } from "caracal"
+import { retry } from "@gkoos/caracal"
 
 retry({
   maxAttempts: 3,

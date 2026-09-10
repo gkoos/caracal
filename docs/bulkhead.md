@@ -9,7 +9,7 @@ This means if an adapter does not support abort, a caller can receive `TimeoutEr
 Each process enforces its own limit independently. No coordinator or Redis connection is required.
 
 ```ts
-import { bulkhead, operation } from "caracal"
+import { bulkhead, operation } from "@gkoos/caracal"
 
 const capacity = bulkhead.local({
   name: "partner-api",
@@ -31,9 +31,9 @@ The optional queue holds waiters in FIFO order up to `limit` waiters. A waiter t
 The concurrency limit is shared across all replicas that share the same coordination identity: `(namespace, policy name, operation name, scope)`.
 
 ```ts
-import { bulkhead, operation, timeout, retry } from "caracal"
-import { createCoordinationClient, redisCoordinator } from "caracal/redis"
-import { fetchAdapter } from "caracal/fetch"
+import { bulkhead, operation, timeout, retry } from "@gkoos/caracal"
+import { createCoordinationClient, redisCoordinator } from "@gkoos/caracal/redis"
+import { fetchAdapter } from "@gkoos/caracal/fetch"
 
 const redis = createCoordinationClient(process.env.REDIS_URL!)
 await redis.connect()
