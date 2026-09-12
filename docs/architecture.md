@@ -4,7 +4,7 @@ Caracal is a single ESM package with deliberate exports. This is not a multi-pac
 
 ## Subpath exports
 
-`src/` contains only shippable application code. The root export is intentionally small and does not import Redis or the adapters as side effects. The published package also includes `src/` (see the `files` field) so consumers and auditors can read the original TypeScript; runtime entry points remain the built `dist/` files.
+`src/` contains the shippable application code, with one deliberate exception: the `@gkoos/caracal/testing` entry point is built from `test/harness/` because it is test-facing. The root export is intentionally small and does not import Redis or the adapters as side effects. The published package includes both `src/` and `test/harness/` (see the `files` field) so consumers and auditors can read the original TypeScript for every entry point; runtime entry points remain the built `dist/` files.
 
 | Export | Responsibility |
 |---|---|

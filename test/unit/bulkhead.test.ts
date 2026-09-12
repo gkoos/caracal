@@ -355,3 +355,62 @@ describe("distributed lifecycle", () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Event accounting
+// ---------------------------------------------------------------------------
+
+describe("local bulkhead events", () => {
+  it("reports the released occupancy before handing the permit to the successor", async () => {
+    const capacity = bulkhead.local({
+      name: "queue-events",
+      limit: 1,
+      queue: { limit: 1, timeoutMs: 1_000 },
+    })
+    const events: OperationEvent[] = []
+    let releaseGate: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+
+    const first = subject(
+      capacity,
+      async () => {
+        await gate
+        return "first"
+      },
+      [],
+      events,
+    )
+    const second = subject(
+      capacity,
+      () => Promise.resolve("second"),
+      [],
+      events,
+    )
+
+    const running = first.execute(undefined)
+    const queued = second.execute(undefined)
+    releaseGate?.()
+    await Promise.all([running, queued])
+
+    expect(events.some((e) => e.type === "bulkhead.waited")).toBe(true)
+    const released = events.filter((e) => e.type === "bulkhead.released")
+    const admitted = events.filter((e) => e.type === "bulkhead.admitted")
+    // Both permits are released in the end, and each release reports the
+    // occupancy left behind.  Granting the queued successor first would make the
+    // first release report 1, as if a permit were still in flight.
+    expect(released.map((e) => (e as { occupancy: number }).occupancy)).toEqual(
+      [0, 0],
+    )
+    expect(admitted.map((e) => (e as { occupancy: number }).occupancy)).toEqual(
+      [1, 1],
+    )
+    // The released permit is reported before the successor's admission, so the
+    // pair reads monotonically instead of the release appearing to include it.
+    const types = events.map((e) => e.type)
+    expect(types.indexOf("bulkhead.released")).toBeLessThan(
+      types.lastIndexOf("bulkhead.admitted"),
+    )
+  })
+})

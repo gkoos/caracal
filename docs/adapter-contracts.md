@@ -36,7 +36,8 @@ Capabilities are declared per invocation, before any policy runs, and may vary b
 | `abort` | `"supported"` | Caracal will cancel `context.signal` when a timeout fires or the caller aborts. The adapter must honor it. |
 | `abort` | `"unsupported"` | Caracal will not signal cancellation. The caller still receives `TimeoutError` on time, but underlying work continues. |
 | `replay` | `"safe"` | Retry may issue another attempt. |
-| `replay` | `"unsafe"` | `"unknown"` | Retry will not issue another attempt regardless of the outcome classification. |
+| `replay` | `"unsafe"` | Retry will not issue another attempt regardless of the outcome classification. |
+| `replay` | `"unknown"` | Same as `"unsafe"`: without a guarantee that a repeat is safe, retry stays at a single attempt. |
 
 Declare these accurately, **Caracal never infers them**. An adapter that ignores `context.signal` but declares `abort: "supported"` will cause timeouts to appear to work while the underlying work continues silently.
 
@@ -63,6 +64,9 @@ The `context` object passed to `execute` contains:
 | `attempt` | Current attempt number, starting at 1. |
 | `metadata` | The `Record<string, unknown>` passed by the caller to `operation.execute()`. |
 | `operationName` | The name of the wrapping operation. |
+| `executionId` | The execution identifier, shared by every attempt of one `execute()` call. |
+| `capabilities` | The capabilities declared for this invocation. |
+| `classify` | The classifier Caracal will use: the adapter's `classify`, or the default. Call it to classify an outcome exactly as the retry and breaker policies will. |
 
 ## Contract test harness
 

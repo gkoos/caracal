@@ -42,6 +42,17 @@ Every adapter call receives an immutable `ExecutionContext`:
 | `signal` | `AbortSignal \| undefined` | Combined cancellation signal from timeout and/or the caller |
 | `metadata` | `Record<string, unknown>` | Passed through from `execute()` options; used by policy `scope` functions |
 | `capabilities` | `OperationCapabilities` | The capabilities declared for this invocation |
+| `classify` | `OutcomeClassifier` | The classifier in force for this invocation: the adapter's `classify`, or the default. Call it to classify an outcome exactly as the retry and breaker policies will |
+
+### execute() options
+
+`operation.execute(args, options?)` takes caller-supplied inputs:
+
+| Option | Type | Description |
+|---|---|---|
+| `metadata` | `Record<string, unknown>` | Passed through to `context.metadata`; the usual input to policy `scope` functions |
+| `signal` | `AbortSignal` | Caller cancellation, combined with the timeout signal into `context.signal` |
+| `executionId` | `string` | Overrides the generated execution id (the identifier every attempt of this call shares) |
 
 ### Outcome classification
 
@@ -114,6 +125,73 @@ bulkhead.distributed({ name: "partner-api", coordinator, scope, limit: 20, lease
 circuitBreaker.local({ name: "partner-api", failureThreshold: 0.5, openMs: 10_000 })
 circuitBreaker.distributed({ name: "partner-api", coordinator, scope, failureThreshold: 0.5, openMs: 30_000, onCoordinatorError: "fail-open" })
 ```
+
+## Writing a custom policy
+
+A policy is an object with a `name` and an `execute(context, next)` method; calling `next` continues the chain. The type is exported as `Policy`:
+
+```ts
+import type { ExecutionContext, Next, Policy } from "@gkoos/caracal"
+
+const tagging: Policy = {
+  name: "tagging",
+  async execute<Result>(context: ExecutionContext, next: Next<Result>) {
+    return await next(context)
+  },
+}
+```
+
+Set `phase: "attempt"` to declare an **attempt-phase** policy: it wraps each individual adapter call and must await the underlying settlement. That is the mechanism behind the rule above - a bulkhead declares it, so it is always placed directly around the adapter regardless of its position in the array. Policies without `phase` are composed outermost-first in array order and see only the final outcome of the retry sequence.
+
+## Policy options
+
+Defaults, bounds and coordination. Options marked *distributed* exist only on distributed policies and *local* only on local ones; unmarked options behave identically in both.
+
+### timeout
+
+| Option | Default | Bounds |
+|---|---|---|
+| `ms` | required | finite, `> 0` |
+
+Local only: there is no distributed timeout.
+
+### retry
+
+| Option | Default | Bounds |
+|---|---|---|
+| `maxAttempts` | required | integer `>= 1` |
+| `delay` | `0` (retry immediately) | ms as a number, or `(attempt, context) => number` returning a finite value `>= 0` |
+
+### circuit breaker
+
+| Option | Default (local / distributed) | Bounds | Coordination |
+|---|---|---|---|
+| `name` | required | non-empty | both |
+| `minimumThroughput` | `5` / `20` | integer `>= 1` | both |
+| `failureThreshold` | `0.5` | `0.0005 <= t < 0.9995`, resolved to thousandths | both |
+| `openMs` | `10_000` / `30_000` | integer `>= 1` | both |
+| `halfOpenSuccesses` | `1` / `2` | integer `>= 1` | both |
+| `halfOpenProbes` | `1` / `3` | integer `>= 1` | both |
+| `windowSize` | `100` | integer `>= 1` | both |
+| `classify` | adapter classification | `(error, isSuccess) => Outcome` | both |
+| `coordinator` | — | coordinator object | distributed |
+| `scope` | — | `(context) => string` | distributed |
+| `windowTtlMs` | `max(openMs × 3, 60_000)` | integer `>= 1` | distributed |
+| `probeLeaseTtlMs` | `openMs × 2` | integer `>= 1` | distributed |
+| `onCoordinatorError` | `"fail-open"` | `"fail-open"` \| `"fail-closed"` | distributed |
+
+### bulkhead
+
+| Option | Default | Bounds | Coordination |
+|---|---|---|---|
+| `name` | required | non-empty | both |
+| `limit` | required | integer `>= 1` | both |
+| `queue` | none (reject immediately) | `{ limit: integer >= 1, timeoutMs: 1..2147483647 }` | local |
+| `coordinator` | — | coordinator object | distributed |
+| `scope` | — | `(context) => string` | distributed |
+| `leaseMs` | `30_000` | `100..86400000` | distributed |
+
+`snapshot()` is available on local policies only (`{ coordination, occupancy, waiting }`); distributed occupancy lives in Redis.
 
 ## Events
 
