@@ -545,7 +545,12 @@ export interface BreakerCoordinator {
     identity: BreakerIdentity,
     params: {
       readonly probeToken: string
-      readonly outcome: "success" | "failure"
+      /**
+       * `"success"` and `"failure"` record an outcome; `"ignored"` releases the
+       * probe's slot without recording anything, which is what the policy sends
+       * when its classifier ignores the result.
+       */
+      readonly outcome: "success" | "failure" | "ignored"
       readonly generation: number
       readonly halfOpenSuccesses: number
       readonly openMs: number
@@ -959,11 +964,18 @@ function distributed(
             ? { status: "success", value }
             : { status: "failure", error: thrownError },
         )
-        if (breakerOutcome !== "ignored") {
+        // An ignored result is never recorded.  A probe still has to settle
+        // though: releasing the slot it holds is what lets the next probe
+        // through, instead of stalling the recovery window until the probe lease
+        // elapses.  The local breaker frees its slot immediately, and a release
+        // records nothing and does not advance recovery.
+        if (breakerOutcome !== "ignored" || admission.kind === "probe") {
           const outcomeStr =
             breakerOutcome === "success"
               ? ("success" as const)
               : ("failure" as const)
+          const settleOutcome =
+            breakerOutcome === "ignored" ? ("ignored" as const) : outcomeStr
 
           if (admission.kind === "closed") {
             try {
@@ -1027,49 +1039,53 @@ function distributed(
             try {
               const result = await coordinator.settleProbe(identity, {
                 probeToken: admission.probeToken,
-                outcome: outcomeStr,
+                outcome: settleOutcome,
                 generation: admission.generation,
                 halfOpenSuccesses,
                 openMs,
                 windowTtlMs,
               })
-              if (result.type === "stale") {
-                emitRuntimeEvent(context, {
-                  type: "breaker.observation-stale",
-                  coordination: "distributed",
-                  policyName: name,
-                  scope,
-                  attemptGeneration: admission.generation,
-                  currentGeneration: result.generation,
-                })
-              } else {
-                emitRuntimeEvent(context, {
-                  type: "breaker.observation",
-                  coordination: "distributed",
-                  policyName: name,
-                  scope,
-                  outcome: outcomeStr,
-                  generation: admission.generation,
-                })
-                if (result.type === "transitioned") {
-                  if (result.newState === "closed") {
-                    lastKnownState.forget(identity.operation, scope)
-                  } else {
-                    lastKnownState.remember(
-                      identity.operation,
-                      scope,
-                      result.newState,
-                    )
-                  }
+              // A release reports nothing: it is not an observation, so there is
+              // no breaker.observation event and no transition to announce.
+              if (breakerOutcome !== "ignored") {
+                if (result.type === "stale") {
                   emitRuntimeEvent(context, {
-                    type: "breaker.state-changed",
+                    type: "breaker.observation-stale",
                     coordination: "distributed",
                     policyName: name,
                     scope,
-                    state: result.newState,
-                    previousState: "half-open",
-                    generation: result.newGeneration,
+                    attemptGeneration: admission.generation,
+                    currentGeneration: result.generation,
                   })
+                } else {
+                  emitRuntimeEvent(context, {
+                    type: "breaker.observation",
+                    coordination: "distributed",
+                    policyName: name,
+                    scope,
+                    outcome: outcomeStr,
+                    generation: admission.generation,
+                  })
+                  if (result.type === "transitioned") {
+                    if (result.newState === "closed") {
+                      lastKnownState.forget(identity.operation, scope)
+                    } else {
+                      lastKnownState.remember(
+                        identity.operation,
+                        scope,
+                        result.newState,
+                      )
+                    }
+                    emitRuntimeEvent(context, {
+                      type: "breaker.state-changed",
+                      coordination: "distributed",
+                      policyName: name,
+                      scope,
+                      state: result.newState,
+                      previousState: "half-open",
+                      generation: result.newGeneration,
+                    })
+                  }
                 }
               }
             } catch (settleError) {

@@ -231,6 +231,16 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
         } satisfies SettleProbeResult
       }
 
+      if (outcome === "ignored") {
+        // Release only: the result is not recorded, no success counter advances
+        // and the state does not transition (matches the Lua script).
+        return {
+          type: "settled",
+          state: "half-open",
+          generation: rec.generation,
+        } satisfies SettleProbeResult
+      }
+
       if (outcome === "failure") {
         rec.generation++
         rec.state = "open"

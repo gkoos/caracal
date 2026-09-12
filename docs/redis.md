@@ -202,6 +202,8 @@ The defaults are a consistent set, but every override has to stay in line with t
 
 `probeLeaseTtlMs <= openMs` is *not* required: a recovery window discards its probe tokens when it ends, so leases never leak into the next window. The `openMs × 2` default simply means "comfortably longer than a probe".
 
+A probe whose result the classifier ignores releases its slot as soon as it settles, so it never waits for the lease (see [ignored results](circuit-breaker.md#ignored-results)). The lease covers only probes that never settle - a crashed worker, or a settle that never reaches the coordinator.
+
 Symptoms point at the constraint that is violated:
 
 | Symptom | Usually means | Fix |

@@ -236,7 +236,9 @@ return {1, 2, gen, activeProbes, transitioned}
  * KEYS[2] = probe tokens sorted set    (:probes)
  *
  * ARGV[1] = probeToken          the token issued by admitProbe
- * ARGV[2] = outcome             "success" | "failure"
+ * ARGV[2] = outcome             "success" | "failure" | "ignored", where
+ *                               "ignored" releases the slot without recording
+ *                               an outcome or advancing recovery
  * ARGV[3] = expectedGeneration  generation captured at admission time
  * ARGV[4] = halfOpenSuccesses   consecutive probe successes needed to close
  * ARGV[5] = openMs              how long the breaker stays OPEN (TTL floor)
@@ -246,7 +248,8 @@ return {1, 2, gen, activeProbes, transitioned}
  * Returns: {status, stateCode, generation}
  *   status 0 = stale  (token missing, lease elapsed, or generation mismatch;
  *              the result is dropped and any consumed token is released)
- *   status 1 = settled, no state transition  (still HALF_OPEN)
+ *   status 1 = settled, no state transition  (still HALF_OPEN; an "ignored"
+ *              outcome only releases the probe slot)
  *   status 2 = settled, state transition occurred
  *     stateCode 0 = transitioned to CLOSED
  *     stateCode 1 = transitioned back to OPEN  (probe failure)
@@ -289,6 +292,17 @@ if state ~= 'half-open' or gen ~= expectGen then
   return {0, sc, gen}
 end
 probeCnt = math.max(0, probeCnt - 1)
+if outcome == 'ignored' then
+  -- The result was not recorded (the classifier ignored it), but the slot the
+  -- probe held must still be released: otherwise the recovery window stalls
+  -- until the probe lease elapses instead of letting the next probe through.
+  -- The local breaker releases its slot immediately, and this matches it: no
+  -- success counter advances and the state does not transition.
+  redis.call('HSET', KEYS[1], 'probeCount', probeCnt)
+  -- Still HALF_OPEN: must not expire while recovery is in progress.
+  redis.call('PERSIST', KEYS[1])
+  return {1, 2, gen}
+end
 if outcome == 'failure' then
   gen = gen + 1
   redis.call('HSET', KEYS[1], 'state', 'open', 'generation', gen,

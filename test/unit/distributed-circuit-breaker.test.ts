@@ -277,6 +277,41 @@ describe("circuitBreaker.distributed — half-open probes", () => {
     ).toBe(true)
   })
 
+  it("releases the probe slot when the result is ignored", async () => {
+    const coordinator = memoryBreakerCoordinator()
+    const events: OperationEvent[] = []
+    const identity = { name: "test", operation: "work", scope: "shared" }
+
+    // Open the breaker, then let the OPEN window elapse.
+    await drive(makeOp(tightBreaker(coordinator), fail), 5)
+    // biome-ignore lint/style/noNonNullAssertion: state is known to exist after drive()
+    const rec = coordinator.inspect(identity)!
+    ;(rec as { openedAt: number }).openedAt = Date.now() - 120_000
+
+    // A classifier that ignores every result: the probe runs, but nothing is
+    // recorded.  Its slot still has to be released, as the local breaker does.
+    const policy = tightBreaker(coordinator, { classify: () => "ignored" })
+    let ran = 0
+    const work = () => {
+      ran++
+      return Promise.resolve("ok")
+    }
+
+    await makeOp(policy, work, events).execute(undefined)
+
+    expect(ran).toBe(1) // the probe was admitted
+    expect(coordinator.inspect(identity)?.probeTokens.size).toBe(0) // slot released
+    expect((await coordinator.readState(identity))?.state).toBe("half-open")
+    expect(events.some((e) => e.type === "breaker.observation")).toBe(false)
+
+    // The released slot is immediately reusable.  While the ignored probe held
+    // it, this call would be rejected with CircuitOpenError until the probe
+    // lease elapsed.
+    ran = 0
+    await makeOp(policy, work, events).execute(undefined)
+    expect(ran).toBe(1)
+  })
+
   it("closes the breaker after enough probe successes", async () => {
     const coordinator = memoryBreakerCoordinator()
     const events: OperationEvent[] = []

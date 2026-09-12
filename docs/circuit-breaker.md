@@ -47,6 +47,14 @@ Within that resolution the value is exact; a threshold that is not a multiple of
 
 The accepted range is `0.0005 <= failureThreshold < 0.9995`. The local breaker compares the exact ratio, but enforces the same range so one policy config works with either coordination.
 
+## Ignored results
+
+A result the breaker is told to ignore - `classify` returning `"ignored"`, or an adapter classifying the outcome that way - is never recorded: it does not enter the window, does not count towards `halfOpenSuccesses`, and emits no `breaker.observation` event.
+
+In half-open the probe slot it was admitted with is still released as soon as the attempt settles, so the recovery window keeps its full probe budget and the next probe is admitted immediately. Local and distributed breakers behave identically here: neither makes the caller wait for the probe lease.
+
+The lease only covers probes that never settle - a crashed worker, or a settle the coordinator never sees. Those keep their slot until `probeLeaseTtlMs` elapses, after which the slot is recoverable and the late result is dropped as stale.
+
 ## Local
 
 Each process tracks its own failure window independently. No coordinator or Redis connection is required. Two instances with the same name are completely independent, each owns its own in-process state.

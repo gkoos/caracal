@@ -52,7 +52,7 @@ After each attempt the adapter's `classify` method (or the default) returns one 
 | `"success"` | The attempt succeeded |
 | `"failure"` | A non-transient failure; recorded by the breaker, not retried |
 | `"retryable"` | A transient failure; retry will attempt again if `replay: "safe"` and attempts remain |
-| `"ignored"` | Not recorded by the breaker and does not trigger retry |
+| `"ignored"` | Not recorded by the breaker, does not trigger retry, and releases the half-open probe slot it was admitted with |
 
 Caracal rethrows the adapter's original error unchanged. It does not wrap errors.
 
