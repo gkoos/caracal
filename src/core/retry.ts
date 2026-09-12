@@ -6,6 +6,7 @@ import {
 } from "./runtime.js"
 import type {
   Classification,
+  EventOutcome,
   ExecutionContext,
   ExecutionMetadata,
   Next,
@@ -116,10 +117,8 @@ function wait(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
   })
 }
 
-function summarized<Result>(outcome: Outcome<Result>): Outcome<undefined> {
-  return outcome.status === "success"
-    ? { status: "success", value: undefined }
-    : { status: "failure", error: outcome.error }
+function summarized<Result>(outcome: Outcome<Result>): EventOutcome {
+  return { status: outcome.status }
 }
 
 function classification<Result>(

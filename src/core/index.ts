@@ -20,6 +20,7 @@ export { TimeoutError, timeout } from "./timeout.js"
 export type {
   Adapter,
   Classification,
+  EventOutcome,
   EventSink,
   EventSinks,
   ExecutionContext,

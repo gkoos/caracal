@@ -1,18 +1,20 @@
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 
 /**
  * Package contract checks.
  *
- * Both failures these guard against were silent: `engines` claimed a Node range
- * the runtime does not support, and a published entry point was built from
- * source that the `files` field does not ship.
+ * The failures these guard against were all silent: `engines` claimed a Node
+ * range the runtime does not support, a published entry point was built from
+ * source that the `files` field does not ship, and the documented Node floor
+ * drifted between files on release.
  */
 const pkg = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
 ) as {
   engines: { node: string }
   files: string[]
+  version: string
 }
 
 function readSource(relative: string): string {
@@ -48,5 +50,40 @@ describe("package contract", () => {
         `${entry} is built but its source directory "${directory}" is not in files`,
       ).toBe(true)
     }
+  })
+
+  it("states the same Node floor in every document that mentions one", () => {
+    const floor = pkg.engines.node
+      .replace(/^[^\d]*/, "")
+      .split(".")
+      .slice(0, 2)
+      .join(".")
+    const documents = [
+      "README.md",
+      "SECURITY.md",
+      ...readdirSync(new URL("../../docs", import.meta.url))
+        .filter((name) => name.endsWith(".md"))
+        .map((name) => `docs/${name}`),
+    ]
+    const mentions = documents.flatMap((file) =>
+      [
+        ...readSource(file).matchAll(
+          /Node(?:\.js)?\s*(\d+(?:\.\d+)?)\s*(?:\+|or newer)/g,
+        ),
+      ].map((match) => ({ file, stated: match[1] as string })),
+    )
+
+    expect(mentions.length).toBeGreaterThan(0)
+    for (const mention of mentions) {
+      expect(
+        mention.stated,
+        `${mention.file} must state the same Node floor as engines (${pkg.engines.node})`,
+      ).toBe(floor)
+    }
+  })
+
+  it("keeps the supported-version table in step with the package version", () => {
+    const [major, minor] = pkg.version.split(".")
+    expect(readSource("SECURITY.md")).toContain(`| ${major}.${minor}.x`)
   })
 })

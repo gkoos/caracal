@@ -68,7 +68,7 @@ const op = operation({
 
 `BulkheadRejectedError` reasons are a superset of the event reasons: `lease-lost` marks a permit whose lease could not be renewed mid-flight, and `admission-expired` marks a permit whose lease deadline passed before the call started (that one also emits `bulkhead.rejected`).
 
-Every `outcome` field on an event is `Outcome<undefined>`: a `success` carries no `value` and a `failure` carries no `error`. Sinks see the classification and never the payload, so a metrics sink cannot read the result or the error object - deliberately, so observability never has to hold response bodies or credentials.
+Every `outcome` field on an event is an `EventOutcome`: just `{ status: "success" }` or `{ status: "failure" }`. Neither the result value nor the error object reaches a sink, so a sink cannot retain response bodies or credentials, and emitting is side-effect free - a sink cannot change what a policy decides. The `classification` next to it is the adapter's verdict on that attempt.
 
 ## Circuit breaker
 

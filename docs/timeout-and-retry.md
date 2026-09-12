@@ -10,7 +10,7 @@ import { timeout } from "@gkoos/caracal"
 timeout({ ms: 5_000 })
 ```
 
-Bounds how long the caller waits. If the adapter declares `abort: "supported"`, Caracal derives a combined `AbortSignal` and cancels it when the deadline expires, the adapter is expected to honor it and reject or resolve promptly. A timeout still rejects the caller even if the adapter ignores the signal.
+Bounds how long the wrapped work may take: the timer starts when the policy runs and the caller is rejected when it expires, whether or not the adapter honours the abort signal. It does not cover coordinator calls an outer distributed policy makes - see [composition](#composition).
 
 If the adapter declares `abort: "unsupported"`, Caracal does not invent cancellation. The caller receives `TimeoutError` on schedule, but the underlying work may continue. Its eventual settlement is still visible through `attempt.settled` events, and any bulkhead permit it holds remains held until the adapter promise actually resolves or rejects.
 
@@ -61,6 +61,22 @@ policies: [breaker, retry({ maxAttempts: 3 }), timeout({ ms: 3_000 }), capacity]
 ```
 
 The first is usually what you want: the total time is bounded, and retries consume from the same budget.
+
+### What a timeout does not cover
+
+A `timeout` bounds the work it wraps, not the whole call. With a *distributed* breaker outside it, the caller also waits for the coordinator:
+
+- **before** the timer starts: `readState` and `admitProbe`, each bounded by the client's `commandTimeout` (default 1000 ms);
+- **after** the wrapped work settles: `observe`, or `settleProbe` for a half-open probe, same bound.
+
+A 10 ms timeout behind a coordinator with 60 ms round trips therefore reaches the caller in roughly 130 ms. That is the nesting model working as intended - the tightest budget innermost, the shared state machine outside it - but if you need a *total* deadline, add a second `timeout` outermost:
+
+```ts
+// Outer timer: the caller's deadline.  Inner timer: one attempt stays short.
+policies: [timeout({ ms: 1_000 }), breaker, timeout({ ms: 250 }), retry({ maxAttempts: 3 }), capacity]
+```
+
+The outer timer rejects the caller with `TimeoutError` at its deadline even when a coordinator call is what is taking the time. It cannot *cancel* that call: only the caller's own signal is aborted, and only when the adapter declares `abort: "supported"`. The bound on a stuck coordinator call is `commandTimeout`.
 
 ## Replay safety
 

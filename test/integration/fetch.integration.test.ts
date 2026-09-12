@@ -50,4 +50,41 @@ describe("fetch adapter integration", () => {
     expect(await response.text()).toBe("ok")
     expect(attempts).toBe(2)
   })
+
+  it("retries a replay-safe POST whose body can be re-sent", async () => {
+    const subject = operation({
+      name: "post-retry",
+      adapter: fetchAdapter({ replay: () => "safe" }),
+      policies: [retry({ maxAttempts: 2 })],
+    })
+
+    const response = await subject.execute({
+      url: `${baseUrl}/flaky`,
+      options: { method: "POST", body: "payload" },
+    })
+
+    // A string body is re-sent on the second attempt, so the declared
+    // idempotency is all that is needed.
+    expect(response.status).toBe(200)
+    expect(attempts).toBe(2)
+  })
+
+  it("cannot replay a Request object, which is single-use", async () => {
+    const subject = operation({
+      name: "request-retry",
+      adapter: fetchAdapter({ replay: () => "safe" }),
+      policies: [retry({ maxAttempts: 2 })],
+    })
+    const request = new Request(`${baseUrl}/flaky`, {
+      method: "POST",
+      body: "payload",
+    })
+
+    // Documented limitation: the first attempt consumes the Request, so the
+    // second cannot be constructed from it, whatever `replay` says.
+    await expect(subject.execute({ url: request })).rejects.toBeInstanceOf(
+      TypeError,
+    )
+    expect(attempts).toBe(1)
+  })
 })

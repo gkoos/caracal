@@ -8,6 +8,17 @@ export type Outcome<Result> =
   | Readonly<{ status: "success"; value: Result }>
   | Readonly<{ status: "failure"; error: unknown }>
 
+/**
+ * The outcome as reported to event sinks: a summary with no payload.
+ *
+ * Events carry the status only - neither the result value nor the error object
+ * is exposed - so a sink cannot retain response bodies or credentials, and
+ * mutating what it receives cannot change what a policy decides.
+ */
+export type EventOutcome =
+  | Readonly<{ status: "success" }>
+  | Readonly<{ status: "failure" }>
+
 /** An adapter's interpretation of an outcome for resilience policies. */
 /** `retryable` is a failure eligible for the local retry policy. */
 export type Classification = "success" | "failure" | "retryable" | "ignored"
@@ -158,14 +169,14 @@ export type OperationEvent =
       type: "attempt.settled"
       at: number
       context: ExecutionContext
-      outcome: Outcome<undefined>
+      outcome: EventOutcome
       classification: Classification
     }>
   | Readonly<{
       type: "execution.settled"
       at: number
       context: ExecutionContext
-      outcome: Outcome<undefined>
+      outcome: EventOutcome
     }>
   | Readonly<{
       type: "timeout.triggered"
@@ -180,21 +191,21 @@ export type OperationEvent =
       context: ExecutionContext
       nextAttempt: number
       delayMs: number
-      outcome: Outcome<undefined>
+      outcome: EventOutcome
       classification: Classification
     }>
   | Readonly<{
       type: "retry.exhausted"
       at: number
       context: ExecutionContext
-      outcome: Outcome<undefined>
+      outcome: EventOutcome
       classification: Classification
     }>
   | Readonly<{
       type: "retry.declined"
       at: number
       context: ExecutionContext
-      outcome: Outcome<undefined>
+      outcome: EventOutcome
       classification: Classification
       reason: "replay-unsafe" | "not-retryable"
     }>

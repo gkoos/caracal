@@ -8,6 +8,7 @@ import {
 } from "./runtime.js"
 import type {
   Adapter,
+  EventOutcome,
   EventSink,
   EventSinks,
   ExecutionMetadata,
@@ -21,14 +22,8 @@ import type {
   Policy,
 } from "./types.js"
 
-const summarizeSuccess = (): Outcome<undefined> => ({
-  status: "success",
-  value: undefined,
-})
-const summarizeFailure = (error: unknown): Outcome<undefined> => ({
-  status: "failure",
-  error,
-})
+const summarizeSuccess = (): EventOutcome => ({ status: "success" })
+const summarizeFailure = (): EventOutcome => ({ status: "failure" })
 
 function immutableCapabilities(
   capabilities: OperationCapabilities,
@@ -100,7 +95,7 @@ function invokeAdapter<Args, Result>(
         type: "attempt.settled",
         at: Date.now(),
         context,
-        outcome: summarizeFailure(error),
+        outcome: summarizeFailure(),
         classification,
       })
       throw error
@@ -162,7 +157,7 @@ export function operation<Args, Result>(
           type: "execution.settled",
           at: Date.now(),
           context,
-          outcome: summarizeFailure(error),
+          outcome: summarizeFailure(),
         })
         throw error
       }
