@@ -61,3 +61,41 @@ describe("createCoordinationClient", () => {
     )
   })
 })
+
+describe("createCoordinationClusterClient connection options", () => {
+  it("passes caller connection options through and keeps the safeguards", () => {
+    const client = createCoordinationClusterClient(
+      [{ host: "127.0.0.1", port: 7000 }],
+      1_000,
+      { username: "svc-caracal", password: "secret", tls: {} },
+    )
+
+    // ioredis stores some of this at the cluster level and some under
+    // redisOptions, so assert against the merged view.
+    const options = client.options as Record<string, unknown> & {
+      redisOptions?: Record<string, unknown>
+    }
+    const merged = { ...options, ...(options.redisOptions ?? {}) }
+
+    expect(merged.username).toBe("svc-caracal")
+    expect(merged.password).toBe("secret")
+    expect(merged.tls).toEqual({})
+    // Coordination safeguards stay pinned even when the caller supplies
+    // options, because the coordinators depend on them.
+    expect(merged.enableOfflineQueue).toBe(false)
+    expect(merged.maxRetriesPerRequest).toBe(0)
+    expect(merged.autoResendUnfulfilledCommands).toBe(false)
+
+    client.disconnect()
+  })
+
+  it("rejects non-object connection options", () => {
+    expect(() =>
+      createCoordinationClusterClient(
+        [{ host: "127.0.0.1", port: 7000 }],
+        1_000,
+        [] as never,
+      ),
+    ).toThrow(TypeError)
+  })
+})

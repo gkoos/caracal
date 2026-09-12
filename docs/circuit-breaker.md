@@ -129,7 +129,7 @@ Use stable, non-secret values, scope keys are observable in the Redis keyspace. 
 
 ### State storage
 
-Two Redis keys are used per scope:
+Three Redis key types are used per scope: the state hash, the observations sorted set, and the probe-token sorted set.
 
 **State hash** stores `state`, `generation`, `openedAt`, `probeCount`, `probeSuccesses`. It is created by the first observation of a scope, so the window's epoch is on record from the start. A missing key is treated as closed. All state transitions are atomic Lua scripts using server-side timestamps.
 
@@ -138,6 +138,8 @@ TTL policy for the state hash:
 - **CLOSED**: TTL of `max(openMs × 2, windowTtlMs)` for eventual cleanup of idle scopes. Expiring a closed key is safe only because that TTL outlives the window it governs - the hash is what remembers which epoch the retained observations belong to.
 
 **Observations sorted set** each entry scored by Redis server timestamp. Entries older than `windowTtlMs` (default: `max(openMs × 3, 60_000)`) are pruned on each write, preventing unbounded growth after idle periods. The count-based eviction (`windowSize`) is the binding constraint under normal load; time-based pruning is a safety backstop for idle scopes.
+
+**Probe-token sorted set** one member per admitted half-open probe, scored by its lease deadline (`now + probeLeaseTtlMs`). `admitProbe` prunes expired members before counting, so the set is what bounds concurrent probes, and it is cleared when a recovery window ends. See [half-open probes](#generations-epochs-and-stale-result-rejection).
 
 ### Generations, epochs and stale result rejection
 

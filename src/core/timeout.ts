@@ -1,4 +1,9 @@
-import { emitRuntimeEvent, withAdmissionSignal, withSignal } from "./runtime.js"
+import {
+  MAX_TIMER_MS,
+  emitRuntimeEvent,
+  withAdmissionSignal,
+  withSignal,
+} from "./runtime.js"
 import type { ExecutionContext, Next, Policy } from "./types.js"
 
 export class TimeoutError extends Error {
@@ -30,6 +35,11 @@ function combineSignals(
 export function timeout(options: TimeoutOptions): Policy {
   if (!Number.isFinite(options.ms) || options.ms <= 0) {
     throw new RangeError("timeout ms must be a finite positive number")
+  }
+  if (options.ms > MAX_TIMER_MS) {
+    throw new RangeError(
+      `timeout ms must not exceed ${MAX_TIMER_MS} ms, the largest delay setTimeout honours`,
+    )
   }
 
   return Object.freeze({

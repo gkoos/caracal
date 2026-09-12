@@ -4,6 +4,8 @@ Operations emit structured events from every policy decision. Every event carrie
 
 Local policies report `scope: "process"` on every event: their state is per-process rather than per-caller-scope, so the label is constant. Distributed policies report the resolved scope key.
 
+Sinks are fire-and-forget: Caracal calls `emit` and ignores the result, so a synchronous throw and a rejected promise are both dropped and neither can affect execution. An `async` sink is therefore allowed, but it is never awaited.
+
 ```ts
 const op = operation({
   name: "partner-api",
@@ -39,14 +41,14 @@ const op = operation({
 
 | Event | When | Coordination | Key fields |
 |---|---|---|---|
-| `bulkhead.admitted` | Permit granted | local | `policyName`, `scope`, `occupancy` |
-| `bulkhead.waited` | Request entered the local queue | local | `policyName`, `scope`, `occupancy` |
-| `bulkhead.released` | Permit returned after the adapter settles | local | `policyName`, `scope`, `occupancy` |
+| `bulkhead.admitted` | Permit granted | both | `policyName`, `scope`, `occupancy` |
+| `bulkhead.released` | Permit returned after the adapter settles | both | `policyName`, `scope`, `occupancy`, `reason` (distributed only, when the coordinator reports the permit as already expired or released) |
 | `bulkhead.rejected` | Permit denied | both | `policyName`, `scope`, `reason`, `occupancy` |
+| `bulkhead.waited` | Request entered the local queue | local | `policyName`, `scope`, `occupancy` |
 | `bulkhead.lease-lost` | Distributed lease could not be renewed | distributed | `policyName`, `scope` |
 | `bulkhead.degraded` | Coordinator error during an in-flight permit | distributed | `policyName`, `scope`, `reason` |
 
-The distributed policy does not emit `bulkhead.admitted`, `bulkhead.waited` or `bulkhead.released`: occupancy is owned by the coordinator, not by the process.
+`bulkhead.waited` is local-only: the distributed policy has no queue, so it rejects immediately when the shared limit is reached. The other bulkhead events are emitted by both coordinations, reporting the occupancy the coordinator returned.
 
 `reason` values by event:
 
@@ -57,6 +59,7 @@ The distributed policy does not emit `bulkhead.admitted`, `bulkhead.waited` or `
 | `bulkhead.rejected` (local) | `cancelled` | The caller's signal aborted while waiting |
 | `bulkhead.rejected` (distributed) | `capacity` | The coordinator refused a lease; the shared limit is reached |
 | `bulkhead.rejected` (distributed) | `coordinator-unavailable` | The lease request failed, so the attempt fails closed |
+| `bulkhead.released` (distributed) | `already-expired-or-released` | The lease had already lapsed, so the release changed nothing |
 | `bulkhead.degraded` | `admission-unknown` | The admission result is unknown (the request failed) |
 | `bulkhead.degraded` | `lease-uncertain` | A renewal failed while the permit was in flight |
 | `bulkhead.degraded` | `release-unknown` | The release of a permit failed |
@@ -73,6 +76,6 @@ The distributed policy does not emit `bulkhead.admitted`, `bulkhead.waited` or `
 | `breaker.coordinator-error` | Redis command failed during admit/observe/settle-probe | `policyName`, `scope`, `operation`, `error` |
 | `breaker.degraded` | Coordinator unavailable; fail-open/closed behaviour applied | `policyName`, `scope`, `reason`, `behavior` |
 
-Distributed breaker events additionally carry `generation`, the epoch the decision belongs to (`breaker.observation-stale` reports `attemptGeneration` and `currentGeneration` instead). Local events do not: the local breaker's generation is process-internal and every result settles in-process, so there is nothing to correlate.
+Distributed `breaker.state-changed`, `breaker.observation`, `breaker.probe-started` and ordinary `breaker.rejected` events also carry `generation`, the epoch the decision belongs to. `breaker.observation-stale` reports `attemptGeneration` and `currentGeneration` instead, and `breaker.coordinator-error`, `breaker.degraded` and rejections raised because the coordinator was unreachable carry none - the state could not be read. Local events never carry it: the local breaker's generation is process-internal and every result settles in-process, so there is nothing to correlate.
 
 `breaker.degraded` carries `reason: "coordinator-unavailable"` plus `behavior: "fail-open" | "fail-closed"`. `breaker.coordinator-error` carries `operation: "admit" | "observe" | "settle-probe"`.

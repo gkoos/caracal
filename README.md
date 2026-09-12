@@ -238,7 +238,7 @@ Use stable, non-secret values, scope keys are observable in the Redis keyspace.
 
 ### Events and observability
 
-Every operation accepts an `events` sink - or an array of sinks - that receives structured events from every policy decision. Sinks are output-only and isolated: an exception in a sink cannot affect execution.
+Every operation accepts an `events` sink - or an array of sinks - that receives structured events from every policy decision. Sinks are output-only and isolated: a synchronous throw and a rejected promise are both dropped, so a failing sink cannot affect execution and an `async` sink is allowed (though never awaited).
 
 ```ts
 const op = operation({
@@ -266,7 +266,7 @@ There are many libraries for applying resilience policies to operations, but mos
 
 ## Development
 
-Requires Node.js 20+.
+Requires Node.js 20.3+.
 
 ```sh
 npm install

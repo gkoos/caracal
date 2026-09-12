@@ -1,4 +1,4 @@
-import { Cluster, Redis } from "ioredis"
+import { Cluster, Redis, type RedisOptions } from "ioredis"
 
 export class CoordinatorUnavailableError extends Error {
   readonly coordination = "distributed"
@@ -54,19 +54,33 @@ export interface ClusterNode {
  * Call `connect()` before use and `disconnect()` at shutdown, matching the
  * standalone client contract.
  */
+/**
+ * Redis Cluster client for a secured cluster: pass credentials and TLS via
+ * `connectionOptions`.  The coordination safeguards (`lazyConnect`, no offline
+ * queue, no command replay, no per-request retries) are applied after them and
+ * cannot be overridden, because the coordinators depend on those semantics.
+ */
 export function createCoordinationClusterClient(
   nodes: ReadonlyArray<ClusterNode>,
   commandTimeout = 1000,
+  connectionOptions: RedisOptions = {},
 ): Cluster {
   if (!Number.isSafeInteger(commandTimeout) || commandTimeout < 1)
     throw new RangeError("commandTimeout must be a positive integer")
   if (!Array.isArray(nodes) || nodes.length === 0)
     throw new RangeError("nodes must be a non-empty array of { host, port }")
+  if (
+    typeof connectionOptions !== "object" ||
+    connectionOptions === null ||
+    Array.isArray(connectionOptions)
+  )
+    throw new TypeError("connectionOptions must be an ioredis options object")
   const cluster = new Cluster([...nodes], {
     lazyConnect: true,
     enableOfflineQueue: false,
     clusterRetryStrategy: (attempt) => Math.min(attempt * 50, 1000),
     redisOptions: {
+      ...connectionOptions,
       commandTimeout,
       connectTimeout: commandTimeout,
       maxRetriesPerRequest: 0,

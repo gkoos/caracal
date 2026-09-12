@@ -4,7 +4,7 @@ Distributed bulkheads and circuit breakers require a Redis coordinator. If you o
 
 You create **one** Redis client and pass it to both coordinator factories. The factories just wrap the same client with different operation contracts suited to each policy.
 
-`createCoordinationClient(url, commandTimeout?)` (and `createCoordinationClusterClient(nodes, commandTimeout?)`) take the command timeout as a positional argument in milliseconds, default `1000`. It bounds every coordinator command, so it is the knob to raise when Redis is slow and commands are being abandoned:
+`createCoordinationClient(url, commandTimeout?)` (and `createCoordinationClusterClient(nodes, commandTimeout?, connectionOptions?)`) take the command timeout as a positional argument in milliseconds, default `1000`. It bounds every coordinator command, so it is the knob to raise when Redis is slow and commands are being abandoned:
 
 ```ts
 const client = createCoordinationClient(process.env.REDIS_URL!, 5_000) // 5 s per command
@@ -49,6 +49,19 @@ const client = createCoordinationClusterClient([
   { host: "redis-node-2.internal", port: 7001 },
   { host: "redis-node-3.internal", port: 7002 },
 ])
+
+// Secured cluster: credentials and TLS are the third argument, and the
+// coordination safeguards (no offline queue, no command replay) are applied
+// afterwards so they cannot be overridden
+const secured = createCoordinationClusterClient(
+  [{ host: "redis-node-1.internal", port: 7000 }],
+  2_000,
+  {
+    username: "svc-caracal",
+    password: process.env.REDIS_PASSWORD,
+    tls: { rejectUnauthorized: true },
+  },
+)
 ```
 
 All coordination keys use a hash-tag (`{identity}`) so that every key for a given policy+operation+scope lands on the same cluster slot. The multi-key Lua scripts used by the circuit breaker (which accesses the state hash, observations sorted set, and probe sorted set in a single script) are therefore cluster-safe: all three keys share the same hash-tag and are guaranteed to be on the same slot.

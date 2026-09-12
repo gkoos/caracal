@@ -1,4 +1,9 @@
-import { admissionSignal, emitRuntimeEvent, nextAttempt } from "./runtime.js"
+import {
+  MAX_TIMER_MS,
+  admissionSignal,
+  emitRuntimeEvent,
+  nextAttempt,
+} from "./runtime.js"
 import type {
   Classification,
   ExecutionContext,
@@ -71,6 +76,11 @@ function delayFor(
   if (!Number.isFinite(delay) || delay < 0) {
     throw new RangeError("retry delay must be a finite non-negative number")
   }
+  if (delay > MAX_TIMER_MS) {
+    throw new RangeError(
+      `retry delay must not exceed ${MAX_TIMER_MS} ms, the largest delay setTimeout honours`,
+    )
+  }
 
   return delay
 }
@@ -123,6 +133,16 @@ function classification<Result>(
 export function retry(options: RetryOptions): Policy {
   if (!Number.isInteger(options.maxAttempts) || options.maxAttempts < 1) {
     throw new RangeError("maxAttempts must be a positive integer")
+  }
+  if (
+    typeof options.delay === "number" &&
+    (!Number.isFinite(options.delay) ||
+      options.delay < 0 ||
+      options.delay > MAX_TIMER_MS)
+  ) {
+    throw new RangeError(
+      `retry delay must be a finite number within 0..${MAX_TIMER_MS} ms`,
+    )
   }
 
   return Object.freeze({

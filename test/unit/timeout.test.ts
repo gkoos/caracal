@@ -91,3 +91,20 @@ describe("timeout", () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Duration bounds
+// ---------------------------------------------------------------------------
+
+describe("timeout duration bounds", () => {
+  it("rejects a duration the platform cannot schedule", () => {
+    // setTimeout clamps anything above 2147483647 ms to 1 ms, so this would
+    // silently become an immediate timeout instead of a ~24 day one.
+    expect(() => timeout({ ms: 2_147_483_648 })).toThrow(RangeError)
+    expect(() => timeout({ ms: 2_147_483_648 })).toThrow(/setTimeout/)
+  })
+
+  it("accepts the largest schedulable duration", () => {
+    expect(() => timeout({ ms: 2_147_483_647 })).not.toThrow()
+  })
+})
