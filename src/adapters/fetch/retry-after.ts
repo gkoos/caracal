@@ -1,7 +1,7 @@
 import type { RetryContext } from "../../core/retry.js"
 
 /**
- * Opt-in retry pacing for `caracal/fetch` that honours the HTTP
+ * Opt-in retry pacing for `@gkoos/caracal/fetch` that honours the HTTP
  * `Retry-After` header. It is protocol-specific, so it lives with the
  * adapter rather than in the protocol-agnostic core.
  */

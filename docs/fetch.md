@@ -1,10 +1,10 @@
 # Fetch adapter
 
-`caracal/fetch` wraps the Web Fetch API and targets server-side runtimes - Node.js 20+, Deno, and Bun. It works with any spec-compliant `fetch` implementation, which you can inject via the adapter options. **Caracal is not a browser library.** The distributed policies coordinate through Redis, which must stay server-side, and per-tab local policies would not share state.
+`@gkoos/caracal/fetch` wraps the Web Fetch API and targets server-side runtimes - Node.js 20+, Deno, and Bun. It works with any spec-compliant `fetch` implementation, which you can inject via the adapter options. **Caracal is not a browser library.** The distributed policies coordinate through Redis, which must stay server-side, and per-tab local policies would not share state.
 
 ```ts
-import { circuitBreaker, operation, retry, timeout } from "caracal"
-import { fetchAdapter } from "caracal/fetch"
+import { circuitBreaker, operation, retry, timeout } from "@gkoos/caracal"
+import { fetchAdapter } from "@gkoos/caracal/fetch"
 
 const breaker = circuitBreaker.local({
   name: "partner-api",
@@ -101,11 +101,11 @@ Network errors and thrown exceptions (including aborts) are classified as `retry
 
 ## Retry-After
 
-`caracal/fetch` exports an opt-in delay function for the HTTP `Retry-After` header. Retry stays a core policy, so the pacing policy is the single `delay` knob:
+`@gkoos/caracal/fetch` exports an opt-in delay function for the HTTP `Retry-After` header. Retry stays a core policy, so the pacing policy is the single `delay` knob:
 
 ```ts
-import { operation, retry } from "caracal"
-import { fetchAdapter, retryAfterDelay } from "caracal/fetch"
+import { operation, retry } from "@gkoos/caracal"
+import { fetchAdapter, retryAfterDelay } from "@gkoos/caracal/fetch"
 
 const api = operation({
   name: "partner-api",
@@ -124,7 +124,7 @@ The result is then extended by up to 10% additive jitter, so replicas do not ret
 The defaults are configurable when you need them:
 
 ```ts
-import { createRetryAfterDelay } from "caracal/fetch"
+import { createRetryAfterDelay } from "@gkoos/caracal/fetch"
 
 delay: createRetryAfterDelay({
   baseMs: 250,        // default 100
@@ -139,7 +139,7 @@ Every option is optional, and invalid values throw a `RangeError` when the delay
 To compose your own policy, use the parser directly:
 
 ```ts
-import { retryAfterMs } from "caracal/fetch"
+import { retryAfterMs } from "@gkoos/caracal/fetch"
 
 delay: (attempt, context) =>
   Math.max(250 * 2 ** (attempt - 1), retryAfterMs(context) ?? 0)

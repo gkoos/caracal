@@ -1,11 +1,11 @@
 # PostgreSQL adapter
 
-`caracal/postgres` wraps node-postgres (`pg`) 8.x query clients and pools. Install `pg` alongside `caracal` if you haven't already.
+`@gkoos/caracal/postgres` wraps node-postgres (`pg`) 8.x query clients and pools. Install `pg` alongside `@gkoos/caracal` if you haven't already.
 
 ```ts
 import { Pool } from "pg"
-import { circuitBreaker, operation, retry, timeout } from "caracal"
-import { postgresAdapter } from "caracal/postgres"
+import { circuitBreaker, operation, retry, timeout } from "@gkoos/caracal"
+import { postgresAdapter } from "@gkoos/caracal/postgres"
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 

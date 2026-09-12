@@ -24,12 +24,20 @@ jobs:
       - name: Check if package.json version changed
         id: check
         run: |
+          set -euo pipefail
           CURRENT_VERSION=$(jq -r .version package.json)
-          PREVIOUS_VERSION=$(git show HEAD^:package.json | jq -r .version)
-          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
+          if git rev-parse --verify --quiet HEAD^ >/dev/null; then
+            PREVIOUS_VERSION=$(git show HEAD^:package.json | jq -r .version)
           else
-            echo "changed=false" >> $GITHUB_OUTPUT
+            # No parent commit (e.g. the initial commit): there is no previous
+            # version to compare against, so treat it as unchanged rather than
+            # letting an empty `git show` publish an arbitrary version.
+            PREVIOUS_VERSION="$CURRENT_VERSION"
+          fi
+          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
   publish:
@@ -45,7 +53,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          client-id: ${{ vars.AUTOMATION_APP_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_KEY }}
           owner: ${{ github.repository_owner }}
 
@@ -72,10 +80,11 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      # Authenticated by npm trusted publishing: the OIDC token minted from
+      # `id-token: write` proves this workflow's identity to the registry, so
+      # no long-lived NPM_TOKEN is needed.
       - name: Publish to npm
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Get package info
         id: package

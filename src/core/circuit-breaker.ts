@@ -483,7 +483,7 @@ export type SettleProbeResult =
 
 /**
  * Policy-specific coordinator capability for `circuitBreaker.distributed()`.
- * The Redis implementation lives in `caracal/redis`; the memory implementation
+ * The Redis implementation lives in `@gkoos/caracal/redis`; the memory implementation
  * lives in `test/support/memory-coordinator` and must not be a production export.
  */
 export interface BreakerCoordinator {
@@ -546,7 +546,7 @@ export interface BreakerCoordinator {
 export interface DistributedBreakerOptions {
   /** Identifies this policy in events and introspection. */
   readonly name: string
-  /** Redis-backed coordinator.  See `redisCircuitBreakerCoordinator` in `caracal/redis`. */
+  /** Redis-backed coordinator.  See `redisCircuitBreakerCoordinator` in `@gkoos/caracal/redis`. */
   readonly coordinator: BreakerCoordinator
   /**
    * Maps an execution context to the coordination scope key.

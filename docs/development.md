@@ -150,7 +150,7 @@ It then compares `EVAL` against `EVALSHA` for the Lua scripts the coordinators a
 npm run audit:bundle
 ```
 
-Builds the package, then asserts the public surface: the root entry exports exactly the documented symbols, `dist/redis.js` exports the Redis coordinators, and `caracal/testing` exports the adapter contract runner. It also fails if `ioredis` or `pg` references leak into the root bundle. Run it after changing exports or adding dependencies.
+Builds the package, then asserts the public surface: the root entry exports exactly the documented symbols, `dist/redis.js` exports the Redis coordinators, and `@gkoos/caracal/testing` exports the adapter contract runner. It also fails if `ioredis` or `pg` references leak into the root bundle. Run it after changing exports or adding dependencies.
 
 ## Releases
 
