@@ -145,7 +145,7 @@ delay: (attempt, context) =>
   Math.max(250 * 2 ** (attempt - 1), retryAfterMs(context) ?? 0)
 ```
 
-`retryAfterMs(context)` returns the parsed header in milliseconds, or `undefined` when the outcome carries no usable `Retry-After`. It never throws on malformed values. It reads the response from `context.result`, or from `context.error` when a custom `fetch` implementation throws a response-bearing error.
+`retryAfterMs(context)` returns the parsed header in milliseconds, or `undefined` when the outcome carries no usable `Retry-After`. It never throws on malformed values, and it clamps to `2147483647` ms - the largest delay `setTimeout` can schedule - so a server cannot hand you a wait the platform would silently collapse to a near-immediate one. It reads the response from `context.result`, or from `context.error` when a custom `fetch` implementation throws a response-bearing error.
 
 `Retry-After` is **not** honoured automatically. The adapter only classifies `429`, `408`, and `5xx` responses as `retryable`; whether a retry waits for the header is decided entirely by the `delay` you configure. A `POST` or `PATCH` is not retried at all unless you mark it replay-safe - see [Replay safety](#replay-safety).
 

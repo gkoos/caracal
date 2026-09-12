@@ -81,7 +81,7 @@ scope: () => "global"                                     // one shared limit
 Each admitted permit holds a renewable lease. Caracal renews it at approximately one-third of `leaseMs`. Choose `leaseMs` comfortably larger than the expected p99 latency of the underlying operation. A good starting point is `max(p99 × 3, 30_000)`.
 
 - Under healthy Redis, timely renewal, and consistent configuration, admitted concurrency stays within the configured limit per scope.
-- Failed or uncertain admission fails closed with `CoordinatorUnavailableError`. No adapter call is started and no local fallback occurs.
+- Failed or uncertain admission fails closed. No adapter call is started and no local fallback occurs. With the Redis coordinator the rejection is a `CoordinatorUnavailableError` (exported from `@gkoos/caracal/redis`, not the root); the policy rethrows whatever its coordinator threw, so a custom coordinator's own error type is what you see.
 - If lease renewal fails, the lease is marked lost: renewal stops, a `bulkhead.lease-lost` event is emitted, and abort is requested if the adapter supports it. The runtime does not claim the work stopped and does not attempt to reacquire the lease.
 - Release is token-checked: an expired or replaced token cannot free a successor's slot.
 - Worker death, long GC pauses, network partitions, and Redis restarts can let leases expire while real work continues. A successor may then admit overlapping work. **These leases are not downstream fencing or exactly-once execution. Strict concurrency is not guaranteed through arbitrary failures.**

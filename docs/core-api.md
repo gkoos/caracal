@@ -176,7 +176,7 @@ Local only: there is no distributed timeout.
 | `halfOpenSuccesses` | `1` / `2` | integer `>= 1` | both |
 | `halfOpenProbes` | `1` / `3` | integer `>= 1` | both |
 | `windowSize` | `100` | integer `>= 1` | both |
-| `classify` | adapter classification | `(error, isSuccess) => Outcome` | both |
+| `classify` | adapter classification | `(error, isSuccess) => BreakerOutcome` (`"success" \| "failure" \| "ignored"`) | both |
 | `coordinator` | — | coordinator object | distributed |
 | `scope` | — | `(context) => string` | distributed |
 | `windowTtlMs` | `max(openMs × 3, 60_000)` | integer `>= 1` | distributed |

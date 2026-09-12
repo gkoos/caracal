@@ -1,3 +1,4 @@
+import { MAX_TIMER_MS } from "../../core/runtime.js"
 import type { RetryContext } from "../../core/retry.js"
 
 /**
@@ -34,7 +35,10 @@ function headersOf(value: unknown): Headers | undefined {
  * response-bearing error.
  *
  * Returns `undefined` when no usable header is present. Malformed values
- * are ignored rather than thrown.
+ * are ignored rather than thrown. Values above `MAX_TIMER_MS` are clamped,
+ * because `setTimeout` cannot schedule them and would silently fire almost
+ * immediately; `createRetryAfterDelay` applies the same ceiling to the wait it
+ * returns, so a delay composed from this parser stays schedulable.
  */
 export function retryAfterMs(
   context: RetryContext,
@@ -48,11 +52,15 @@ export function retryAfterMs(
 
   if (deltaSecondsPattern.test(value)) {
     const seconds = Number(value)
-    return Number.isSafeInteger(seconds) ? seconds * 1000 : undefined
+    return Number.isSafeInteger(seconds)
+      ? Math.min(seconds * 1000, MAX_TIMER_MS)
+      : undefined
   }
 
   const timestamp = Date.parse(value)
-  return Number.isNaN(timestamp) ? undefined : Math.max(0, timestamp - now)
+  return Number.isNaN(timestamp)
+    ? undefined
+    : Math.min(Math.max(0, timestamp - now), MAX_TIMER_MS)
 }
 
 /** Options for `createRetryAfterDelay`. */

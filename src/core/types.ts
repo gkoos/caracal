@@ -190,6 +190,14 @@ export type OperationEvent =
       outcome: Outcome<undefined>
       classification: Classification
     }>
+  | Readonly<{
+      type: "retry.declined"
+      at: number
+      context: ExecutionContext
+      outcome: Outcome<undefined>
+      classification: Classification
+      reason: "replay-unsafe" | "not-retryable"
+    }>
 
 /** Output-only observability contract. Sinks cannot alter policy execution. */
 export interface EventSink {

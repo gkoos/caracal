@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js 20 or newer.
+- Node.js 20.3 or newer.
 - Docker Compose when running Redis/Valkey or PostgreSQL integration tests.
 
 ## Setup and checks

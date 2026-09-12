@@ -128,8 +128,8 @@ The full set of commands required by the coordination scripts is:
 | `ZADD` | bulkhead and breaker scripts | adds lease/observation/probe entries |
 | `ZREM` | bulkhead and breaker scripts | removes lease/probe entries |
 | `ZCARD` | bulkhead and breaker scripts | counts active entries |
-| `ZSCORE` | bulkhead `leaseV1`; breaker `breakerSettleProbeV1` | detects an existing lease token; reads a probe token's deadline |
-| `ZREVRANGE` | bulkhead `leaseV1` | reads max-score entry to set key expiry |
+| `ZSCORE` | bulkhead `bulkheadLeaseV1`; breaker `breakerSettleProbeV1` | detects an existing lease token; reads a probe token's deadline |
+| `ZREVRANGE` | bulkhead `bulkheadLeaseV1` | reads max-score entry to set key expiry |
 | `ZREMRANGEBYSCORE` | all Lua scripts | prunes expired entries from sorted sets |
 | `ZRANGE` | breaker `breakerObserveV1` | reads window entries for threshold calculation |
 | `ZREMRANGEBYRANK` | breaker `breakerObserveV1` | caps observation window at `windowSize` |

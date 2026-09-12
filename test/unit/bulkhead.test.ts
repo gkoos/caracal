@@ -414,3 +414,46 @@ describe("local bulkhead events", () => {
     )
   })
 })
+
+// ---------------------------------------------------------------------------
+// Distributed admission deadline
+// ---------------------------------------------------------------------------
+
+describe("distributed bulkhead admission deadline", () => {
+  it("reports a permit whose lease expired before the call could start", async () => {
+    const events: OperationEvent[] = []
+    // Acquiring takes longer than the lease, so the permit is granted but its
+    // deadline has already passed by the time the call would start.
+    const coordinator: BulkheadCoordinator = {
+      async command(_identity, action) {
+        if (action === "acquire") {
+          await new Promise((resolve) => setTimeout(resolve, 150))
+        }
+        return { allowed: true, occupancy: 1 }
+      },
+    }
+
+    const capacity = bulkhead.distributed({
+      name: "deadline",
+      coordinator,
+      scope: () => "shared",
+      limit: 1,
+      leaseMs: 100,
+    })
+    const subject = operation({
+      name: "deadline",
+      adapter: { capabilities: traits, execute: async () => "ok" },
+      policies: [capacity],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    const error = await subject.execute(undefined).catch((thrown) => thrown)
+
+    expect(error).toBeInstanceOf(BulkheadRejectedError)
+    expect((error as BulkheadRejectedError).reason).toBe("admission-expired")
+    // The rejection must reach sinks, not only the caller.
+    expect(events.filter((e) => e.type === "bulkhead.rejected")).toMatchObject([
+      { reason: "admission-expired" },
+    ])
+  })
+})
