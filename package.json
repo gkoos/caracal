@@ -101,7 +101,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.12",
     "@changesets/cli": "^3.0.2",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.4.1",
     "@types/pg": "^8.23.1",
     "fast-check": "^4.0.0",
     "ioredis": "^6.0.0",
@@ -109,7 +109,7 @@
     "rimraf": "^6.0.0",
     "tsup": "^8.0.0",
     "tsx": "^4.23.13",
-    "typescript": "^5.0.0",
+    "typescript": "^7.0.2",
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
