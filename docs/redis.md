@@ -5,7 +5,7 @@ Distributed bulkheads and circuit breakers require a Redis coordinator. If you o
 You create **one** Redis client and pass it to both coordinator factories. The factories just wrap the same client with different operation contracts suited to each policy.
 
 ```ts
-import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "caracal/redis"
+import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
 
 const client = createCoordinationClient(process.env.REDIS_URL!) // commandTimeoutMs defaults to 1000
 await client.connect()
@@ -32,7 +32,7 @@ Use `createCoordinationClient` for a standalone Redis or Valkey server, and `cre
 import {
   createCoordinationClient,
   createCoordinationClusterClient,
-} from "caracal/redis"
+} from "@gkoos/caracal/redis"
 
 // Standalone
 const client = createCoordinationClient("redis://redis.internal:6379")

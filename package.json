@@ -1,5 +1,5 @@
 {
-  "name": "caracal",
+  "name": "@gkoos/caracal",
   "version": "0.1.0",
   "description": "Scoped distributed resilience for asynchronous operations.",
   "keywords": [
@@ -104,7 +104,7 @@
     "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
     "fast-check": "^4.0.0",
-    "ioredis": "^5.11.1",
+    "ioredis": "^6.0.0",
     "pg": "^8.23.0",
     "rimraf": "^6.0.0",
     "tsup": "^8.0.0",

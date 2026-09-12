@@ -5,7 +5,7 @@
 An `operation` is a named, typed execution unit. It wraps an `adapter` and applies a policy pipeline to every call.
 
 ```ts
-import { operation, type Adapter } from "caracal"
+import { operation, type Adapter } from "@gkoos/caracal"
 
 const adapter: Adapter<{ id: string }, Order> = {
   capabilities: () => ({ abort: "supported", replay: "safe" }),
@@ -81,10 +81,10 @@ Bulkheads are always placed directly around the adapter regardless of their posi
 
 | Policy | Local | Distributed | Import |
 |---|---|---|---|
-| `timeout` | ✓ | - | `caracal` |
-| `retry` | ✓ | - | `caracal` |
-| `bulkhead` | ✓ | ✓ | `caracal` |
-| `circuitBreaker` | ✓ | ✓ | `caracal` |
+| `timeout` | ✓ | - | `@gkoos/caracal` |
+| `retry` | ✓ | - | `@gkoos/caracal` |
+| `bulkhead` | ✓ | ✓ | `@gkoos/caracal` |
+| `circuitBreaker` | ✓ | ✓ | `@gkoos/caracal` |
 
 **Timeout**: bounds how long the caller waits. Passes a cancelled `AbortSignal` to the adapter if `abort: "supported"`; delivers `TimeoutError` to the caller regardless. See [timeout and retry](timeout-and-retry.md).
 

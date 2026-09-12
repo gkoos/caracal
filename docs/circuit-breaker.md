@@ -37,7 +37,7 @@ Invariants verified by property tests:
 Each process tracks its own failure window independently. No coordinator or Redis connection is required. Two instances with the same name are completely independent, each owns its own in-process state.
 
 ```ts
-import { circuitBreaker, operation } from "caracal"
+import { circuitBreaker, operation } from "@gkoos/caracal"
 
 const breaker = circuitBreaker.local({
   name: "partner-api",
@@ -70,8 +70,8 @@ Local attempts capture a generation at admission. Every state transition starts 
 The failure window, state, and probe budget are shared across all replicas via Redis. Each unique `(namespace, policy name, operation name, scope)` gets its own independent breaker state.
 
 ```ts
-import { circuitBreaker } from "caracal"
-import { createCoordinationClient, redisCircuitBreakerCoordinator } from "caracal/redis"
+import { circuitBreaker } from "@gkoos/caracal"
+import { createCoordinationClient, redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
 
 const redis = createCoordinationClient(process.env.REDIS_URL!)
 await redis.connect()

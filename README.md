@@ -2,6 +2,16 @@
   <img src="docs/caracal.svg" alt="Caracal" width="140">
 </p>
 
+![npm](https://img.shields.io/npm/v/@gkoos/caracal)
+![Downloads](https://img.shields.io/npm/dm/@gkoos/caracal)
+![GitHub stars](https://img.shields.io/github/stars/gkoos/caracal?style=social)
+
+![Build](https://github.com/gkoos/caracal/actions/workflows/ci.yml/badge.svg)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gkoos/caracal/badge)](https://scorecard.dev/viewer/?uri=github.com/gkoos/caracal)
+
+![MIT](https://img.shields.io/npm/l/@gkoos/caracal)
+![Types](https://img.shields.io/npm/types/@gkoos/caracal)
+
 # Caracal
 
 **Scoped distributed resilience for asynchronous operations.**
@@ -17,7 +27,7 @@ If 40 replicas each enforce a local concurrency limit of 20, the downstream can 
 ## Quick start
 
 ```sh
-npm install caracal
+npm install @gkoos/caracal
 # Redis coordination (optional peer dependency for distributed policies):
 npm install ioredis
 # PostgreSQL adapter (optional peer dependency for database operations):
@@ -25,11 +35,11 @@ npm install pg
 ```
 
 ```ts
-import { bulkhead, circuitBreaker, operation, retry, timeout } from "caracal"
-import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "caracal/redis"
-import { fetchAdapter } from "caracal/fetch"
+import { bulkhead, circuitBreaker, operation, retry, timeout } from "@gkoos/caracal"
+import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
+import { fetchAdapter } from "@gkoos/caracal/fetch"
 import { Pool } from "pg"
-import { postgresAdapter } from "caracal/postgres"
+import { postgresAdapter } from "@gkoos/caracal/postgres"
 
 // Redis coordination - connect once, share across all policies
 const redis = createCoordinationClient(process.env.REDIS_URL!)
@@ -107,7 +117,7 @@ Distributed policies coordinate by `(namespace, policy name, operation name, sco
 An `operation` wraps an `adapter`: an object that declares its cancellation and replay capabilities before executing underlying work:
 
 ```ts
-import { operation, type Adapter } from "caracal"
+import { operation, type Adapter } from "@gkoos/caracal"
 
 const adapter: Adapter<{ id: string }, Order> = {
   capabilities: () => ({ abort: "supported", replay: "safe" }),
@@ -136,7 +146,7 @@ Each policy is described below.
 Bounds how long the caller waits. Local only, there is no distributed timeout.
 
 ```ts
-import { timeout } from "caracal"
+import { timeout } from "@gkoos/caracal"
 
 timeout({ ms: 5_000 })
 ```
@@ -148,7 +158,7 @@ If the adapter declares `abort: "supported"`, Caracal cancels the underlying wor
 Retries adapter-classified failures. Local only, there is no distributed retry.
 
 ```ts
-import { retry } from "caracal"
+import { retry } from "@gkoos/caracal"
 
 retry({
   maxAttempts: 3,
@@ -163,8 +173,8 @@ retry({
 Limits concurrent underlying adapter calls. Available as local (per-process) or distributed (shared across replicas via Redis).
 
 ```ts
-import { bulkhead } from "caracal"
-import { createCoordinationClient, redisCoordinator } from "caracal/redis"
+import { bulkhead } from "@gkoos/caracal"
+import { createCoordinationClient, redisCoordinator } from "@gkoos/caracal/redis"
 
 // Local - each process enforces its own limit independently
 const localCapacity = bulkhead.local({
@@ -190,8 +200,8 @@ Permits are held for the duration of the underlying adapter call only, not for t
 Opens when the failure rate in a sliding window exceeds a threshold, blocking further attempts until a probe succeeds. Available as local (per-process) or distributed (shared across replicas via Redis).
 
 ```ts
-import { circuitBreaker } from "caracal"
-import { redisCircuitBreakerCoordinator } from "caracal/redis"
+import { circuitBreaker } from "@gkoos/caracal"
+import { redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
 
 // Local - each process tracks its own failure window independently
 const localBreaker = circuitBreaker.local({

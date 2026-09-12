@@ -8,11 +8,11 @@ Caracal is a single ESM package with deliberate exports. This is not a multi-pac
 
 | Export | Responsibility |
 |---|---|
-| `caracal` | Core operation runtime, policies, capabilities, and types |
-| `caracal/redis` | Redis-backed distributed coordination (standalone and cluster) |
-| `caracal/fetch` | Fetch/HTTP adapter |
-| `caracal/postgres` | PostgreSQL adapter |
-| `caracal/testing` | Adapter contract test harness |
+| `@gkoos/caracal` | Core operation runtime, policies, capabilities, and types |
+| `@gkoos/caracal/redis` | Redis-backed distributed coordination (standalone and cluster) |
+| `@gkoos/caracal/fetch` | Fetch/HTTP adapter |
+| `@gkoos/caracal/postgres` | PostgreSQL adapter |
+| `@gkoos/caracal/testing` | Adapter contract test harness |
 
 The core does not depend on any specific protocol or coordinator implementation. Adapters and coordinators are imported only by the subpath that needs them.
 
@@ -21,4 +21,4 @@ The core does not depend on any specific protocol or coordinator implementation.
 - ESM only, no CJS bundle.
 - All production modules are side-effect free.
 - Optional integrations (Redis, fetch, postgres) are never re-exported from the root entry point.
-- Import directly from the subpath: `import { fetchAdapter } from "caracal/fetch"`, not from `"caracal"`.
+- Import directly from the subpath: `import { fetchAdapter } from "@gkoos/caracal/fetch"`, not from `"@gkoos/caracal"`.
