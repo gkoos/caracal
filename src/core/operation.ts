@@ -4,6 +4,7 @@ import {
   admissionSignal,
   createClassifier,
   createExecutionContext,
+  emitToSink,
 } from "./runtime.js"
 import type {
   Adapter,
@@ -51,11 +52,7 @@ function normalizeSinks(events: EventSinks | undefined): readonly EventSink[] {
 
 function emit(sinks: readonly EventSink[], event: OperationEvent): void {
   for (const sink of sinks) {
-    try {
-      sink.emit(event)
-    } catch {
-      // Observability must not modify resilience execution.
-    }
+    emitToSink(sink, event)
   }
 }
 

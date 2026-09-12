@@ -97,3 +97,40 @@ describe("retry", () => {
     ).toHaveLength(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Delay bounds
+// ---------------------------------------------------------------------------
+
+describe("retry delay bounds", () => {
+  it("rejects a static delay the platform cannot schedule", () => {
+    // setTimeout clamps anything above 2147483647 ms to 1 ms, so this would
+    // silently retry immediately instead of waiting.
+    expect(() => retry({ maxAttempts: 2, delay: 2_147_483_648 })).toThrow(
+      RangeError,
+    )
+  })
+
+  it("rejects a computed delay the platform cannot schedule", async () => {
+    const subject = operation({
+      name: "huge-delay",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async () => {
+          throw new Error("boom")
+        },
+        classify: () => "retryable" as const,
+      },
+      policies: [retry({ maxAttempts: 2, delay: () => 2_147_483_648 })],
+    })
+
+    await expect(subject.execute(undefined)).rejects.toThrow(RangeError)
+  })
+
+  it("accepts a delay at the bound", () => {
+    expect(() => retry({ maxAttempts: 2, delay: 2_147_483_647 })).not.toThrow()
+  })
+})

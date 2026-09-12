@@ -94,6 +94,31 @@ export function withSignal(
   )
 }
 
+/**
+ * Largest delay `setTimeout` honours.  Anything above it is silently clamped to
+ * 1 ms by the platform, so accepting larger values would turn a long wait into
+ * an immediate one.
+ */
+export const MAX_TIMER_MS = 2_147_483_647
+
+/**
+ * Delivers one event to one sink, isolating execution from it.  Sinks are
+ * fire-and-forget: a synchronous throw and a rejected promise are both dropped,
+ * so a failing sink can neither modify resilience execution nor surface as an
+ * unhandled rejection.
+ */
+export function emitToSink(sink: EventSink, event: OperationEvent): void {
+  try {
+    const pending = sink.emit(event) as unknown
+    const thenable = pending as { catch?: unknown } | null | undefined
+    if (typeof thenable?.catch === "function") {
+      void (pending as Promise<unknown>).catch(() => {})
+    }
+  } catch {
+    // See above: a failing sink must never modify execution.
+  }
+}
+
 export function emitRuntimeEvent(
   context: ExecutionContext,
   event: EventWithoutRuntimeFields,
@@ -102,11 +127,7 @@ export function emitRuntimeEvent(
   const fullEvent = { ...event, at: Date.now(), context } as OperationEvent
 
   for (const sink of sinks) {
-    try {
-      sink.emit(fullEvent)
-    } catch {
-      // Observability must not modify resilience execution.
-    }
+    emitToSink(sink, fullEvent)
   }
 }
 

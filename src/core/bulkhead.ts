@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import {
+  MAX_TIMER_MS,
   admissionSignal,
   emitRuntimeEvent,
   withAdmissionSignal,
@@ -81,7 +82,7 @@ function local(options: LocalBulkheadOptions): Policy & {
       queue.limit < 1 ||
       !Number.isSafeInteger(queue.timeoutMs) ||
       queue.timeoutMs < 1 ||
-      queue.timeoutMs > 2147483647)
+      queue.timeoutMs > MAX_TIMER_MS)
   )
     throw new RangeError("Invalid bounded queue")
   let occupancy = 0

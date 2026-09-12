@@ -25,7 +25,7 @@ Capabilities are declared per invocation before any policy runs:
 
 | Capability | Values | Meaning |
 |---|---|---|
-| `abort` | `"supported"` \| `"unsupported"` | Whether Caracal can cancel the underlying work via `AbortSignal` |
+| `abort` | `"supported"` \| `"unsupported"` | Whether Caracal may *generate* cancellation (a timeout firing, a lost distributed lease). The caller's `signal` is always propagated on `context.signal` and can abort the attempt either way |
 | `replay` | `"safe"` \| `"unsafe"` \| `"unknown"` | Whether the operation can safely be repeated; must be `"safe"` for retry to issue more than one attempt |
 
 Caracal never infers capabilities. The adapter must declare them accurately.
@@ -141,7 +141,10 @@ const tagging: Policy = {
 }
 ```
 
-Set `phase: "attempt"` to declare an **attempt-phase** policy: it wraps each individual adapter call and must await the underlying settlement. That is the mechanism behind the rule above - a bulkhead declares it, so it is always placed directly around the adapter regardless of its position in the array. Policies without `phase` are composed outermost-first in array order and see only the final outcome of the retry sequence.
+Set `phase: "attempt"` to declare an **attempt-phase** policy. Two independent dimensions decide where a policy sits:
+
+- **`phase`** decides placement relative to the adapter. An attempt-phase policy wraps each individual adapter call and must await the underlying settlement. That is the mechanism behind the rule above - a bulkhead declares it, so it always sits directly around the adapter, whatever its position in the array.
+- **Array order** decides nesting between ordinary policies, applied outermost first. A policy without `phase` listed *after* `retry` runs inside it, once per attempt; the same policy listed *before* `retry` wraps the whole retry sequence and sees only its final outcome.
 
 ## Policy options
 
@@ -151,7 +154,7 @@ Defaults, bounds and coordination. Options marked *distributed* exist only on di
 
 | Option | Default | Bounds |
 |---|---|---|
-| `ms` | required | finite, `> 0` |
+| `ms` | required | finite, `> 0`, at most `2147483647` (the largest delay `setTimeout` honours) |
 
 Local only: there is no distributed timeout.
 
@@ -160,7 +163,7 @@ Local only: there is no distributed timeout.
 | Option | Default | Bounds |
 |---|---|---|
 | `maxAttempts` | required | integer `>= 1` |
-| `delay` | `0` (retry immediately) | ms as a number, or `(attempt, context) => number` returning a finite value `>= 0` |
+| `delay` | `0` (retry immediately) | ms as a number, or `(attempt, context) => number` returning a finite value within `0..2147483647` |
 
 ### circuit breaker
 

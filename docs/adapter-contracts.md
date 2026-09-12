@@ -33,8 +33,8 @@ Capabilities are declared per invocation, before any policy runs, and may vary b
 
 | Capability | Values | Effect |
 |---|---|---|
-| `abort` | `"supported"` | Caracal will cancel `context.signal` when a timeout fires or the caller aborts. The adapter must honor it. |
-| `abort` | `"unsupported"` | Caracal will not signal cancellation. The caller still receives `TimeoutError` on time, but underlying work continues. |
+| `abort` | `"supported"` | Caracal may cancel the attempt by aborting `context.signal` - a timeout firing, or a distributed lease that could not be renewed. The adapter must honor it. |
+| `abort` | `"unsupported"` | Caracal will not *generate* cancellation: on timeout the caller still receives `TimeoutError` while the underlying work continues, and a lost lease is reported without aborting. The caller's own `signal` is still propagated on `context.signal`, so the caller can abort the attempt either way. |
 | `replay` | `"safe"` | Retry may issue another attempt. |
 | `replay` | `"unsafe"` | Retry will not issue another attempt regardless of the outcome classification. |
 | `replay` | `"unknown"` | Same as `"unsafe"`: without a guarantee that a repeat is safe, retry stays at a single attempt. |
