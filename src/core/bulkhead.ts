@@ -148,8 +148,11 @@ function local(options: LocalBulkheadOptions): Policy & {
         return await next(context)
       } finally {
         occupancy--
-        waiting[0]?.()
+        // Report the released permit before handing it to the queued successor:
+        // granting first would make this event's occupancy already include the
+        // next admission, so the released/admitted pair would look inverted.
         event(context, "local", name, "process", "released", occupancy)
+        waiting[0]?.()
       }
     },
   })

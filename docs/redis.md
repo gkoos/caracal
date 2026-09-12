@@ -4,10 +4,16 @@ Distributed bulkheads and circuit breakers require a Redis coordinator. If you o
 
 You create **one** Redis client and pass it to both coordinator factories. The factories just wrap the same client with different operation contracts suited to each policy.
 
+`createCoordinationClient(url, commandTimeout?)` (and `createCoordinationClusterClient(nodes, commandTimeout?)`) take the command timeout as a positional argument in milliseconds, default `1000`. It bounds every coordinator command, so it is the knob to raise when Redis is slow and commands are being abandoned:
+
+```ts
+const client = createCoordinationClient(process.env.REDIS_URL!, 5_000) // 5 s per command
+```
+
 ```ts
 import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
 
-const client = createCoordinationClient(process.env.REDIS_URL!) // commandTimeoutMs defaults to 1000
+const client = createCoordinationClient(process.env.REDIS_URL!) // url, then optional commandTimeout ms (default 1000)
 await client.connect()
 
 // Same client, two coordinator wrappers
@@ -133,7 +139,7 @@ ACL SETUSER caracal-prod on >strongpassword ~caracal:v1:* \
   +PING
 ```
 
-> **Note:** every command above is load-bearing. `EVALSHA` carries the script and `TIME` is its first inner call, so denying either turns every coordinator operation into a permission error. With the default `onCoordinatorError: "fail-open"` that makes both the bulkhead and the circuit breaker silently inoperative — all attempts are admitted regardless of state. For a scope last seen OPEN or HALF_OPEN it is worse: those failures fail closed, and the state hash is persistent, so the scope keeps rejecting traffic.
+> **Note:** every command above is load-bearing. `EVALSHA` carries the script and `TIME` is its first inner call, so denying either turns every coordinator operation into a permission error. The two policies degrade differently. A **distributed bulkhead always fails closed**: the attempt is rejected with reason `coordinator-unavailable`, so a broken grant stops traffic instead of letting all of it through. A **circuit breaker** follows `onCoordinatorError` (default `"fail-open"`) only while no prior read has established that the scope is non-closed; once a scope has been seen OPEN or HALF_OPEN, that knowledge is retained in process and an outage fails closed for that scope regardless of the setting - and because the state hash is persistent, the scope keeps rejecting traffic. See the per-scenario table in [circuit breaker](circuit-breaker.md#coordinator-loss-behaviour).
 >
 > A permission error inside a script does **not** roll back what the script already did. Deny `DEL` and the OPEN→HALF_OPEN or →CLOSED transition is still applied while the call itself fails: the caller sees a coordinator error and that request is rejected, the probe set is never cleared, and the recovery window that should have started clean inherits stale tokens.
 >
@@ -220,7 +226,7 @@ A consistent starting point for a scope doing ~500 calls/s behind a 5 s `timeout
 circuitBreaker.distributed({
   name: "payments",
   coordinator,
-  scope: (ctx) => ctx.tenant,
+  scope: (ctx) => `tenant:${String(ctx.metadata.tenantId)}`, // validate/normalise before using it as a key
   minimumThroughput: 20, // ~40 ms of traffic at 500/s: the window fills quickly
   failureThreshold: 0.5, // 10+ failures inside the window opens it
   windowSize: 100, // >= minimumThroughput
@@ -243,7 +249,7 @@ See [events and observability](events-and-observability.md) for the full event r
 ### Alerts
 
 - **Sustained `bulkhead.rejected`** with reason `capacity`: the limit is too low for current load, or underlying work is slower than expected.
-- **`bulkhead.lease-lost` or `bulkhead.degraded`**: Redis latency or a network partition is affecting renewal. Check Redis latency and the `commandTimeoutMs` setting.
+- **`bulkhead.lease-lost` or `bulkhead.degraded`**: Redis latency or a network partition is affecting renewal. Check Redis latency and the client's `commandTimeout`.
 - **`breaker.state-changed` to `open`**: the dependency's failure rate breached `failureThreshold`. Investigate the dependency before assuming the breaker will recover.
 - **Repeated `breaker.state-changed` open↔half-open** without closing: probes are consistently failing. The dependency may not have recovered.
 - **`breaker.coordinator-error`**: Redis is unreachable or responding slowly. `fail-open` behavior is in effect if configured; verify the Redis connection.

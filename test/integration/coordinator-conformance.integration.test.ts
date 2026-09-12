@@ -296,6 +296,100 @@ describe.skipIf(!url)("coordinator conformance — Lua edge cases", () => {
     expect(readmitted).toMatchObject({ type: "admitted", probeCount: 1 })
   })
 
+  it("recovers a probe slot when its lease elapses and drops the late result", async () => {
+    for (const probeLeaseTtlMs of [25, 50]) {
+      const { coordinator, keys } = coordinatorFor()
+      const [hashKey, , probeKey] = keys
+      const generation = await openBreaker(coordinator)
+      const token = randomUUID()
+
+      expect(
+        await coordinator.admitProbe(IDENTITY, {
+          probeToken: token,
+          openMs: ADMIT_OPEN_MS,
+          halfOpenProbes: 1,
+          probeLeaseTtlMs,
+        }),
+      ).toMatchObject({ type: "admitted" })
+
+      // The slot is held while the lease is live.
+      expect(
+        await coordinator.admitProbe(IDENTITY, {
+          probeToken: randomUUID(),
+          openMs: ADMIT_OPEN_MS,
+          halfOpenProbes: 1,
+          probeLeaseTtlMs,
+        }),
+      ).toMatchObject({ type: "rejected", reason: "probe-limit" })
+
+      await new Promise((resolve) => setTimeout(resolve, probeLeaseTtlMs + 25))
+
+      // Recoverable: admitProbe prunes tokens whose deadline has passed.
+      expect(
+        await coordinator.admitProbe(IDENTITY, {
+          probeToken: randomUUID(),
+          openMs: ADMIT_OPEN_MS,
+          halfOpenProbes: 1,
+          probeLeaseTtlMs,
+        }),
+      ).toMatchObject({ type: "admitted" })
+
+      // The expired probe's result is dropped and must not count.
+      expect(
+        await coordinator.settleProbe(IDENTITY, {
+          probeToken: token,
+          outcome: "success",
+          generation,
+          halfOpenSuccesses: 1,
+          openMs: OBSERVE_OPEN_MS,
+        }),
+      ).toMatchObject({ type: "stale" })
+      expect(await client.hget(hashKey, "state")).toBe("half-open")
+      expect(Number(await client.hget(hashKey, "probeSuccesses"))).toBe(0)
+      expect(Number(await client.hget(hashKey, "probeCount"))).toBe(1)
+      expect(await client.zcard(probeKey)).toBe(1)
+    }
+  })
+
+  it("restarts a fully expired CLOSED scope without resurrecting its window", async () => {
+    for (const windowTtlMs of [40, 80]) {
+      const { coordinator, keys } = coordinatorFor()
+      const [hashKey, obsKey] = keys
+      const openMs = 10
+      const observe = (outcome: "success" | "failure") =>
+        coordinator.observe(IDENTITY, {
+          generation: 0,
+          outcome,
+          uuid: randomUUID(),
+          windowTtlMs,
+          minimumThroughput: 5,
+          failureThresholdNumerator: 500,
+          windowSize: 8,
+          openMs,
+        })
+
+      await observe("failure")
+      await observe("failure")
+      expect(await client.zcard(obsKey)).toBe(2)
+
+      // The CLOSED cleanup TTL is never shorter than the window it governs, so
+      // waiting it out leaves no members for a fresh epoch to collide with.
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(windowTtlMs, openMs * 2) + 40),
+      )
+      expect(await client.exists(hashKey)).toBe(0)
+
+      // The next observation starts a clean window from the epoch already held.
+      expect(await observe("success")).toMatchObject({
+        type: "observed",
+        generation: 0,
+        windowTotal: 1,
+        windowFailures: 0,
+      })
+      expect(await client.zcard(obsKey)).toBe(1)
+    }
+  })
+
   it("discards in-flight probe tokens when a probe failure re-opens the breaker", async () => {
     const { coordinator, keys } = coordinatorFor()
     const hashKey = keys[0]

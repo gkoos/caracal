@@ -24,11 +24,13 @@ capacity.snapshot() // { coordination: "local", occupancy, waiting }
 
 Reusing the same policy instance across multiple operations shares the budget between them. Constructing a second instance with the same name creates a completely independent budget.
 
-The optional queue holds waiters in FIFO order up to `limit` waiters. A waiter that times out or is cancelled is removed from the queue. A full queue or elapsed wait rejects with `BulkheadRejectedError`. Waiting consumes no permit.
+The optional queue holds waiters in FIFO order up to `queue.limit` waiters (24 in the example above, independent of the `limit` permits). A waiter that times out or is cancelled is removed from the queue. A full queue or elapsed wait rejects with `BulkheadRejectedError`. Waiting consumes no permit.
 
 ## Distributed
 
 The concurrency limit is shared across all replicas that share the same coordination identity: `(namespace, policy name, operation name, scope)`.
+
+Unlike the local policy, the distributed policy has no `snapshot()`: occupancy lives in Redis, so reading it would take a coordinator round trip. Use the `bulkhead.admitted` / `bulkhead.released` events, or the scope's coordination key, for visibility.
 
 ```ts
 import { bulkhead, operation, timeout, retry } from "@gkoos/caracal"
