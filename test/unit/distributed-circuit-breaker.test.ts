@@ -988,3 +988,59 @@ describe("circuitBreaker.distributed — scope validation at runtime", () => {
     ).rejects.toBeInstanceOf(TypeError)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Threshold resolution
+// ---------------------------------------------------------------------------
+
+describe("circuitBreaker.distributed — threshold resolution", () => {
+  const identity = { name: "test", operation: "work", scope: "shared" }
+
+  it("rejects thresholds that cannot be resolved to thousandths", () => {
+    const coordinator = memoryBreakerCoordinator()
+    // Below 0.0005 the numerator rounds to 0, which makes the coordinator's
+    // comparison unconditionally true; 0.9995 and above rounds to 1000, which
+    // requires every observation to fail.
+    for (const failureThreshold of [0.0004, 0.0001, 0.9995, 0.9999]) {
+      expect(() =>
+        circuitBreaker.distributed({
+          name: "x",
+          coordinator,
+          scope: () => "x",
+          failureThreshold,
+        }),
+      ).toThrow(/resolved to thousandths/)
+    }
+  })
+
+  it("accepts the smallest and largest resolvable thresholds", () => {
+    const coordinator = memoryBreakerCoordinator()
+    for (const failureThreshold of [0.0005, 0.9994]) {
+      expect(() =>
+        circuitBreaker.distributed({
+          name: "x",
+          coordinator,
+          scope: () => "x",
+          failureThreshold,
+        }),
+      ).not.toThrow()
+    }
+  })
+
+  it("never opens on a success-only trace at the smallest resolvable threshold", async () => {
+    const coordinator = memoryBreakerCoordinator()
+    const events: OperationEvent[] = []
+    const policy = tightBreaker(coordinator, {
+      minimumThroughput: 5,
+      failureThreshold: 0.0005,
+      windowSize: 20,
+    })
+
+    await drive(makeOp(policy, succeed, events), 20)
+
+    expect(
+      events.filter((e) => e.type === "breaker.state-changed"),
+    ).toHaveLength(0)
+    expect((await coordinator.readState(identity))?.state).toBe("closed")
+  })
+})

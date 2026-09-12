@@ -613,4 +613,36 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
     ).rejects.toBeInstanceOf(CircuitOpenError)
     expect(events.filter((e) => e.type === "breaker.rejected")).toHaveLength(1)
   })
+
+  it("never opens on a success-only trace at the smallest resolvable threshold", async () => {
+    // 0.0005 resolves to a numerator of 1; the old encoding resolved 0.0004 to
+    // a numerator of 0 and opened the breaker on a success-only window.
+    const namespace = track(`test-${randomUUID()}`)
+    const policy = makePolicy(namespace, {
+      minimumThroughput: 20,
+      failureThreshold: 0.0005,
+      windowSize: 100,
+    })
+    const events: OperationEvent[] = []
+
+    await drive(
+      makeOp(policy, () => Promise.resolve("ok"), events),
+      25,
+    )
+
+    const fields = await client.hmget(
+      coordinationKey(
+        namespace,
+        "breaker:breaker",
+        "work",
+        "shared",
+        "breaker",
+      ),
+      "state",
+    )
+    expect(fields[0]).toBe("closed")
+    expect(
+      events.filter((e) => e.type === "breaker.state-changed"),
+    ).toHaveLength(0)
+  })
 })
