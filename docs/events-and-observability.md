@@ -36,6 +36,7 @@ const op = operation({
 |---|---|---|
 | `retry.scheduled` | When a retry is queued | `nextAttempt`, `delayMs`, `outcome`, `classification` |
 | `retry.exhausted` | When `maxAttempts` is reached | `outcome`, `classification` |
+| `retry.declined` | Retry declined to run: the adapter is not `replay: "safe"`, or the outcome was not classifiable as retryable | `outcome`, `classification`, `reason` (`"replay-unsafe"` \| `"not-retryable"`) |
 
 ## Bulkhead
 
@@ -59,10 +60,15 @@ const op = operation({
 | `bulkhead.rejected` (local) | `cancelled` | The caller's signal aborted while waiting |
 | `bulkhead.rejected` (distributed) | `capacity` | The coordinator refused a lease; the shared limit is reached |
 | `bulkhead.rejected` (distributed) | `coordinator-unavailable` | The lease request failed, so the attempt fails closed |
+| `bulkhead.rejected` (distributed) | `admission-expired` | The permit's lease deadline passed between acquiring it and starting the call |
 | `bulkhead.released` (distributed) | `already-expired-or-released` | The lease had already lapsed, so the release changed nothing |
 | `bulkhead.degraded` | `admission-unknown` | The admission result is unknown (the request failed) |
 | `bulkhead.degraded` | `lease-uncertain` | A renewal failed while the permit was in flight |
 | `bulkhead.degraded` | `release-unknown` | The release of a permit failed |
+
+`BulkheadRejectedError` reasons are a superset of the event reasons: `lease-lost` marks a permit whose lease could not be renewed mid-flight, and `admission-expired` marks a permit whose lease deadline passed before the call started (that one also emits `bulkhead.rejected`).
+
+Every `outcome` field on an event is `Outcome<undefined>`: a `success` carries no `value` and a `failure` carries no `error`. Sinks see the classification and never the payload, so a metrics sink cannot read the result or the error object - deliberately, so observability never has to hold response bodies or credentials.
 
 ## Circuit breaker
 
@@ -79,3 +85,5 @@ const op = operation({
 Distributed `breaker.state-changed`, `breaker.observation`, `breaker.probe-started` and ordinary `breaker.rejected` events also carry `generation`, the epoch the decision belongs to. `breaker.observation-stale` reports `attemptGeneration` and `currentGeneration` instead, and `breaker.coordinator-error`, `breaker.degraded` and rejections raised because the coordinator was unreachable carry none - the state could not be read. Local events never carry it: the local breaker's generation is process-internal and every result settles in-process, so there is nothing to correlate.
 
 `breaker.degraded` carries `reason: "coordinator-unavailable"` plus `behavior: "fail-open" | "fail-closed"`. `breaker.coordinator-error` carries `operation: "admit" | "observe" | "settle-probe"`.
+
+When the coordinator read fails and the policy fails closed, `breaker.rejected` reports `state: "open"` even though no state was read: with no evidence that the breaker is open, the event means "do not send traffic". Read it as a fail-closed signal, not as a state observation.

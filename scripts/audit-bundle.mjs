@@ -7,6 +7,8 @@
  * 2. dist/index.js does not contain ioredis or pg references.
  * 3. dist/redis.js exports exactly the expected Redis symbols.
  * 4. dist/testing/index.js exports the harness without runtime policy code.
+ * 5. dist/fetch.js exports the fetch adapter and Retry-After helpers only.
+ * 6. dist/postgres.js exports the postgres adapter only.
  *
  * Run after `npm run build`:
  *   node scripts/audit-bundle.mjs
@@ -103,6 +105,57 @@ const testingSource = readFileSync("dist/testing/index.js", "utf8")
 check(
   "Testing harness does not reference ioredis",
   !testingSource.includes("ioredis"),
+)
+
+// ---------------------------------------------------------------------------
+// 5. Fetch subpath exports
+// ---------------------------------------------------------------------------
+
+const fetch = await import("../dist/fetch.js").catch(() => ({}))
+const fetchKeys = Object.keys(fetch)
+  .filter((key) => key !== "default")
+  .sort()
+
+console.log("\n== Fetch subpath (dist/fetch.js) ==")
+check(
+  `Exports include fetchAdapter, retryAfterMs, retryAfterDelay, createRetryAfterDelay`,
+  [
+    "fetchAdapter",
+    "retryAfterMs",
+    "retryAfterDelay",
+    "createRetryAfterDelay",
+  ].every((key) => fetchKeys.includes(key)),
+)
+
+const fetchSource = readFileSync("dist/fetch.js", "utf8")
+check(
+  "Fetch bundle does not reference ioredis",
+  !fetchSource.includes("ioredis"),
+)
+check(
+  "Fetch bundle does not reference 'pg'",
+  !fetchSource.includes("from 'pg'"),
+)
+
+// ---------------------------------------------------------------------------
+// 6. Postgres subpath exports
+// ---------------------------------------------------------------------------
+
+const postgres = await import("../dist/postgres.js").catch(() => ({}))
+const postgresKeys = Object.keys(postgres)
+  .filter((key) => key !== "default")
+  .sort()
+
+console.log("\n== Postgres subpath (dist/postgres.js) ==")
+check(
+  `Exports include postgresAdapter`,
+  postgresKeys.includes("postgresAdapter"),
+)
+
+const postgresSource = readFileSync("dist/postgres.js", "utf8")
+check(
+  "Postgres bundle does not reference ioredis",
+  !postgresSource.includes("ioredis"),
 )
 
 // ---------------------------------------------------------------------------

@@ -57,7 +57,7 @@ The lease only covers probes that never settle - a crashed worker, or a settle t
 
 ## Local
 
-Each process tracks its own failure window independently. No coordinator or Redis connection is required. Two instances with the same name are completely independent, each owns its own in-process state.
+Each process tracks its own failure window independently. No coordinator or Redis connection is required. Two instances with the same name are completely independent, each owns its own in-process state - and the converse holds: one local instance shared by several operations *merges* their failure windows into a single budget, whereas the distributed breaker keys by `(namespace, policy name, operation name, scope)` and keeps them separate.
 
 ```ts
 import { circuitBreaker, operation } from "@gkoos/caracal"

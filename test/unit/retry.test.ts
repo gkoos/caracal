@@ -134,3 +134,86 @@ describe("retry delay bounds", () => {
     expect(() => retry({ maxAttempts: 2, delay: 2_147_483_647 })).not.toThrow()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Declined retries
+// ---------------------------------------------------------------------------
+
+describe("retry.declined", () => {
+  it("reports a retryable failure that cannot be replayed", async () => {
+    const events: OperationEvent[] = []
+    const subject = operation({
+      name: "no-replay",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "unsafe" as const,
+        }),
+        execute: async () => {
+          throw new Error("boom")
+        },
+        classify: () => "retryable" as const,
+      },
+      policies: [retry({ maxAttempts: 3 })],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    await subject.execute(undefined).catch(() => {})
+
+    expect(events.filter((e) => e.type === "retry.declined")).toMatchObject([
+      { reason: "replay-unsafe" },
+    ])
+  })
+
+  it("reports an outcome that is not retryable", async () => {
+    const events: OperationEvent[] = []
+    const subject = operation({
+      name: "not-retryable",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async () => {
+          throw new Error("nope")
+        },
+        classify: () => "failure" as const,
+      },
+      policies: [retry({ maxAttempts: 3 })],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    await subject.execute(undefined).catch(() => {})
+
+    expect(events.filter((e) => e.type === "retry.declined")).toMatchObject([
+      { reason: "not-retryable" },
+    ])
+  })
+
+  it("does not report a decline when the caller cancelled", async () => {
+    const events: OperationEvent[] = []
+    const controller = new AbortController()
+    controller.abort()
+    const subject = operation({
+      name: "cancelled",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async () => {
+          throw new Error("boom")
+        },
+        classify: () => "retryable" as const,
+      },
+      policies: [retry({ maxAttempts: 3 })],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    await subject
+      .execute(undefined, { signal: controller.signal })
+      .catch(() => {})
+
+    expect(events.filter((e) => e.type === "retry.declined")).toHaveLength(0)
+  })
+})

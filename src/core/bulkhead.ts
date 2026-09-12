@@ -276,13 +276,26 @@ function distributed(
         }
       }
       try {
-        if (performance.now() >= deadline)
+        if (performance.now() >= deadline) {
+          // The permit was acquired, but its lease deadline passed before the
+          // call could start.  Report it like any other rejection, so a sink
+          // sees the attempt instead of only the caller seeing the error.
+          event(
+            context,
+            "distributed",
+            name,
+            scope,
+            "rejected",
+            admitted.occupancy,
+            "admission-expired",
+          )
           throw new BulkheadRejectedError(
             "distributed",
             name,
             scope,
             "admission-expired",
           )
+        }
         admissionSignal(context)?.throwIfAborted()
         event(
           context,

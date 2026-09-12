@@ -221,3 +221,25 @@ describe("retry delay context", () => {
     await expect(subject.execute(undefined)).rejects.toThrow(RangeError)
   })
 })
+
+describe("retryAfterMs bounds", () => {
+  it("clamps a delta-seconds header to the largest schedulable delay", () => {
+    // setTimeout cannot schedule more than 2147483647 ms; it fires almost
+    // immediately, so the parser never hands out more than that.
+    expect(retryAfterMs(context(response(429, "99999999")))).toBe(2_147_483_647)
+  })
+
+  it("leaves a large but schedulable delay untouched", () => {
+    expect(retryAfterMs(context(response(429, "2147483")))).toBe(2_147_483_000)
+  })
+
+  it("clamps a far-future HTTP-date", () => {
+    const now = Date.UTC(2026, 0, 1)
+    const when = new Date(now + 100 * 24 * 60 * 60 * 1000).toUTCString()
+    expect(retryAfterMs(context(response(429, when)), now)).toBe(2_147_483_647)
+  })
+
+  it("still honours a normal header", () => {
+    expect(retryAfterMs(context(response(429, "2")))).toBe(2_000)
+  })
+})

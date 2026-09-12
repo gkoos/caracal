@@ -193,7 +193,7 @@ const sharedCapacity = bulkhead.distributed({
 })
 ```
 
-Permits are held for the duration of the underlying adapter call only, not for the caller's wait or the retry loop. **A distributed bulkhead rejects immediately when full, there is no distributed queue**. On coordinator loss, admission always fails closed with `CoordinatorUnavailableError`.
+Permits are held for the duration of the underlying adapter call only, not for the caller's wait or the retry loop. **A distributed bulkhead rejects immediately when full, there is no distributed queue**. On coordinator loss, admission always fails closed - with the Redis coordinator that is a `CoordinatorUnavailableError`, exported from `@gkoos/caracal/redis`.
 
 #### Circuit breaker
 

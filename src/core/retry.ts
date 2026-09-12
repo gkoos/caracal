@@ -164,6 +164,17 @@ export function retry(options: RetryOptions): Policy {
             outcomeClassification !== "retryable" ||
             context.capabilities.replay !== "safe"
           ) {
+            // Declining to retry is observable: without this, a call that was
+            // never retried looks identical to one with no retry policy.
+            emitRuntimeEvent(context, {
+              type: "retry.declined",
+              outcome: summarized(outcome),
+              classification: outcomeClassification,
+              reason:
+                context.capabilities.replay !== "safe"
+                  ? "replay-unsafe"
+                  : "not-retryable",
+            })
             return value
           }
 
@@ -190,11 +201,24 @@ export function retry(options: RetryOptions): Policy {
           const outcome: Outcome<Result> = { status: "failure", error }
           const outcomeClassification = classification(context, outcome)
 
+          if (admissionSignal(context)?.aborted) {
+            throw error
+          }
           if (
-            admissionSignal(context)?.aborted ||
             context.capabilities.replay !== "safe" ||
             outcomeClassification !== "retryable"
           ) {
+            // Same event as the value path: the caller can tell a declined
+            // retry from a missing retry policy.
+            emitRuntimeEvent(context, {
+              type: "retry.declined",
+              outcome: summarized(outcome),
+              classification: outcomeClassification,
+              reason:
+                context.capabilities.replay !== "safe"
+                  ? "replay-unsafe"
+                  : "not-retryable",
+            })
             throw error
           }
 
