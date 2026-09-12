@@ -255,6 +255,47 @@ describe.skipIf(!url)("coordinator conformance — Lua edge cases", () => {
     expect(await client.pttl(hashKey)).toBeGreaterThan(0)
   })
 
+  it("releases an ignored probe without recording an outcome", async () => {
+    const { coordinator, keys } = coordinatorFor()
+    const [hashKey, , probeKey] = keys
+    const generation = await openBreaker(coordinator)
+    const token = randomUUID()
+
+    const admitted = await coordinator.admitProbe(IDENTITY, {
+      probeToken: token,
+      openMs: ADMIT_OPEN_MS,
+      halfOpenProbes: 1,
+      probeLeaseTtlMs: PROBE_LEASE_TTL_MS,
+    })
+    expect(admitted).toMatchObject({ type: "admitted", stateChanged: true })
+
+    const released = await coordinator.settleProbe(IDENTITY, {
+      probeToken: token,
+      outcome: "ignored",
+      generation,
+      halfOpenSuccesses: 1,
+      openMs: OBSERVE_OPEN_MS,
+    })
+
+    // Released, not recorded: the slot is free, the counters are untouched and
+    // the recovery window has not advanced.
+    expect(released).toMatchObject({ type: "settled", state: "half-open" })
+    expect(await client.zcard(probeKey)).toBe(0)
+    expect(Number(await client.hget(hashKey, "probeCount"))).toBe(0)
+    expect(Number(await client.hget(hashKey, "probeSuccesses"))).toBe(0)
+    // Still HALF_OPEN, so the state hash stays persistent.
+    expect(await client.pttl(hashKey)).toBe(-1)
+
+    // The released slot is immediately reusable.
+    const readmitted = await coordinator.admitProbe(IDENTITY, {
+      probeToken: randomUUID(),
+      openMs: ADMIT_OPEN_MS,
+      halfOpenProbes: 1,
+      probeLeaseTtlMs: PROBE_LEASE_TTL_MS,
+    })
+    expect(readmitted).toMatchObject({ type: "admitted", probeCount: 1 })
+  })
+
   it("discards in-flight probe tokens when a probe failure re-opens the breaker", async () => {
     const { coordinator, keys } = coordinatorFor()
     const hashKey = keys[0]

@@ -645,4 +645,61 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
       events.filter((e) => e.type === "breaker.state-changed"),
     ).toHaveLength(0)
   })
+
+  it("releases the probe slot when the classifier ignores the probe result", async () => {
+    const namespace = track(`test-${randomUUID()}`)
+    const hashKey = coordinationKey(
+      namespace,
+      "breaker:breaker",
+      "work",
+      "shared",
+      "breaker",
+    )
+    const probesKey = coordinationKey(
+      namespace,
+      "breaker:breaker",
+      "work",
+      "shared",
+      "probes",
+    )
+
+    // Open the breaker, then let the OPEN window elapse (openMs: 1).
+    await drive(
+      makeOp(makePolicy(namespace, { minimumThroughput: 5, openMs: 1 }), () =>
+        Promise.reject(new Error("boom")),
+      ),
+      5,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // The probe is admitted, runs, and its result is ignored.
+    const ignoring = makePolicy(namespace, {
+      minimumThroughput: 5,
+      openMs: 1,
+      classify: () => "ignored" as const,
+    })
+    const events: OperationEvent[] = []
+    let ran = 0
+    const work = () => {
+      ran++
+      return Promise.resolve("ok")
+    }
+
+    await drive(makeOp(ignoring, work, events), 1)
+
+    expect(ran).toBe(1) // the probe ran
+    expect(await client.hget(hashKey, "state")).toBe("half-open")
+    expect(Number(await client.hget(hashKey, "probeCount"))).toBe(0)
+    expect(Number(await client.hget(hashKey, "probeSuccesses"))).toBe(0)
+    expect(await client.zcard(probesKey)).toBe(0)
+    expect(events.filter((e) => e.type === "breaker.observation")).toHaveLength(
+      0,
+    )
+
+    // The released slot means the next call is admitted immediately rather than
+    // rejected until the probe lease elapses.
+    ran = 0
+    await makeOp(ignoring, work, events).execute(undefined)
+    expect(ran).toBe(1)
+  })
 })
