@@ -50,7 +50,10 @@ export const bulkheadLeaseV1 = `local function transition()\n${leaseV1}\nend\nlo
  * ARGV[2] = expectedGeneration    integer
  * ARGV[3] = windowTtlMs           observation retention window in ms
  * ARGV[4] = minimumThroughput     min observations before opening
- * ARGV[5] = failureThresholdNum   failure threshold × 1000 (e.g. 500 = 0.5)
+ * ARGV[5] = failureThresholdNum   failure threshold × 1000 (e.g. 500 = 0.5).
+ *                                The policy rejects thresholds that would round
+ *                                to 0 or to 1000 before they reach this script
+ *                                (see assertResolvableThreshold in core).
  * ARGV[6] = windowSize            max observations retained by count
  * ARGV[7] = openMs                how long to stay OPEN; closed hash TTL = openMs×2
  * ARGV[8] = uuid                  unique string for member deduplication

@@ -32,6 +32,21 @@ Invariants verified by property tests:
 - A success-only trace never opens the breaker.
 - `probesInFlight ≤ halfOpenProbes` at all times.
 
+## Threshold resolution
+
+`failureThreshold` is resolved to thousandths, because the distributed coordinator compares an integer numerator rather than a ratio:
+
+```lua
+wFail * 1000 >= round(failureThreshold * 1000) * wTotal
+```
+
+Within that resolution the value is exact; a threshold that is not a multiple of `0.001` is compared as its nearest thousandth. Values that cannot survive the resolution are rejected at construction instead of being silently reinterpreted:
+
+- below `0.0005` the numerator would round to 0, which makes the comparison unconditionally true - the breaker would open on a success-only window and re-open after every recovery;
+- at or above `0.9995` it would round to 1000, requiring every observation to fail, so the breaker would effectively never open.
+
+The accepted range is `0.0005 <= failureThreshold < 0.9995`. The local breaker compares the exact ratio, but enforces the same range so one policy config works with either coordination.
+
 ## Local
 
 Each process tracks its own failure window independently. No coordinator or Redis connection is required. Two instances with the same name are completely independent, each owns its own in-process state.

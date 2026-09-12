@@ -108,9 +108,34 @@ const DEFAULT_HALF_OPEN_SUCCESSES = 1
 const DEFAULT_HALF_OPEN_PROBES = 1
 const DEFAULT_WINDOW_SIZE = 100
 
+// The distributed coordinator compares the failure threshold as an integer
+// numerator of thousandths (`wFail * 1000 >= numerator * wTotal`).  A threshold
+// that rounds to 0 makes that comparison unconditionally true, so the breaker
+// opens on a success-only window and re-opens after every recovery; a threshold
+// that rounds to the full scale requires every observation to fail, so the
+// breaker effectively never opens.  Both are rejected instead of silently
+// reinterpreted, and the local breaker enforces the same bounds so one policy
+// config works with either coordination.
+const FAILURE_THRESHOLD_SCALE = 1000
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
+
+/**
+ * Rejects a failureThreshold the thousandths comparison cannot represent.
+ *
+ * Accepts `0.0005 <= failureThreshold < 0.9995`.  Anything else resolves to a
+ * numerator of 0 or of the full scale, which changes what the threshold means
+ * rather than how precisely it is expressed.
+ */
+function assertResolvableThreshold(failureThreshold: number): void {
+  const numerator = Math.round(failureThreshold * FAILURE_THRESHOLD_SCALE)
+  if (numerator < 1 || numerator >= FAILURE_THRESHOLD_SCALE)
+    throw new RangeError(
+      `failureThreshold must be at least 0.0005 and below 0.9995 (thresholds are resolved to thousandths); got ${failureThreshold}`,
+    )
+}
 
 function validate(opts: LocalBreakerOptions): void {
   if (!opts.name.trim())
@@ -127,6 +152,7 @@ function validate(opts: LocalBreakerOptions): void {
     failureThreshold >= 1
   )
     throw new RangeError("failureThreshold must be a number in (0, 1)")
+  assertResolvableThreshold(failureThreshold)
 
   const { openMs = DEFAULT_OPEN_MS } = opts
   if (!Number.isInteger(openMs) || openMs < 1)
@@ -648,6 +674,7 @@ function validateDistributed(opts: DistributedBreakerOptions): void {
     failureThreshold >= 1
   )
     throw new RangeError("failureThreshold must be a number in (0, 1)")
+  assertResolvableThreshold(failureThreshold)
 
   const { openMs = DEFAULT_DIST_OPEN_MS } = opts
   if (!Number.isInteger(openMs) || openMs < 1)
@@ -701,7 +728,9 @@ function distributed(
     options.minimumThroughput ?? DEFAULT_DIST_MINIMUM_THROUGHPUT
   const failureThreshold =
     options.failureThreshold ?? DEFAULT_DIST_FAILURE_THRESHOLD
-  const failureThresholdNumerator = Math.round(failureThreshold * 1000)
+  const failureThresholdNumerator = Math.round(
+    failureThreshold * FAILURE_THRESHOLD_SCALE,
+  )
   const windowSize = options.windowSize ?? DEFAULT_DIST_WINDOW_SIZE
   const openMs = options.openMs ?? DEFAULT_DIST_OPEN_MS
   const windowTtlMs = options.windowTtlMs ?? Math.max(openMs * 3, 60_000)

@@ -88,6 +88,35 @@ describe("circuitBreaker.local — validation", () => {
     ).toThrow()
   })
 
+  it("rejects thresholds that cannot be resolved to thousandths", () => {
+    // Rounding to 0 makes the coordinator's comparison
+    // `wFail * 1000 >= numerator * wTotal` unconditionally true, so the breaker
+    // would open on a success-only window and re-open after every recovery.
+    expect(() =>
+      circuitBreaker.local({ name: "x", failureThreshold: 0.0004 }),
+    ).toThrow(/resolved to thousandths/)
+    expect(() =>
+      circuitBreaker.local({ name: "x", failureThreshold: 0.0001 }),
+    ).toThrow(/resolved to thousandths/)
+    // Rounding to 1000 requires every observation to fail, so the breaker would
+    // effectively never open.
+    expect(() =>
+      circuitBreaker.local({ name: "x", failureThreshold: 0.9995 }),
+    ).toThrow(/resolved to thousandths/)
+    expect(() =>
+      circuitBreaker.local({ name: "x", failureThreshold: 0.9999 }),
+    ).toThrow(/resolved to thousandths/)
+  })
+
+  it("accepts the smallest and largest resolvable thresholds", () => {
+    expect(() =>
+      circuitBreaker.local({ name: "x", failureThreshold: 0.0005 }),
+    ).not.toThrow()
+    expect(() =>
+      circuitBreaker.local({ name: "x", failureThreshold: 0.9994 }),
+    ).not.toThrow()
+  })
+
   it("rejects non-positive openMs", () => {
     expect(() => circuitBreaker.local({ name: "x", openMs: 0 })).toThrow()
     expect(() => circuitBreaker.local({ name: "x", openMs: -1 })).toThrow()
