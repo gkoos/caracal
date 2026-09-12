@@ -213,12 +213,30 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
 
   // -----------------------------------------------------------------------
   // 5. Cross-process: probe limit is enforced across workers
+  //
+  // The limit bounds *concurrent* probes, so a second probe is legitimately
+  // admitted once the first settles.  Racing two workers therefore proves
+  // nothing (an instantaneous probe frees its slot before the other worker even
+  // reads state) - the slot is held explicitly here instead.
   // -----------------------------------------------------------------------
-  it("enforces probe limit across worker processes", async () => {
+  it("enforces the probe limit across processes and releases the slot on settle", async () => {
     const namespace = track(`test-${randomUUID()}`)
+    const hashKey = coordinationKey(
+      namespace,
+      "breaker:breaker",
+      "work",
+      "shared",
+      "breaker",
+    )
+    const probesKey = coordinationKey(
+      namespace,
+      "breaker:breaker",
+      "work",
+      "shared",
+      "probes",
+    )
 
     const workers = [
-      new BreakerWorker(url as string),
       new BreakerWorker(url as string),
       new BreakerWorker(url as string),
     ]
@@ -229,43 +247,63 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
         namespace,
         minimumThroughput: 5,
         failureThreshold: 0.5,
-        openMs: 200, // hashTtl=400ms; state stays alive while we wait
+        openMs: 200,
         halfOpenProbes: 1, // only 1 concurrent probe
         probeLeaseTtlMs: 5_000,
       }
 
-      // Open the breaker
+      // Open the breaker with failures from another process
       await Promise.allSettled(
         Array.from({ length: 5 }, () =>
           // biome-ignore lint/style/noNonNullAssertion: workers array is fully populated
           workers[0]!.execute({ outcome: "failure", ...cfg }).catch(() => {}),
         ),
       )
+      expect(await client.hmget(hashKey, "state")).toEqual(["open"])
 
-      // Wait for openMs to elapse (hash still alive at 250ms, expires at 400ms)
-      await new Promise((r) => setTimeout(r, 250))
+      // Hold the single probe slot from this process
+      const coordinator = redisCircuitBreakerCoordinator(client, { namespace })
+      const identity = { name: "breaker", operation: "work", scope: "shared" }
+      const heldToken = randomUUID()
+      const held = await coordinator.admitProbe(identity, {
+        probeToken: heldToken,
+        openMs: 0, // the OPEN window has elapsed: transition to HALF_OPEN now
+        halfOpenProbes: 1,
+        probeLeaseTtlMs: 5_000,
+      })
+      expect(held).toMatchObject({ type: "admitted", stateChanged: true })
+      expect(await client.zcard(probesKey)).toBe(1)
 
-      // Two workers compete for the probe slot
-      const [r1, r2] = await Promise.all([
+      // A worker process must be rejected while the slot is held
+      // biome-ignore lint/style/noNonNullAssertion: workers array is fully populated
+      const blocked = await workers[1]!
+        .execute({ outcome: "success", ...cfg })
+        .catch((e: Error) => e.message)
+      expect(blocked).toContain("CircuitOpenError")
+      expect(
         // biome-ignore lint/style/noNonNullAssertion: workers array is fully populated
-        workers[1]!
-          .execute({ outcome: "success", ...cfg })
-          .catch((e: Error) => e.message),
-        // biome-ignore lint/style/noNonNullAssertion: workers array is fully populated
-        workers[2]!
-          .execute({ outcome: "success", ...cfg })
-          .catch((e: Error) => e.message),
-      ])
+        workers[1]!.events.some((e) => e.type === "breaker.rejected"),
+      ).toBe(true)
 
-      // Exactly one should succeed, one should be rejected with "probe-limit"
-      const results = [r1, r2]
-      const rejected = results.filter(
-        (r) => typeof r === "string" && r.includes("CircuitOpenError"),
-      )
-      const admitted = results.filter((r) => r === "ok")
+      // Releasing the slot admits the next worker probe
+      await expect(
+        coordinator.settleProbe(identity, {
+          probeToken: heldToken,
+          outcome: "success",
+          generation: held.type === "admitted" ? held.generation : 0,
+          halfOpenSuccesses: 99, // stay HALF_OPEN: the slot is the only change
+          openMs: 200,
+          windowTtlMs: 60_000,
+        }),
+      ).resolves.toMatchObject({ type: "settled" })
+      expect(await client.zcard(probesKey)).toBe(0)
 
-      expect(rejected).toHaveLength(1)
-      expect(admitted).toHaveLength(1)
+      // biome-ignore lint/style/noNonNullAssertion: workers array is fully populated
+      const admitted = await workers[1]!
+        .execute({ outcome: "success", ...cfg })
+        .catch((e: Error) => e.message)
+      expect(admitted).toBe("ok")
+      expect(await client.hmget(hashKey, "state")).toEqual(["closed"])
     } finally {
       await Promise.all(workers.map((w) => w.stop()))
     }
