@@ -113,7 +113,7 @@
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
-    "ioredis": "^5.0.0",
+    "ioredis": "^5.0.0 || ^6.0.0",
     "pg": ">=8.11 <9"
   },
   "peerDependenciesMeta": {
@@ -123,5 +123,8 @@
     "ioredis": {
       "optional": true
     }
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
   }
 }
