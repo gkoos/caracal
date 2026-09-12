@@ -36,7 +36,7 @@ npm run check
 | `npm run bench` | Builds, then runs the local-policy baseline and the Redis `EVAL`/`EVALSHA` script-transport comparison. |
 | `npm run audit:bundle` | Builds, then asserts the public exports and the root bundle's dependencies. |
 | `npm run changeset` | Records a changeset describing a pending release. |
-| `npm run version` | Applies pending changesets: bumps the version and updates `CHANGELOG.md`. |
+| `npm run version` | Applies pending changesets: bumps the version, updates `CHANGELOG.md`, and syncs `SECURITY.md`'s supported-versions table. |
 | `npm run redis:up` | Starts the disposable Valkey container. |
 | `npm run redis:logs` | Follows the Valkey container logs. |
 | `npm run redis:down` | Stops the Compose services. |

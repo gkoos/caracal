@@ -97,7 +97,7 @@
     "bench": "npm run build && node scripts/bench.mjs",
     "audit:bundle": "npm run build && node scripts/audit-bundle.mjs",
     "changeset": "changeset",
-    "version": "changeset version"
+    "version": "changeset version && node scripts/sync-security-versions.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.12",
