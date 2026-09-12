@@ -97,7 +97,7 @@ Bulkheads are always placed directly around the adapter regardless of their posi
 | `bulkhead` | ✓ | ✓ | `@gkoos/caracal` |
 | `circuitBreaker` | ✓ | ✓ | `@gkoos/caracal` |
 
-**Timeout**: bounds how long the caller waits. Passes a cancelled `AbortSignal` to the adapter if `abort: "supported"`; delivers `TimeoutError` to the caller regardless. See [timeout and retry](timeout-and-retry.md).
+**Timeout**: bounds how long the wrapped work may take; coordinator calls made by an outer distributed policy are bounded separately by the client's `commandTimeout`. Passes a cancelled `AbortSignal` to the adapter if `abort: "supported"`; delivers `TimeoutError` to the caller regardless. See [timeout and retry](timeout-and-retry.md).
 
 ```ts
 timeout({ ms: 5_000 })

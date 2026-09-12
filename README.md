@@ -143,7 +143,7 @@ Each policy is described below.
 
 #### Timeout
 
-Bounds how long the caller waits. Local only, there is no distributed timeout.
+Bounds how long the wrapped work may take - not the whole call: an outer distributed policy's coordinator calls are bounded by the client's `commandTimeout`, not by this timer. Local only, there is no distributed timeout.
 
 ```ts
 import { timeout } from "@gkoos/caracal"
@@ -253,7 +253,9 @@ The full set can be found in the [Events and observability](docs/events-and-obse
 
 ## Why not just use X, bro?
 
-There are many libraries for applying resilience policies to operations, but most of them are designed for a single process. Caracal'
+There are many libraries for applying resilience policies to operations, but most of them are designed for a single process. Caracal is built for the case where the constraint - capacity, health - belongs to a shared downstream rather than to one replica.
+
+The comparisons below summarise each project's documented scope at the time of writing: they are a snapshot, not a benchmark or a judgement of quality. Check the projects themselves before choosing.
 
 | Library / category | What it covers | Distributed aspect | Caracal difference |
 |---|---|---|---|

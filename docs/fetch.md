@@ -1,6 +1,6 @@
 # Fetch adapter
 
-`@gkoos/caracal/fetch` wraps the Web Fetch API and targets server-side runtimes - Node.js 20+, Deno, and Bun. It works with any spec-compliant `fetch` implementation, which you can inject via the adapter options. **Caracal is not a browser library.** The distributed policies coordinate through Redis, which must stay server-side, and per-tab local policies would not share state.
+`@gkoos/caracal/fetch` wraps the Web Fetch API and targets server-side runtimes: Node.js 20.3+, and Deno or Bun with a spec-compliant `fetch` (CI covers Node.js only). It works with any spec-compliant `fetch` implementation, which you can inject via the adapter options. **Caracal is not a browser library.** The distributed policies coordinate through Redis, which must stay server-side, and per-tab local policies would not share state.
 
 ```ts
 import { circuitBreaker, operation, retry, timeout } from "@gkoos/caracal"
@@ -86,6 +86,8 @@ The adapter infers replay safety from the HTTP method unless an adapter-wide `re
 
 Set `replay` as a fixed value to override globally, or as a function `(args) => replay` to vary it per request, for example to mark a specific idempotent `POST` as `"safe"`.
 
+Semantic idempotency and a re-sendable body are two separate requirements, and Caracal only checks the first. Prefer `{ url, options }` args: a string, `Blob`, `ArrayBuffer` or `URLSearchParams` body is re-sent on each attempt. A `Request` object is single-use, so a retried `Request` fails on its second attempt with a `TypeError` from `fetch` ("Cannot construct a Request with a Request object that has already been used"), and a `ReadableStream` body cannot be replayed at all. Body-bearing retries are covered by the fetch integration suite.
+
 ## Classification
 
 Network errors and thrown exceptions (including aborts) are classified as `retryable` by default. Successful responses where `fetch` resolves are classified by status code:
@@ -152,3 +154,9 @@ delay: (attempt, context) =>
 ## Streaming responses
 
 `fetch` resolves as soon as response headers arrive, the body has not been consumed yet. Any bulkhead permit is released at that point, not after the body is fully read. If body consumption is your actual capacity boundary, consume the body inside a custom adapter before returning.
+
+### Discarded responses
+
+Caracal does not read or cancel a response body it abandons, and this is a known gap rather than a contract: when `retry` decides to make another attempt, the previous attempt's response is still an open, unconsumed stream, and the adapter never learns that it was discarded. Under sustained `5xx` responses - exactly when retries fire - that retains sockets and buffers.
+
+Until a disposal hook exists, the safe options are to avoid body-bearing retries (`replay: "unsafe"` returns the response to the caller instead of discarding it), or to consume or cancel the body inside a custom `fetch` implementation injected through the adapter options.

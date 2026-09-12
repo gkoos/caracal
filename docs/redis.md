@@ -68,7 +68,7 @@ All coordination keys use a hash-tag (`{identity}`) so that every key for a give
 
 Sentinel failover is not supported. Both clients disable offline queueing and command replay. A command timeout is an **unknown** outcome - the command may have executed on the server before the timeout was observed locally. Never interpret a coordinator error as confirmation that an operation was denied or admitted.
 
-Supported servers: **Redis 7+** and **Valkey 8+** for both standalone and cluster topologies.
+Supported servers: **Redis 7+** and **Valkey 8+** for both standalone and cluster topologies. CI exercises Valkey 8 standalone (plus PostgreSQL); Redis 7 and the cluster topology are supported but not covered by the automated suite - see [testing](testing.md#redis-cluster-integration-tests).
 
 ## Key scheme
 
