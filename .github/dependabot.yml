@@ -6,7 +6,20 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-    open-pull-requests-limit: 10
+      # Majors are proposed on their own and get a month to settle first.
+      semver-major-days: 30
+    open-pull-requests-limit: 5
+    # Toolchain majors we cannot take yet:
+    # - tsup 8.5.1 (current latest) vendors rollup-plugin-dts 6.1.1, which
+    #   cannot emit declarations with TypeScript 7 (the Check job fails in
+    #   `npm run build`).  Revisit when tsup vendors a plugin that supports it.
+    # - @types/node has to track the Node versions CI tests (20/22).
+    # Minor and patch updates for both stay enabled.
+    ignore:
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
     groups:
       typescript:
         patterns:
@@ -14,22 +27,29 @@ updates:
           - '@types/*'
           - 'tsup'
           - 'tsx'
+        # Minor and patch only.  A major inside a group produces one
+        # unmergeable PR mixing unrelated jumps; majors arrive individually.
+        update-types: ['minor', 'patch']
       testing:
         patterns:
           - 'vitest'
           - '@vitest/*'
           - 'fast-check'
+        update-types: ['minor', 'patch']
       linting:
         patterns:
           - '@biomejs/biome'
+        update-types: ['minor', 'patch']
       release-tooling:
         patterns:
           - '@changesets/*'
           - 'rimraf'
+        update-types: ['minor', 'patch']
       runtime:
         patterns:
           - 'ioredis'
           - 'pg'
+        update-types: ['minor', 'patch']
 
   - package-ecosystem: github-actions
     directory: '/'
@@ -40,3 +60,4 @@ updates:
       github-actions:
         patterns:
           - '*'
+        update-types: ['minor', 'patch']
