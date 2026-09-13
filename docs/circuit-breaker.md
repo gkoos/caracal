@@ -25,7 +25,7 @@ The `open → half-open` edge is lazy rather than driven by a timer. The local b
 
 ## Sliding window
 
-The window is a circular buffer of `windowSize` observations. On each observation the oldest entry is evicted if the buffer is full. The window resets to empty on every state transition. Observations from rejected attempts are never recorded.
+The window is a circular buffer of `windowSize` observations. On each observation the oldest entry is evicted if the buffer is full. The local breaker's window resets to empty on every state transition. Observations from rejected attempts are never recorded. The distributed window is epoch-scoped instead of reset: it belongs to a generation, so the OPEN → HALF_OPEN edge leaves it in place and discards the superseded probe tokens separately.
 
 Invariants verified by property tests:
 - `failures + successes === observations` at all times.
@@ -149,7 +149,7 @@ TTL policy for the state hash:
 
 `generation` is both the stale-result token and the window's epoch: members are stored as `gen:uuid:outcome`, and only members whose epoch equals the current generation count toward the window.
 
-Every open/close cycle increments it. An attempt captures the generation at admission time; if the breaker has cycled before the attempt settles, the observation is discarded, it cannot corrupt the current window. This prevents a slow in-flight attempt from a previous generation from re-opening or re-closing the breaker after state has already moved on.
+Every open/close cycle increments it. Entering HALF_OPEN is the exception, and the two coordinations differ there: the distributed policy keeps the generation across OPEN → HALF_OPEN (the edge does not move the epoch, and it clears the probe set instead), while the local breaker increments on every transition including that one. An attempt captures the generation at admission time; if the breaker has cycled before the attempt settles, the observation is discarded, it cannot corrupt the current window. This prevents a slow in-flight attempt from a previous generation from re-opening or re-closing the breaker after state has already moved on.
 
 Cleanup cannot resurrect an old result. If the state hash is lost anyway - an eviction policy on a non-persistent replica, an administrative cleanup, a manual `DEL` - while observation members survive, the next observation **mints a new epoch** (a value that has never been used for that key) instead of restarting from a value those members would match. Members from the superseded epoch stay in the sorted set until `windowTtlMs` prunes them, but they are no longer counted, and an attempt holding a pre-loss generation is rejected as stale. A scope that has never been observed keeps generation 0, which is also why the cleanup TTL above is coupled to the window: the normal path should never lose an epoch while its members live.
 
@@ -167,7 +167,7 @@ Admission uses two sequential coordinator calls — `readState` then (if non-clo
 
 `onCoordinatorError` governs only the second row: when `readState` fails and no prior read has established that the scope is non-closed. Once a scope has been seen as OPEN or HALF_OPEN that knowledge is retained in process; a subsequent coordinator outage will fail-closed for that scope regardless of this setting. There is no automatic local fallback and no sticky policy-wide degraded state.
 
-Retention is per `(operation, scope)` and covers **only non-closed states**. A CLOSED read, a probe settlement that closes the breaker, or an `admitProbe` response of `closed` discards the entry, because CLOSED and "never seen" are treated identically here. In-process memory therefore tracks the scopes currently believed OPEN or HALF_OPEN - the same scopes whose Redis state hash is kept without a TTL - rather than every scope ever observed.
+Retention is per `(operation, scope)` and covers **only non-closed states**. A CLOSED read, a probe settlement that closes the breaker, or an `admitProbe` response of `closed` discards the entry, because CLOSED and "never seen" are treated identically here. Removal is traffic-dependent: an entry only goes away when that same scope is next read or settled as CLOSED, so a scope that opens once and then goes quiet is retained for the lifetime of the process. In-process memory therefore tracks the scopes believed OPEN or HALF_OPEN - the same scopes whose Redis state hash is kept without a TTL - provided those scopes keep receiving traffic.
 
 ### Half-open probe arbitration
 

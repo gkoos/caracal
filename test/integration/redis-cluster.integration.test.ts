@@ -41,6 +41,39 @@ describe.skipIf(!clusterUrls)("Redis Cluster coordination", () => {
     client?.disconnect()
   })
 
+  it("configures the coordinators' safeguards on the node connections ioredis builds", () => {
+    // This is the only place the configuration the coordinators actually use can
+    // be observed: `client.options` describes the cluster, while the work runs on
+    // the node connections the pool derives from `redisOptions`.
+    type NodeClient = {
+      options: {
+        maxRetriesPerRequest?: number
+        autoResendUnfulfilledCommands?: boolean
+        commandTimeout?: number
+        connectTimeout?: number
+        enableOfflineQueue?: boolean
+      }
+    }
+    const pool = (
+      client as unknown as {
+        connectionPool: { nodes: { all: Record<string, NodeClient> } }
+      }
+    ).connectionPool
+    const nodes = Object.values(pool.nodes.all)
+    expect(nodes.length).toBeGreaterThan(0)
+
+    for (const node of nodes) {
+      expect(node.options.maxRetriesPerRequest).toBe(0)
+      expect(node.options.autoResendUnfulfilledCommands).toBe(false)
+      expect(node.options.commandTimeout).toBe(1_000)
+      expect(node.options.connectTimeout).toBe(1_000)
+      // Known gap, documented in redis.md: ioredis 6 does not let this flag be
+      // set for cluster node connections, so they keep its default. Pinned so a
+      // future ioredis release that changes it is noticed here.
+      expect(node.options.enableOfflineQueue).toBe(true)
+    }
+  })
+
   async function keySlot(key: string): Promise<string> {
     return String(await client.call("CLUSTER", "KEYSLOT", key))
   }

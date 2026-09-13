@@ -6,14 +6,20 @@ import {
   withAdmissionSignal,
   withSignal,
 } from "./runtime.js"
-import type { ExecutionContext, Next, Policy } from "./types.js"
+import type {
+  BulkheadEventReason,
+  BulkheadRejectedReason,
+  ExecutionContext,
+  Next,
+  Policy,
+} from "./types.js"
 
 export class BulkheadRejectedError extends Error {
   constructor(
     readonly coordination: "local" | "distributed",
     readonly policyName: string,
     readonly scope: string,
-    readonly reason: string,
+    readonly reason: BulkheadRejectedReason,
   ) {
     super(`Bulkhead ${policyName} rejected: ${reason}`)
     this.name = "BulkheadRejectedError"
@@ -45,6 +51,13 @@ function validate(name: string, limit: number) {
   if (!name.trim() || !Number.isSafeInteger(limit) || limit < 1)
     throw new RangeError("Bulkhead needs a name and positive integer limit")
 }
+/**
+ * The local path reports and throws the same reason, so a local rejection must
+ * be in both sets. `lease-lost` and `admission-expired` are distributed-only and
+ * are constructed without a matching `bulkhead.rejected` event.
+ */
+type LocalRejectionReason = Extract<BulkheadRejectedReason, BulkheadEventReason>
+
 function event(
   context: ExecutionContext,
   coordination: "local" | "distributed",
@@ -58,7 +71,7 @@ function event(
     | "lease-lost"
     | "degraded",
   occupancy?: number,
-  reason?: string,
+  reason?: BulkheadEventReason,
 ) {
   emitRuntimeEvent(context, {
     type: `bulkhead.${type}`,
@@ -102,7 +115,7 @@ function local(options: LocalBulkheadOptions): Policy & {
     ): Promise<Result> {
       const signal = admissionSignal(context)
       signal?.throwIfAborted()
-      const reject = (reason: string) => {
+      const reject = (reason: LocalRejectionReason) => {
         event(context, "local", name, "process", "rejected", occupancy, reason)
         return new BulkheadRejectedError("local", name, "process", reason)
       }

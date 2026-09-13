@@ -19,6 +19,8 @@ export type { TimeoutOptions } from "./timeout.js"
 export { TimeoutError, timeout } from "./timeout.js"
 export type {
   Adapter,
+  BulkheadEventReason,
+  BulkheadRejectedReason,
   Classification,
   EventOutcome,
   EventSink,

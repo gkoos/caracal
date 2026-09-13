@@ -457,3 +457,168 @@ describe("distributed bulkhead admission deadline", () => {
     ])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Reason coverage
+//
+// Every value in `BulkheadEventReason` and `BulkheadRejectedReason` is asserted
+// somewhere: test/unit/reason-contract.test.ts fails when a documented reason
+// stops being exercised, so a new reason cannot be added without evidence that
+// it is actually reachable.
+// ---------------------------------------------------------------------------
+
+describe("bulkhead reason values", () => {
+  it("reports an unknown admission and an unavailable coordinator, then rethrows the coordinator error", async () => {
+    const boom = new Error("redis down")
+    const policy = bulkhead.distributed({
+      name: "reasons",
+      limit: 1,
+      scope: () => "s",
+      coordinator: {
+        command: async () => {
+          throw boom
+        },
+      },
+    })
+    const events: OperationEvent[] = []
+    const op = operation({
+      name: "work",
+      adapter: { capabilities: traits, execute: async () => "never" },
+      policies: [policy],
+      events: { emit: (e) => events.push(e) },
+    })
+
+    await expect(op.execute(undefined)).rejects.toBe(boom)
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "bulkhead.degraded",
+        reason: "admission-unknown",
+        coordination: "distributed",
+      }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "bulkhead.rejected",
+        reason: "coordinator-unavailable",
+        coordination: "distributed",
+      }),
+    )
+  })
+
+  it("reports already-expired-or-released when the release finds no lease", async () => {
+    const policy = bulkhead.distributed({
+      name: "reasons",
+      limit: 1,
+      scope: () => "s",
+      coordinator: {
+        command: async (_identity, action) =>
+          action === "acquire"
+            ? { allowed: true, occupancy: 1 }
+            : { allowed: false, occupancy: 0 },
+      },
+    })
+    const events: OperationEvent[] = []
+    const op = operation({
+      name: "work",
+      adapter: { capabilities: traits, execute: async () => "done" },
+      policies: [policy],
+      events: { emit: (e) => events.push(e) },
+    })
+
+    await expect(op.execute(undefined)).resolves.toBe("done")
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "bulkhead.released",
+        reason: "already-expired-or-released",
+        coordination: "distributed",
+      }),
+    )
+  })
+
+  it("reports lease-uncertain and delivers lease-lost as the abort reason", async () => {
+    vi.useFakeTimers()
+    try {
+      const policy = bulkhead.distributed({
+        name: "reasons",
+        limit: 1,
+        scope: () => "s",
+        leaseMs: 300,
+        coordinator: {
+          command: async (_identity, action) => {
+            if (action === "renew") throw new Error("offline")
+            return { allowed: true, occupancy: 1 }
+          },
+        },
+      })
+      const events: OperationEvent[] = []
+      const gate = new Deferred<number>()
+      let signal: AbortSignal | undefined
+      const op = operation({
+        name: "work",
+        adapter: {
+          capabilities: () => ({ abort: "supported", replay: "safe" }),
+          execute: async (_args: undefined, context) => {
+            signal = context.signal
+            return gate.promise
+          },
+        },
+        policies: [policy],
+        events: { emit: (e) => events.push(e) },
+      })
+
+      const call = op.execute(undefined)
+      await vi.advanceTimersByTimeAsync(200)
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "bulkhead.degraded",
+          reason: "lease-uncertain",
+          coordination: "distributed",
+        }),
+      )
+      // Documented as an abort reason rather than a rejection: a caller only sees
+      // it when the adapter honours the signal.
+      expect(signal?.reason).toMatchObject({ reason: "lease-lost" })
+
+      gate.resolve(7)
+      await expect(call).resolves.toBe(7)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("reports an aborted waiter as cancelled and hands it its own abort reason", async () => {
+    const policy = bulkhead.local({
+      name: "reasons",
+      limit: 1,
+      queue: { limit: 1, timeoutMs: 1_000 },
+    })
+    const events: OperationEvent[] = []
+    const gate = new Deferred<void>()
+    const op = operation({
+      name: "work",
+      adapter: { capabilities: traits, execute: () => gate.promise },
+      policies: [policy],
+      events: { emit: (e) => events.push(e) },
+    })
+    const controller = new AbortController()
+
+    const first = op.execute(undefined)
+    const queued = expect(
+      op.execute(undefined, { signal: controller.signal }),
+    ).rejects.toBe("give up")
+    controller.abort("give up")
+
+    await queued
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "bulkhead.rejected",
+        reason: "cancelled",
+        coordination: "local",
+      }),
+    )
+
+    gate.resolve()
+    await first
+  })
+})

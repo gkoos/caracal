@@ -56,9 +56,18 @@ export interface ClusterNode {
  */
 /**
  * Redis Cluster client for a secured cluster: pass credentials and TLS via
- * `connectionOptions`.  The coordination safeguards (`lazyConnect`, no offline
- * queue, no command replay, no per-request retries) are applied after them and
- * cannot be overridden, because the coordinators depend on those semantics.
+ * `connectionOptions`.
+ *
+ * The coordination safeguards are applied after the caller's options so they
+ * cannot be overridden: no command replay, no per-request retries, and bounded
+ * command/connect timeouts.  Caller options that are not safeguards -
+ * credentials, TLS - still pass through.
+ *
+ * One safeguard is not attainable for cluster node connections: ioredis 6 keeps
+ * `enableOfflineQueue` at its own default (`true`) for them, whether it is set at
+ * cluster level, in `redisOptions`, or passed in `connectionOptions`.  The
+ * coordinators' fail-fast behaviour therefore rests on the pinned timeout and
+ * retry options rather than on a disabled queue.  See redis.md.
  */
 export function createCoordinationClusterClient(
   nodes: ReadonlyArray<ClusterNode>,
@@ -75,17 +84,24 @@ export function createCoordinationClusterClient(
     Array.isArray(connectionOptions)
   )
     throw new TypeError("connectionOptions must be an ioredis options object")
+  // Verified against a live cluster: the pool gives node connections this object,
+  // and everything pinned here lands on them - except `enableOfflineQueue`, which
+  // ioredis 6 keeps at its own default (`true`) for cluster nodes because it
+  // treats the flag as cluster-level. Setting it here, or at cluster level, or
+  // passing it in `connectionOptions`, all leave the nodes at `true`, so it is
+  // deliberately not claimed as a safeguard. See redis.md.
+  const nodeOptions: RedisOptions = {
+    ...connectionOptions,
+    commandTimeout,
+    connectTimeout: commandTimeout,
+    maxRetriesPerRequest: 0,
+    autoResendUnfulfilledCommands: false,
+  }
   const cluster = new Cluster([...nodes], {
     lazyConnect: true,
     enableOfflineQueue: false,
     clusterRetryStrategy: (attempt) => Math.min(attempt * 50, 1000),
-    redisOptions: {
-      ...connectionOptions,
-      commandTimeout,
-      connectTimeout: commandTimeout,
-      maxRetriesPerRequest: 0,
-      autoResendUnfulfilledCommands: false,
-    },
+    redisOptions: nodeOptions,
   })
   attachErrorSink(cluster)
   return cluster

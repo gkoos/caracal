@@ -50,9 +50,10 @@ const client = createCoordinationClusterClient([
   { host: "redis-node-3.internal", port: 7002 },
 ])
 
-// Secured cluster: credentials and TLS are the third argument, and the
-// coordination safeguards (no offline queue, no command replay) are applied
-// afterwards so they cannot be overridden
+// Secured cluster: credentials and TLS are the third argument. The coordination
+// safeguards (no command replay, no per-request retries, bounded timeouts) are
+// applied afterwards so they cannot be overridden. `enableOfflineQueue` is the
+// one exception - see the note below
 const secured = createCoordinationClusterClient(
   [{ host: "redis-node-1.internal", port: 7000 }],
   2_000,
@@ -66,7 +67,7 @@ const secured = createCoordinationClusterClient(
 
 All coordination keys use a hash-tag (`{identity}`) so that every key for a given policy+operation+scope lands on the same cluster slot. The multi-key Lua scripts used by the circuit breaker (which accesses the state hash, observations sorted set, and probe sorted set in a single script) are therefore cluster-safe: all three keys share the same hash-tag and are guaranteed to be on the same slot.
 
-Sentinel failover is not supported. Both clients disable offline queueing and command replay. A command timeout is an **unknown** outcome - the command may have executed on the server before the timeout was observed locally. Never interpret a coordinator error as confirmation that an operation was denied or admitted.
+Sentinel failover is not supported. Both clients disable command replay. The standalone client also disables offline queueing; the cluster client cannot - ioredis 6 keeps `enableOfflineQueue` at its default (`true`) for cluster node connections whether it is set at cluster level, in `redisOptions`, or passed as a connection option, which a live-cluster check in the integration suite pins. A command issued while a node is reconnecting can therefore wait for that node instead of failing immediately. The coordinators' fail-fast behaviour rests on the options that do reach node connections - `maxRetriesPerRequest: 0` and the bounded `commandTimeout`/`connectTimeout` - rather than on a disabled queue. A command timeout is an **unknown** outcome - the command may have executed on the server before the timeout was observed locally. Never interpret a coordinator error as confirmation that an operation was denied or admitted.
 
 Supported servers: **Redis 7+** and **Valkey 8+** for both standalone and cluster topologies. CI exercises Valkey 8 standalone (plus PostgreSQL); Redis 7 and the cluster topology are supported but not covered by the automated suite - see [testing](testing.md#redis-cluster-integration-tests).
 
@@ -180,7 +181,7 @@ Each unique combination of `(namespace, policyName, operationName, scope)` creat
 
 Use stable, bounded scope values. Avoid high-cardinality identifiers (user IDs, request IDs, trace IDs) as scope keys unless you have explicitly bounded the number of active scopes. The SHA-256 hashing does not reduce key count; it only prevents key collisions.
 
-Redis is not the only place scope cardinality shows up. Each process also retains, in memory, the last **non-closed** state per `(operation, scope)` so it can decide fail-open versus fail-closed during a coordinator outage. CLOSED scopes are discarded, so that memory is proportional to the scopes currently believed OPEN or HALF_OPEN - not to every scope ever observed.
+Redis is not the only place scope cardinality shows up. Each process also retains, in memory, the last **non-closed** state per `(operation, scope)` so it can decide fail-open versus fail-closed during a coordinator outage. CLOSED scopes are discarded, so the map tracks the scopes believed OPEN or HALF_OPEN rather than every scope ever observed - but entries are only removed when that same scope is next read or settled as CLOSED. A scope that opens once and then stops receiving traffic is therefore retained for the lifetime of the process, so bound the cardinality of scopes that can *ever* become non-closed, not just the ones open right now.
 
 ## Lease tuning
 

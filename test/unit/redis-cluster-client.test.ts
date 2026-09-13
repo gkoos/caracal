@@ -89,6 +89,41 @@ describe("createCoordinationClusterClient connection options", () => {
     client.disconnect()
   })
 
+  it("overrides the safeguards a caller tries to weaken, and passes the rest through", () => {
+    const client = createCoordinationClusterClient(
+      [{ host: "127.0.0.1", port: 7000 }],
+      1_000,
+      {
+        username: "svc-caracal",
+        password: "secret",
+        maxRetriesPerRequest: 5,
+        autoResendUnfulfilledCommands: true,
+        commandTimeout: 99,
+        connectTimeout: 99,
+      },
+    )
+
+    // This is the object ioredis derives its node connections from. The
+    // cluster-level view alone does not prove that the connections the
+    // coordinators use are configured - a live cluster confirms these land.
+    // `enableOfflineQueue` is deliberately absent: ioredis 6 keeps its own
+    // default for cluster nodes wherever the flag is set, which
+    // redis-cluster.integration.test.ts pins.
+    const redisOptions =
+      (client.options as { redisOptions?: Record<string, unknown> })
+        .redisOptions ?? {}
+
+    expect(redisOptions.maxRetriesPerRequest).toBe(0)
+    expect(redisOptions.autoResendUnfulfilledCommands).toBe(false)
+    expect(redisOptions.commandTimeout).toBe(1_000)
+    expect(redisOptions.connectTimeout).toBe(1_000)
+    // Everything that is not a safeguard still passes through.
+    expect(redisOptions.username).toBe("svc-caracal")
+    expect(redisOptions.password).toBe("secret")
+
+    client.disconnect()
+  })
+
   it("rejects non-object connection options", () => {
     expect(() =>
       createCoordinationClusterClient(
