@@ -41,7 +41,7 @@ function inheritAdmission(
   return target
 }
 
-type EventWithoutRuntimeFields = OperationEvent extends infer Event
+export type EventWithoutRuntimeFields = OperationEvent extends infer Event
   ? Event extends OperationEvent
     ? Omit<Event, "at" | "context">
     : never
@@ -124,6 +124,12 @@ export function emitRuntimeEvent(
   event: EventWithoutRuntimeFields,
 ): void {
   const sinks = runtimeContext(context)[eventSinks] ?? []
+  // No sinks configured: skip building the event at all. This is the common case
+  // for an operation with observability turned off, and building it would
+  // allocate per event and call `Date.now()` on the hot path for nobody. The
+  // gate in scripts/bench-gate.mjs measures allocations per attempt.
+  if (sinks.length === 0) return
+
   const fullEvent = { ...event, at: Date.now(), context } as OperationEvent
 
   for (const sink of sinks) {

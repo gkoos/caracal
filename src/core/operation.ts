@@ -5,12 +5,14 @@ import {
   createClassifier,
   createExecutionContext,
   emitToSink,
+  type EventWithoutRuntimeFields,
 } from "./runtime.js"
 import type {
   Adapter,
   EventOutcome,
   EventSink,
   EventSinks,
+  ExecutionContext,
   ExecutionMetadata,
   Next,
   Operation,
@@ -45,9 +47,23 @@ function normalizeSinks(events: EventSinks | undefined): readonly EventSink[] {
   return "emit" in events ? [events] : events
 }
 
-function emit(sinks: readonly EventSink[], event: OperationEvent): void {
+/**
+ * Delivers one event, building it only when a sink will actually receive it.
+ *
+ * An operation with no sinks therefore does no per-event work at all: no event
+ * object, no clock read, no iteration. `test/unit/no-sink-fast-path.test.ts`
+ * pins that, and `scripts/bench-gate.mjs` measures the allocations it avoids.
+ */
+function emit(
+  sinks: readonly EventSink[],
+  context: ExecutionContext,
+  event: EventWithoutRuntimeFields,
+): void {
+  if (sinks.length === 0) return
+
+  const fullEvent = { ...event, at: Date.now(), context } as OperationEvent
   for (const sink of sinks) {
-    emitToSink(sink, event)
+    emitToSink(sink, fullEvent)
   }
 }
 
@@ -74,16 +90,14 @@ function invokeAdapter<Args, Result>(
 ): Next<Result> {
   return async (context) => {
     admissionSignal(context)?.throwIfAborted()
-    emit(sinks, { type: "attempt.started", at: Date.now(), context })
+    emit(sinks, context, { type: "attempt.started" })
 
     try {
       const value = await adapter.execute(args, context)
       const outcome: Outcome<Result> = { status: "success", value }
       const classification = context.classify(outcome)
-      emit(sinks, {
+      emit(sinks, context, {
         type: "attempt.settled",
-        at: Date.now(),
-        context,
         outcome: summarizeSuccess(),
         classification,
       })
@@ -91,10 +105,8 @@ function invokeAdapter<Args, Result>(
     } catch (error) {
       const outcome: Outcome<Result> = { status: "failure", error }
       const classification = context.classify(outcome)
-      emit(sinks, {
+      emit(sinks, context, {
         type: "attempt.settled",
-        at: Date.now(),
-        context,
         outcome: summarizeFailure(),
         classification,
       })
@@ -142,21 +154,17 @@ export function operation<Args, Result>(
         adapter,
       )
 
-      emit(sinks, { type: "execution.started", at: Date.now(), context })
+      emit(sinks, context, { type: "execution.started" })
       try {
         const value = await pipeline(context)
-        emit(sinks, {
+        emit(sinks, context, {
           type: "execution.settled",
-          at: Date.now(),
-          context,
           outcome: summarizeSuccess(),
         })
         return value
       } catch (error) {
-        emit(sinks, {
+        emit(sinks, context, {
           type: "execution.settled",
-          at: Date.now(),
-          context,
           outcome: summarizeFailure(),
         })
         throw error
