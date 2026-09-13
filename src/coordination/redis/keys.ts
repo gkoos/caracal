@@ -8,6 +8,24 @@ import { createHash } from "node:crypto"
  * same identity (e.g. `:leases`, `:breaker`, `:observations`, `:probes`).
  * Default suffix is `"leases"` for backward compatibility with the bulkhead.
  */
+/**
+ * Keys are memoized per identity because deriving one is not free: a
+ * `JSON.stringify`, a SHA-256 digest and five byte-length checks. The breaker
+ * recomputes three keys per coordinator call and uses one or two of them, so the
+ * same identity is hashed repeatedly within a single command.
+ *
+ * The cache is bounded, for the same reason the docs bound scope cardinality:
+ * an unbounded map keyed by every scope ever seen would reintroduce the growth
+ * the hashing exists to survive.
+ */
+export const COORDINATION_KEY_CACHE_LIMIT = 1_024
+const keyCache = new Map<string, string>()
+
+/** Retained key count. Internal; used by tests. */
+export function coordinationKeyCacheSize(): number {
+  return keyCache.size
+}
+
 export function coordinationKey(
   namespace: string,
   policy: string,
@@ -15,6 +33,10 @@ export function coordinationKey(
   scope: string,
   suffix = "leases",
 ): string {
+  const cacheKey = JSON.stringify([namespace, policy, operation, scope, suffix])
+  const cached = keyCache.get(cacheKey)
+  if (cached !== undefined) return cached
+
   for (const value of [namespace, policy, operation, scope, suffix]) {
     if (
       typeof value !== "string" ||
@@ -28,5 +50,13 @@ export function coordinationKey(
   const identity = createHash("sha256")
     .update(JSON.stringify([namespace, policy, operation, scope]))
     .digest("hex")
-  return `caracal:v1:{${identity}}:${suffix}`
+  const key = `caracal:v1:{${identity}}:${suffix}`
+
+  if (keyCache.size >= COORDINATION_KEY_CACHE_LIMIT) {
+    // Map iterates in insertion order, so the first key is the oldest.
+    const oldest = keyCache.keys().next().value
+    if (oldest !== undefined) keyCache.delete(oldest)
+  }
+  keyCache.set(cacheKey, key)
+  return key
 }

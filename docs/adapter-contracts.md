@@ -54,6 +54,8 @@ The `classify` method maps each settled outcome to one of four values:
 
 If `classify` is omitted, thrown errors become `"failure"` and resolved values become `"success"`.
 
+`classify` is called more than once for the same outcome: the operation classifies it to fill in the `attempt.settled` event, `retry` classifies it to decide whether to try again, and the circuit breaker classifies it to record the observation. It must therefore be pure - counting, logging or memoising inside it will see each attempt two or three times, and the calls must not depend on one another. When no event sink is configured the operation skips its own call, so the count is two rather than three.
+
 ### ExecutionContext
 
 The `context` object passed to `execute` contains:

@@ -108,6 +108,15 @@ const DEFAULT_HALF_OPEN_SUCCESSES = 1
 const DEFAULT_HALF_OPEN_PROBES = 1
 const DEFAULT_WINDOW_SIZE = 100
 
+/**
+ * Upper bound on the window, which is both a memory bound and a cost bound:
+ * `breakerObserveV1` scans every retained member to count the current epoch's
+ * share of the window, inside a blocking script on a single-threaded server. The
+ * lower bound alone allowed a window size that turns each observation into a
+ * hundred-thousand-iteration Lua loop.
+ */
+const MAX_WINDOW_SIZE = 10_000
+
 // The distributed coordinator compares the failure threshold as an integer
 // numerator of thousandths (`wFail * 1000 >= numerator * wTotal`).  A threshold
 // that rounds to 0 makes that comparison unconditionally true, so the breaker
@@ -167,8 +176,14 @@ function validate(opts: LocalBreakerOptions): void {
     throw new RangeError("halfOpenProbes must be a positive integer")
 
   const { windowSize = DEFAULT_WINDOW_SIZE } = opts
-  if (!Number.isInteger(windowSize) || windowSize < 1)
-    throw new RangeError("windowSize must be a positive integer")
+  if (
+    !Number.isInteger(windowSize) ||
+    windowSize < 1 ||
+    windowSize > MAX_WINDOW_SIZE
+  )
+    throw new RangeError(
+      `windowSize must be an integer between 1 and ${MAX_WINDOW_SIZE}`,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -694,8 +709,14 @@ function validateDistributed(opts: DistributedBreakerOptions): void {
     throw new RangeError("halfOpenProbes must be a positive integer")
 
   const { windowSize = DEFAULT_DIST_WINDOW_SIZE } = opts
-  if (!Number.isInteger(windowSize) || windowSize < 1)
-    throw new RangeError("windowSize must be a positive integer")
+  if (
+    !Number.isInteger(windowSize) ||
+    windowSize < 1 ||
+    windowSize > MAX_WINDOW_SIZE
+  )
+    throw new RangeError(
+      `windowSize must be an integer between 1 and ${MAX_WINDOW_SIZE}`,
+    )
 
   if (opts.windowTtlMs !== undefined) {
     if (!Number.isInteger(opts.windowTtlMs) || opts.windowTtlMs < 1)
@@ -1005,7 +1026,16 @@ function distributed(
                   policyName: name,
                   scope,
                   outcome: outcomeStr,
-                  generation: admission.generation,
+                  // The epoch the observation was recorded under. Normally that
+                  // is the generation the attempt was admitted with, but if the
+                  // state hash was lost while its window survived, the script
+                  // mints a new epoch and records the observation there - so
+                  // reporting the admission generation would name an epoch this
+                  // observation does not belong to.
+                  generation:
+                    result.type === "observed"
+                      ? result.generation
+                      : admission.generation,
                 })
                 if (result.type === "opened") {
                   lastKnownState.remember(identity.operation, scope, "open")

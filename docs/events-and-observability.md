@@ -49,7 +49,9 @@ const op = operation({
 | `bulkhead.lease-lost` | Distributed lease could not be renewed | distributed | `policyName`, `scope` |
 | `bulkhead.degraded` | Coordinator error during an in-flight permit | distributed | `policyName`, `scope`, `reason` |
 
-`bulkhead.waited` is local-only: the distributed policy has no queue, so it rejects immediately when the shared limit is reached. The other bulkhead events are emitted by both coordinations, reporting the occupancy the coordinator returned.
+`bulkhead.waited` is local-only: the distributed policy has no queue, so it rejects immediately when the shared limit is reached. The other bulkhead events are emitted by both coordinations, reporting the occupancy the coordinator returned - except where the coordinator returned nothing at all: the `coordinator-unavailable` rejection, `bulkhead.degraded` and `bulkhead.lease-lost` omit `occupancy`, because no reply came back to read it from.
+
+`bulkhead.lease-lost` and `bulkhead.degraded` with reason `lease-uncertain` are emitted together and nowhere else: they come from the same lost-lease path, so they describe one failure with two audiences rather than two independent ones. Alerting on both double-counts a single lost permit.
 
 `reason` values by event:
 

@@ -295,6 +295,9 @@ if tonumber(deadline) <= now then
   return {0, sc, gen}
 end
 if state ~= 'half-open' or gen ~= expectGen then
+  -- Unreachable while every generation change also discards the probe set: a
+  -- token from another generation is already gone by the time it is looked up
+  -- above. Kept as a guard in case that invariant is ever broken.
   return {0, sc, gen}
 end
 probeCnt = math.max(0, probeCnt - 1)

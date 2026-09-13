@@ -69,6 +69,8 @@ All coordination keys use a hash-tag (`{identity}`) so that every key for a give
 
 Sentinel failover is not supported. Both clients disable command replay. The standalone client also disables offline queueing; the cluster client cannot - ioredis 6 keeps `enableOfflineQueue` at its default (`true`) for cluster node connections whether it is set at cluster level, in `redisOptions`, or passed as a connection option, which a live-cluster check in the integration suite pins. A command issued while a node is reconnecting can therefore wait for that node instead of failing immediately. The coordinators' fail-fast behaviour rests on the options that do reach node connections - `maxRetriesPerRequest: 0` and the bounded `commandTimeout`/`connectTimeout` - rather than on a disabled queue. A command timeout is an **unknown** outcome - the command may have executed on the server before the timeout was observed locally. Never interpret a coordinator error as confirmation that an operation was denied or admitted.
 
+The client also installs its own `error` listener, so an unhandled `error` event cannot crash the process. That hides nothing: `EventEmitter` calls every listener, so an application can attach `client.on("error", handler)` to its own client and observe authentication failures, TLS problems and reconnect churn. `client.ping()` remains the liveness check.
+
 Supported servers: **Redis 7+** and **Valkey 8+** for both standalone and cluster topologies. CI exercises Valkey 8 standalone (plus PostgreSQL); Redis 7 and the cluster topology are supported but not covered by the automated suite - see [testing](testing.md#redis-cluster-integration-tests).
 
 ## Key scheme
@@ -100,6 +102,19 @@ The saving is worth having because the bodies are not small. Measured with `npm 
 | `bulkheadLeaseV1` | 868 B | 1 040 B with `EVAL` → 214 B with `EVALSHA` (-79 %) | 18.2 µs → 17.5 µs |
 
 `breakerAdmitProbeV1` (~1.7 kB) and `breakerSettleProbeV1` (~1.8 kB) sit between those two. Client latency is unchanged on a same-host connection - the win is bandwidth (a breaker doing 20 000 observations/s per client drops from roughly 42 MB/s to 8 MB/s of request traffic) plus the server CPU spent hashing and copying the body on every `EVAL`. Server cost above includes the script's own work, so the transport share is small but non-zero. Run `node scripts/bench.mjs` with a local Valkey to reproduce, or to check a different deployment.
+
+### Round trips per execution
+
+Script transport is only half the cost: the coordinator calls themselves are sequential and depend on `commandTimeout` rather than on the script size. No local benchmark measures them, so the count is worth stating outright:
+
+| Configuration | Coordinator calls per execution |
+|---|---|
+| `bulkhead.distributed` | `acquire` + `release`, plus `renew` every `leaseMs / 3` while the attempt is in flight |
+| `circuitBreaker.distributed`, CLOSED | `readState` + `observe` |
+| `circuitBreaker.distributed`, HALF_OPEN | `readState` + `admitProbe` + `settleProbe` |
+| Both policies on one operation | four, two of them before the wrapped work starts |
+
+`readState` is not cached, deliberately: the point of reading it is to see state another process may have changed since the last attempt. [Timeouts and retries](timeout-and-retry.md) works through what the sequence does to a caller's deadline, and [lease tuning](#lease-tuning) covers the renewal load.
 
 ## Security guidance
 
@@ -212,9 +227,10 @@ The defaults are a consistent set, but every override has to stay in line with t
 
 | Constraint | Why it matters |
 |---|---|
-| `windowSize >= minimumThroughput` | the count cap trims the window, so a smaller `windowSize` keeps the observed total below the opening threshold and the breaker **never opens** |
+| `windowSize >= minimumThroughput` | the count cap trims the window, so a smaller `windowSize` keeps the observed total below the opening threshold and the breaker **never opens**. Give this headroom rather than equality: the cap counts members from superseded epochs too, so straight after a transition the usable current-epoch window is `windowSize` minus the old members still retained, and at equality the breaker cannot re-open until a full window of new observations has evicted them |
 | `windowTtlMs` long enough to accumulate `minimumThroughput` observations | time-based pruning is a backstop for idle scopes; if it fires first the window never fills and the breaker again **never opens**. The `max(openMs × 3, 60_000)` default is a proxy for this, not a measurement |
 | `failureThreshold >= 1 / minimumThroughput` | below that, a single failure inside a full window already satisfies the ratio, so the breaker can open on one bad call |
+| `windowSize <= 10 000` | `windowSize` is also the per-observation cost: threshold evaluation scans every retained member inside a blocking Lua script, so it is capped. Larger values are rejected at construction rather than accepted and paid for on a single-threaded server |
 | `failureThreshold` within `0.0005 … 0.9995` | the coordinator compares an integer numerator of thousandths. Below `0.0005` it would round to 0 and the comparison becomes unconditionally true - the breaker opens on **every** window, success-only ones included; at `0.9995` and above it would round to 1000 and **every** observation has to fail. Both are rejected at construction |
 | `probeLeaseTtlMs > timeoutMs`, and above the slowest probe settle | the lease must outlive the probe. Too short and a live token expires mid-probe: the slot is re-issued, more than `halfOpenProbes` probes run concurrently, and the settle from the first one is dropped as stale |
 | `probeLeaseTtlMs` as an upper bound | it is the worst case a HALF_OPEN window stalls when crashed workers hold every slot. Do not make it arbitrarily large |
