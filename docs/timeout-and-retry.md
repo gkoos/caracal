@@ -45,6 +45,8 @@ Retry uses the adapter's `classify` result for both thrown errors and returned v
 
 Retry stops before starting a new attempt if the caller's signal has been aborted (e.g. timeout expired).
 
+A `delay` function that throws replaces the in-flight error instead of pacing the retry: it runs while the next attempt is being scheduled and nothing catches it. Return a value rather than raising from one - a server-provided `Retry-After` that cannot be scheduled is clamped to the platform's largest timer instead, which is what `createRetryAfterDelay` does. `retry.declined` and `retry.exhausted` are emitted from the same scheduling decision if you need to observe it.
+
 ## Composition
 
 Policies are outermost first. Timeout and retry placement determines their relationship:

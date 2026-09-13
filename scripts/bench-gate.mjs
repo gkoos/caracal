@@ -27,18 +27,20 @@ const BASELINE_PATH = "bench/baseline.json"
 const NO_POLICY = "no policy (baseline)"
 
 /**
- * Ceilings in multiples of the same-run `no policy` row. The generous headroom
- * on the rows containing `timeout` is deliberate: a timer plus a combined
- * AbortSignal costs ~14x an empty pipeline on this machine, so those rows gate
- * order-of-magnitude regressions rather than noise.
+ * Ceilings in multiples of the same-run `no policy` row. Measured values after
+ * the lazy-timeout-error change are ~1.1x for retry, ~1.2x for the bulkhead and
+ * breaker, and ~3.1x/3.4x/3.6x for the three sets containing `timeout`, so these
+ * sit at better than 2x headroom: loose enough for a noisy runner, tight enough
+ * to catch the 15x regression that `timeout` building its error eagerly used to
+ * cause.
  */
 const RATIO_LIMITS = {
   "retry only (1 attempt, success)": 5,
   "local bulkhead (uncontested)": 5,
   "local circuit breaker (always closed)": 5,
-  "timeout only": 30,
-  "timeout + retry (success path)": 30,
-  "timeout + retry + breaker + bulkhead": 45,
+  "timeout only": 8,
+  "timeout + retry (success path)": 8,
+  "timeout + retry + breaker + bulkhead": 10,
 }
 
 const ALLOCATION_MULTIPLIER = 2
