@@ -84,4 +84,4 @@ Retry will not issue a second attempt unless the adapter declares `replay: "safe
 
 ## Events
 
-See [events and observability](events-and-observability.md) for the full event reference. Relevant events: `timeout.triggered`, `retry.scheduled`, `retry.exhausted`.
+See [events and observability](events-and-observability.md) for the full event reference. Relevant events: `timeout.triggered`, `retry.scheduled`, `retry.exhausted`, `retry.declined`.

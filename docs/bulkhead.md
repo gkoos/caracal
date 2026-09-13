@@ -22,6 +22,8 @@ const op = operation({ name: "orders", adapter, policies: [capacity] })
 capacity.snapshot() // { coordination: "local", occupancy, waiting }
 ```
 
+The returned policy carries `coordination` (`"local"` or `"distributed"`), so code holding a policy can tell which factory built it, and `snapshot()` is available on local policies only.
+
 Reusing the same policy instance across multiple operations shares the budget between them. Constructing a second instance with the same name creates a completely independent budget.
 
 The optional queue holds waiters in FIFO order up to `queue.limit` waiters (24 in the example above, independent of the `limit` permits). A waiter that times out or is cancelled is removed from the queue. A full queue or elapsed wait rejects with `BulkheadRejectedError`. Waiting consumes no permit.

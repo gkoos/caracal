@@ -15,11 +15,13 @@ Valid transitions - enforced by the implementation and verified by property test
 | From | To | Trigger |
 |---|---|---|
 | `closed` | `open` | failure ratio ≥ `failureThreshold` after ≥ `minimumThroughput` observations |
-| `open` | `half-open` | `openMs` elapsed since last opened |
+| `open` | `half-open` | First admission attempt after `openMs` has elapsed since the breaker opened |
 | `half-open` | `closed` | `halfOpenSuccesses` consecutive probe successes |
 | `half-open` | `open` | any probe failure |
 
 `closed → half-open`, `open → closed`, and `open → open` are impossible within a single transition.
+
+The `open → half-open` edge is lazy rather than driven by a timer. The local breaker has no background clock, so it makes the transition inside the first admission attempt after `openMs`: a breaker receiving no traffic stays `open` past `openMs`, and `snapshot()` reports the last transition rather than a recomputed state. The distributed policy makes the same transition inside `admitProbe`, so the probe that triggers it is admitted in one atomic step.
 
 ## Sliding window
 
@@ -79,6 +81,8 @@ breaker.snapshot()
 // { coordination: "local", state, failures, successes, observations,
 //   probesInFlight, halfOpenSuccesses }
 ```
+
+The returned policy carries `coordination` (`"local"` or `"distributed"`). `snapshot()` exists on local policies only - the distributed policy's state lives in the coordinator - and it reports the last recorded transition rather than a state recomputed at read time.
 
 Local attempts capture a generation at admission. Every state transition starts a new generation; results from older generations are discarded without changing the current window or probe counters. The caller still receives the original result or error. This prevents a late probe success from closing a breaker that another probe has already reopened.
 

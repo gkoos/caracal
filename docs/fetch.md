@@ -121,7 +121,7 @@ const api = operation({
 - exponential backoff (`100ms × 2^(attempt - 1)`, capped at 30s), and
 - the delay the server asked for in `Retry-After`, parsed as delta-seconds or an HTTP-date.
 
-The result is then extended by up to 10% additive jitter, so replicas do not retry in lockstep. Jitter only ever lengthens the wait and the wait is clamped at 30s - both are deliberate safety bounds, not protocol semantics.
+The result is then extended by up to 10% additive jitter, so replicas do not retry in lockstep. Jitter only ever lengthens the wait, and `maxDelayMs` caps the deterministic part: with the defaults - a 30s cap and 10% jitter - the longest wait this function returns is 33s. Both are deliberate safety bounds, not protocol semantics.
 
 The defaults are configurable when you need them:
 
