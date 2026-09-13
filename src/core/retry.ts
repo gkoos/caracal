@@ -164,16 +164,21 @@ export function retry(options: RetryOptions): Policy {
             context.capabilities.replay !== "safe"
           ) {
             // Declining to retry is observable: without this, a call that was
-            // never retried looks identical to one with no retry policy.
-            emitRuntimeEvent(context, {
-              type: "retry.declined",
-              outcome: summarized(outcome),
-              classification: outcomeClassification,
-              reason:
-                context.capabilities.replay !== "safe"
-                  ? "replay-unsafe"
-                  : "not-retryable",
-            })
+            // never retried looks identical to one with no retry policy. A
+            // success is not eligible for a retry in the first place, so it
+            // emits nothing - a counter over this event must not track
+            // successes.
+            if (outcomeClassification !== "success") {
+              emitRuntimeEvent(context, {
+                type: "retry.declined",
+                outcome: summarized(outcome),
+                classification: outcomeClassification,
+                reason:
+                  context.capabilities.replay !== "safe"
+                    ? "replay-unsafe"
+                    : "not-retryable",
+              })
+            }
             return value
           }
 
@@ -208,16 +213,20 @@ export function retry(options: RetryOptions): Policy {
             outcomeClassification !== "retryable"
           ) {
             // Same event as the value path: the caller can tell a declined
-            // retry from a missing retry policy.
-            emitRuntimeEvent(context, {
-              type: "retry.declined",
-              outcome: summarized(outcome),
-              classification: outcomeClassification,
-              reason:
-                context.capabilities.replay !== "safe"
-                  ? "replay-unsafe"
-                  : "not-retryable",
-            })
+            // retry from a missing retry policy. The success filter is the same
+            // one - a classifier that calls a thrown error a success is saying
+            // there was nothing to retry, not that a retry was declined.
+            if (outcomeClassification !== "success") {
+              emitRuntimeEvent(context, {
+                type: "retry.declined",
+                outcome: summarized(outcome),
+                classification: outcomeClassification,
+                reason:
+                  context.capabilities.replay !== "safe"
+                    ? "replay-unsafe"
+                    : "not-retryable",
+              })
+            }
             throw error
           }
 

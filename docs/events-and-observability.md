@@ -36,7 +36,7 @@ const op = operation({
 |---|---|---|
 | `retry.scheduled` | When a retry is queued | `nextAttempt`, `delayMs`, `outcome`, `classification` |
 | `retry.exhausted` | When `maxAttempts` is reached | `outcome`, `classification` |
-| `retry.declined` | Retry declined to run: the adapter is not `replay: "safe"`, or the outcome was not classifiable as retryable | `outcome`, `classification`, `reason` (`"replay-unsafe"` \| `"not-retryable"`) |
+| `retry.declined` | Retry declined to schedule another attempt for a non-success outcome - the adapter is not `replay: "safe"`, or the classification is neither `retryable` nor `success`. A successful call emits nothing | `outcome`, `classification`, `reason` (`"replay-unsafe"` \| `"not-retryable"`) |
 
 ## Bulkhead
 

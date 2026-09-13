@@ -119,6 +119,11 @@ The harness checks that:
 - A successful call resolves and, if `assertResult` is provided, the result passes your assertion
 - Each `classifications` entry produces the expected classification from `classify`
 - If an `abort` scenario is provided, cancellation behaves as described in your `verify` function
+- The successful call emits exactly the operation lifecycle, in order: `execution.started`, `attempt.started`, `attempt.settled`, `execution.settled`
+
+The lifecycle check is stricter than it looks: it asserts the *whole* event list, so an adapter that emits extra lifecycle events fails it. That happens if `execute` wraps a Caracal `operation` of its own - the inner operation's events are recorded by the outer sink. Retrying *inside* `execute` without Caracal is fine; the check counts attempts, not retries.
+
+`runAdapterContractSuite(suite)` runs every generated check in order and rejects on the first failure. Use it when your runner consumes promises directly - `node:test`, or a bespoke harness - instead of registering each entry in `suite.checks` as its own test case.
 
 The harness does not guarantee correctness in all edge cases, it verifies the contract as you have configured it. Think of it as a baseline, not a complete test suite. You should write additional tests for your adapter's specific error handling, edge cases, and any classification logic beyond the basics.
 

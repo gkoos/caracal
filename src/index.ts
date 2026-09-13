@@ -23,6 +23,7 @@ export { CircuitOpenError, circuitBreaker } from "./core/circuit-breaker.js"
 export type {
   Adapter,
   Classification,
+  EventOutcome,
   EventSink,
   EventSinks,
   ExecutionContext,

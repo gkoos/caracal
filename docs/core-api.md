@@ -194,7 +194,18 @@ Local only: there is no distributed timeout.
 | `scope` | — | `(context) => string` | distributed |
 | `leaseMs` | `30_000` | `100..86400000` | distributed |
 
-`snapshot()` is available on local policies only (`{ coordination, occupancy, waiting }`); distributed occupancy lives in Redis.
+Every returned policy carries a `coordination` property (`"local"` or `"distributed"`) alongside the `Policy` members, so a policy can be introspected without knowing which factory built it. `snapshot()` is available on local policies only: `{ coordination, occupancy, waiting }` for the bulkhead, `{ coordination, state, failures, successes, observations, probesInFlight, halfOpenSuccesses }` for the breaker. Distributed occupancy and breaker state live in Redis.
+
+## Errors
+
+| Error | Thrown by | Fields |
+|---|---|---|
+| `TimeoutError` | `timeout`, when the deadline expires | `timeoutMs` |
+| `CircuitOpenError` | `circuitBreaker`, when an attempt is rejected | `policyName`, `coordination`, `scope` |
+| `BulkheadRejectedError` | `bulkhead`, when a permit is refused or a wait times out | `coordination`, `policyName`, `scope`, `reason` |
+| `CoordinatorUnavailableError` | the Redis coordinators, exported from `@gkoos/caracal/redis` | `coordination` (`"distributed"`), `cause` |
+
+`BulkheadRejectedError.reason` is `capacity`, `wait-timeout` or `cancelled` locally, and `capacity`, `coordinator-unavailable`, `admission-expired` or `lease-lost` when distributed. [Events and observability](events-and-observability.md#bulkhead) lists the `reason` each bulkhead event reports.
 
 ## Events
 

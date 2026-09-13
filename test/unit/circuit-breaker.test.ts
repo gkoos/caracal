@@ -789,4 +789,51 @@ describe("circuitBreaker.local — composition with bulkhead", () => {
     // After 1 failure the breaker opens and rejects subsequent retries
     expect(events.some((e) => e.type === "breaker.rejected")).toBe(true)
   })
+  it("transitions to half-open on the first admission after openMs, not on a timer", async () => {
+    vi.useFakeTimers()
+    try {
+      const policy = circuitBreaker.local({
+        name: "lazy-half-open",
+        minimumThroughput: 1,
+        failureThreshold: 0.5,
+        openMs: 1_000,
+      })
+      const events: OperationEvent[] = []
+      let calls = 0
+      const subject = operation({
+        name: "lazy-half-open",
+        adapter: {
+          capabilities: () => ({
+            abort: "unsupported" as const,
+            replay: "safe" as const,
+          }),
+          execute: async () => {
+            calls += 1
+            if (calls === 1) throw new Error("boom")
+            return "ok"
+          },
+        },
+        policies: [policy],
+        events: { emit: (event) => events.push(event) },
+      })
+
+      await subject.execute(undefined).catch(() => {})
+      expect(policy.snapshot().state).toBe("open")
+
+      // The local breaker has no clock of its own, so a quiet breaker stays open
+      // past openMs and snapshot() reports the last transition - the documented
+      // trigger is the next admission, not the elapsed time.
+      vi.advanceTimersByTime(60_000)
+      expect(policy.snapshot().state).toBe("open")
+
+      await expect(subject.execute(undefined)).resolves.toBe("ok")
+      expect(
+        events
+          .filter((event) => event.type === "breaker.state-changed")
+          .map((event) => event.state),
+      ).toEqual(["open", "half-open", "closed"])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

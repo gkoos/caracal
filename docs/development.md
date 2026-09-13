@@ -24,7 +24,7 @@ npm run check
 | `npm run format` | Applies the Biome formatter to the repository. |
 | `npm run format:check` | Verifies formatting without writing changes; used by CI. |
 | `npm run lint` | Runs the Biome lint rules. |
-| `npm run node:check` | Fails unless the running Node.js version satisfies `engines` (>= 20). |
+| `npm run node:check` | Fails unless the running Node.js version satisfies `engines` (Node 20.3 or newer). |
 | `npm run precheck` | Runs `node:check` automatically before `check`. |
 | `npm test` | Unit suite (`test/unit`) - fast, no external dependencies. |
 | `npm run test:watch` | Vitest in watch mode. |
@@ -143,6 +143,19 @@ npm run bench
 Runs the baseline local-policy benchmark after a fresh build. Output shows median and p99 latency in µs and throughput in operations/second for each policy combination. These numbers are a floor for performance regression detection, not load benchmarks.
 
 It then compares `EVAL` against `EVALSHA` for the Lua scripts the coordinators actually ship. The Lua bodies are captured from the wire through a byte-counting proxy, so the benchmark cannot drift from the implementation; it reports request bytes per call (measured from the socket), sequential and burst throughput, and server `usec_per_call` from `INFO commandstats`. This section needs a reachable Redis - start one with `npm run redis:up`, or point it elsewhere with `CARACAL_REDIS_URL` or `--redis-url=redis://host:6379`. Without one it prints a skip notice and the local numbers are unaffected. See [Redis coordination](redis.md) for the transport trade-off it quantifies.
+
+## Executable claims
+
+Prose is only a contract while something fails when it stops being true, so the documentation and the public surface are guarded by tests that derive their expectations from the code rather than restating it:
+
+| Guard | Checks |
+|---|---|
+| `test/unit/package-contract.test.ts` | every document's Node-floor mention states the `engines` floor (including the `(>= x)` phrasing), `engines` matches the runtime features, each entry point's source is published, and `SECURITY.md` tracks the package version |
+| `test/unit/event-surface.test.ts` | every member of the `OperationEvent` union has an emitting source, a reference-table row, and a place in each page's "Relevant events" list - and no page lists an event that no longer exists |
+| `test/unit/type-surface.test.ts` | every type the documentation names is importable from a build entry, following name-scoped re-export chains |
+| `test/unit/docs-claims.test.ts` | the `Retry-After` worst case, `node:check`'s floor against `engines`, every exported value being named in the docs, the shape of each policy object, and the error reference |
+
+Adding an event, an export or a documented number without updating these is a red test, not a review comment. `test/support/package-surface.ts` holds the entry and documentation readers they share.
 
 ## Bundle audit
 

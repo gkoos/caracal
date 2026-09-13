@@ -190,6 +190,32 @@ describe("retry.declined", () => {
     ])
   })
 
+  it("does not report a decline when the first attempt succeeded", async () => {
+    const events: OperationEvent[] = []
+    const subject = operation({
+      name: "succeeded",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async () => "ok",
+      },
+      policies: [retry({ maxAttempts: 3 })],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    await expect(subject.execute(undefined)).resolves.toBe("ok")
+    // A success emits the lifecycle and nothing else: there was no retry to
+    // decline, so a counter over `retry.declined` must not track successes.
+    expect(events.map((event) => event.type)).toEqual([
+      "execution.started",
+      "attempt.started",
+      "attempt.settled",
+      "execution.settled",
+    ])
+  })
+
   it("does not report a decline when the caller cancelled", async () => {
     const events: OperationEvent[] = []
     const controller = new AbortController()

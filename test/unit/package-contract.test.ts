@@ -65,12 +65,20 @@ describe("package contract", () => {
         .filter((name) => name.endsWith(".md"))
         .map((name) => `docs/${name}`),
     ]
+    // Two phrasings count as stating a floor: "Node 20.3" followed by a "+"/"or
+    // newer"-style qualifier, and a bare parenthesised range such as "(>= 20)".
+    // The second form is included because it is what `npm run node:check` reads
+    // like in prose, and it is exactly the phrasing the first version of this
+    // guard missed.
     const mentions = documents.flatMap((file) =>
       [
         ...readSource(file).matchAll(
-          /Node(?:\.js)?\s*(\d+(?:\.\d+)?)\s*(?:\+|or newer)/g,
+          /Node(?:\.js)?\s*(\d+(?:\.\d+)?)\s*(?:\+|or (?:newer|later|higher))|\(>=\s*(\d+(?:\.\d+)?)\)/g,
         ),
-      ].map((match) => ({ file, stated: match[1] as string })),
+      ].map((match) => ({
+        file,
+        stated: (match[1] ?? match[2]) as string,
+      })),
     )
 
     expect(mentions.length).toBeGreaterThan(0)
