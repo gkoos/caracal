@@ -82,8 +82,9 @@ export type RetryAfterDelay = (attempt: number, context: RetryContext) => number
  * Builds a `RetryDelay` that waits for the longer of exponential backoff
  * and the `Retry-After` the server sent, then adds additive jitter.
  *
- * Jitter only ever lengthens the wait, so a server-provided minimum is
- * never retried early.
+ * `maxDelayMs` caps the deterministic part, so a `Retry-After` longer than it
+ * is shortened to it: the cap is a safety bound, not protocol semantics. Within
+ * that cap, jitter only ever lengthens the wait.
  */
 export function createRetryAfterDelay(
   options: RetryAfterDelayOptions = {},
@@ -108,7 +109,11 @@ export function createRetryAfterDelay(
       Math.max(backoff, retryAfterMs(context) ?? 0),
       maxDelayMs,
     )
-    return base + Math.random() * base * jitterRatio
+    // Clamped for the same reason `retryAfterMs` clamps: `retry` rejects a delay
+    // above this, and that RangeError would replace the caller's real error
+    // rather than pacing the retry. Jitter is additive, so `maxDelayMs` alone
+    // does not bound the result.
+    return Math.min(base + Math.random() * base * jitterRatio, MAX_TIMER_MS)
   }
 }
 
