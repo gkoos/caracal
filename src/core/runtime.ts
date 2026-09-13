@@ -9,13 +9,30 @@ import type {
 
 const eventSinks = Symbol("caracal.eventSinks")
 const admissionSignals = new WeakMap<ExecutionContext, AbortSignal>()
+/**
+ * Composite admission signals, derived once per context.
+ *
+ * The inputs are immutable - the context is frozen, its `signal` is fixed, and
+ * its admission signal is set when the context is created - and this is read five
+ * to eight times per attempt by the operation, retry and the bulkheads. Building
+ * it per read also meant `admissionSignal(ctx) !== admissionSignal(ctx)`, which
+ * would leak any future `removeEventListener` against the value.
+ */
+const compositeSignals = new WeakMap<ExecutionContext, AbortSignal>()
+
 export function admissionSignal(
   context: ExecutionContext,
 ): AbortSignal | undefined {
   const admission = admissionSignals.get(context)
-  return admission && context.signal
-    ? AbortSignal.any([admission, context.signal])
-    : (admission ?? context.signal)
+  if (!admission) return context.signal
+  if (!context.signal) return admission
+
+  const cached = compositeSignals.get(context)
+  if (cached) return cached
+
+  const composite = AbortSignal.any([admission, context.signal])
+  compositeSignals.set(context, composite)
+  return composite
 }
 export function withAdmissionSignal(
   context: ExecutionContext,

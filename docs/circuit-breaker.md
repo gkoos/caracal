@@ -86,6 +86,12 @@ The returned policy carries `coordination` (`"local"` or `"distributed"`). `snap
 
 Local attempts capture a generation at admission. Every state transition starts a new generation; results from older generations are discarded without changing the current window or probe counters. The caller still receives the original result or error. This prevents a late probe success from closing a breaker that another probe has already reopened.
 
+## Liveness and clocks
+
+A half-open probe holds its slot until the attempt settles, and nothing else releases it: the local breaker has no probe lease, unlike the distributed policy, where `probeLeaseTtlMs` recovers a slot whose settle the coordinator never sees (see [half-open probe arbitration](#half-open-probe-arbitration)). An adapter promise that never settles therefore leaves the local breaker in half-open, rejecting every attempt, for the lifetime of the process. The `timeout` policy is what guarantees settlement, which is why it belongs *inside* the breaker in the recommended ordering - there it is load-bearing for liveness, not only for the caller's relief. With `abort: "unsupported"` the underlying work continues, but the attempt itself has settled and the slot is released.
+
+The two coordinations also read different clocks. The distributed bulkhead and breaker compare deadlines against the coordinator's server time (`TIME` inside the Lua), while the local breaker compares `openMs` against the wall clock. A backward NTP step extends an open window, and a forward step can admit a probe earlier than `openMs` after the transition; neither affects correctness, but both shift recovery timing on a host with a stepping clock.
+
 ## Errors
 
 `CircuitOpenError` carries `policyName`, `coordination`, and `scope`.
@@ -135,7 +141,7 @@ Use stable, non-secret values, scope keys are observable in the Redis keyspace. 
 
 Three Redis key types are used per scope: the state hash, the observations sorted set, and the probe-token sorted set.
 
-**State hash** stores `state`, `generation`, `openedAt`, `probeCount`, `probeSuccesses`. It is created by the first observation of a scope, so the window's epoch is on record from the start. A missing key is treated as closed. All state transitions are atomic Lua scripts using server-side timestamps.
+**State hash** stores `state`, `generation`, `openedAt`, `probeCount`, `probeSuccesses`. It is created by the first observation of a scope, so the window's epoch is on record from the start. A missing key is treated as closed. All state transitions are atomic Lua scripts using server-side timestamps. `probeCount` is informational - every decision uses `ZCARD` on the probe token set instead - and the conformance suite asserts the two never drift apart.
 
 TTL policy for the state hash:
 - **OPEN / HALF_OPEN**: no TTL (`PERSIST`). Because a missing key is treated as closed, expiring a non-closed hash would silently admit unrestricted traffic, reset the window epoch (breaking the stale-result guarantee), and orphan any in-flight probe lease tokens.

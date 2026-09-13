@@ -1,5 +1,9 @@
 import { expect, it } from "vitest"
-import { coordinationKey } from "../../src/coordination/redis/keys.js"
+import {
+  COORDINATION_KEY_CACHE_LIMIT,
+  coordinationKey,
+  coordinationKeyCacheSize,
+} from "../../src/coordination/redis/keys.js"
 
 function hashTag(key: string): string {
   return key.slice(key.indexOf("{") + 1, key.indexOf("}"))
@@ -17,6 +21,38 @@ it("isolates namespaces, scopes and delimiter-like identities", () => {
   ).toBe(4)
   expect(() => coordinationKey("a", "b", "c", "")).toThrow()
   expect(() => coordinationKey("a", "b", "c", "x".repeat(1025))).toThrow()
+})
+
+it("derives a key once per identity and bounds what it remembers", () => {
+  const first = coordinationKey("ns", "bulkhead:name", "op", "scope")
+  const second = coordinationKey("ns", "bulkhead:name", "op", "scope")
+  expect(second).toBe(first)
+
+  const before = coordinationKeyCacheSize()
+  coordinationKey("ns", "bulkhead:name", "op", "scope")
+  expect(coordinationKeyCacheSize()).toBe(before)
+
+  // Bounded: the cache must not grow with the number of scopes ever seen, which
+  // is what the documented cardinality requirement is protecting.
+  for (let i = 0; i < COORDINATION_KEY_CACHE_LIMIT + 50; i += 1) {
+    coordinationKey("ns", "bulkhead:name", "op", `scope-${i}`)
+  }
+  expect(coordinationKeyCacheSize()).toBeLessThanOrEqual(
+    COORDINATION_KEY_CACHE_LIMIT,
+  )
+
+  // A cached identity still returns a correct key after eviction pressure.
+  expect(coordinationKey("ns", "bulkhead:name", "op", "scope")).toBe(first)
+})
+
+it("still validates inputs it has never seen", () => {
+  expect(() => coordinationKey("ns", "bulkhead:name", "op", "")).toThrow()
+  expect(() =>
+    coordinationKey("ns", "bulkhead:name", "op", "x".repeat(1025)),
+  ).toThrow()
+  expect(() =>
+    coordinationKey("ns", "bulkhead:name", "op", "scope", ""),
+  ).toThrow()
 })
 
 it("gives every suffix of one identity the same hash-tag", () => {

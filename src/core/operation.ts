@@ -24,8 +24,12 @@ import type {
   Policy,
 } from "./types.js"
 
-const summarizeSuccess = (): EventOutcome => ({ status: "success" })
-const summarizeFailure = (): EventOutcome => ({ status: "failure" })
+/** Frozen and shared: the summary is a constant, not a fresh object per event. */
+const SUCCESS_OUTCOME: EventOutcome = Object.freeze({ status: "success" })
+const FAILURE_OUTCOME: EventOutcome = Object.freeze({ status: "failure" })
+
+const summarizeSuccess = (): EventOutcome => SUCCESS_OUTCOME
+const summarizeFailure = (): EventOutcome => FAILURE_OUTCOME
 
 function immutableCapabilities(
   capabilities: OperationCapabilities,
@@ -44,7 +48,9 @@ function normalizeSinks(events: EventSinks | undefined): readonly EventSink[] {
     return []
   }
 
-  return "emit" in events ? [events] : events
+  // Copied, never adopted: the array is frozen below, and freezing the caller's
+  // own array as a side effect of constructing an operation is not ours to do.
+  return "emit" in events ? [events] : [...events]
 }
 
 /**
@@ -94,22 +100,27 @@ function invokeAdapter<Args, Result>(
 
     try {
       const value = await adapter.execute(args, context)
-      const outcome: Outcome<Result> = { status: "success", value }
-      const classification = context.classify(outcome)
-      emit(sinks, context, {
-        type: "attempt.settled",
-        outcome: summarizeSuccess(),
-        classification,
-      })
+      if (sinks.length > 0) {
+        // Only classified to fill the event: with no sink the verdict would be
+        // computed for nobody, and the classifier contract has to stay pure for
+        // that call to be free.
+        const outcome: Outcome<Result> = { status: "success", value }
+        emit(sinks, context, {
+          type: "attempt.settled",
+          outcome: summarizeSuccess(),
+          classification: context.classify(outcome),
+        })
+      }
       return value
     } catch (error) {
-      const outcome: Outcome<Result> = { status: "failure", error }
-      const classification = context.classify(outcome)
-      emit(sinks, context, {
-        type: "attempt.settled",
-        outcome: summarizeFailure(),
-        classification,
-      })
+      if (sinks.length > 0) {
+        const outcome: Outcome<Result> = { status: "failure", error }
+        emit(sinks, context, {
+          type: "attempt.settled",
+          outcome: summarizeFailure(),
+          classification: context.classify(outcome),
+        })
+      }
       throw error
     }
   }
@@ -126,6 +137,14 @@ export function operation<Args, Result>(
 
   const policies = Object.freeze([...(options.policies ?? [])])
   const sinks = Object.freeze(normalizeSinks(options.events))
+  // The partition is constant: `policies` is frozen here, so the two filters run
+  // once per operation rather than once per execution. The chains themselves
+  // still have to be built per call, because the terminal adapter step closes
+  // over the invocation's own `args`.
+  const attemptPolicies = policies.filter(
+    (policy) => policy.phase === "attempt",
+  )
+  const outerPolicies = policies.filter((policy) => policy.phase !== "attempt")
 
   return Object.freeze({
     name: options.name,
@@ -146,13 +165,10 @@ export function operation<Args, Result>(
         sinks,
       )
       const adapter = createPipeline(
-        policies.filter((policy) => policy.phase === "attempt"),
+        attemptPolicies,
         invokeAdapter(options.adapter, args, sinks),
       )
-      const pipeline = createPipeline(
-        policies.filter((policy) => policy.phase !== "attempt"),
-        adapter,
-      )
+      const pipeline = createPipeline(outerPolicies, adapter)
 
       emit(sinks, context, { type: "execution.started" })
       try {
