@@ -48,7 +48,6 @@ export function timeout(options: TimeoutOptions): Policy {
       context: ExecutionContext,
       next: Next<Result>,
     ): Promise<Result> {
-      const timeoutError = new TimeoutError(options.ms)
       const supportsAbort = context.capabilities.abort === "supported"
       const controller = new AbortController()
       const attemptContext = withAdmissionSignal(
@@ -61,6 +60,16 @@ export function timeout(options: TimeoutOptions): Policy {
 
       const timeoutPromise = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
+          // Built here rather than above, and that is a trade-off, not a free
+          // win. Constructing an Error captures a stack, which measures ~6us
+          // against ~0.6us with `Error.stackTraceLimit = 0` and grows with
+          // pipeline depth - more than the rest of this policy put together,
+          // paid on every attempt to benefit only the ones that time out.
+          // Building it in the timer moves that cost to the timeout path, at
+          // the price of the caller's frame: the stack now shows the timer
+          // internals. `timeoutMs`, and the operation name and execution id on
+          // the `timeout.triggered` event, are what identify the call instead.
+          const timeoutError = new TimeoutError(options.ms)
           controller.abort(timeoutError)
           emitRuntimeEvent(context, {
             type: "timeout.triggered",

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   createRetryAfterDelay,
   fetchAdapter,
@@ -133,6 +133,30 @@ describe("createRetryAfterDelay", () => {
     expect(() => createRetryAfterDelay({ factor: 0.5 })).toThrow(RangeError)
     expect(() => createRetryAfterDelay({ maxDelayMs: -1 })).toThrow(RangeError)
     expect(() => createRetryAfterDelay({ jitterRatio: 2 })).toThrow(RangeError)
+  })
+
+  it("never returns a delay the retry policy would reject", () => {
+    // `maxDelayMs` bounds the deterministic part only and jitter is additive, so
+    // without a clamp the composed value can exceed what `retry` accepts - and
+    // the RangeError that follows replaces whatever the attempt actually threw.
+    const random = vi.spyOn(Math, "random").mockReturnValue(1)
+    try {
+      const atTheBound = createRetryAfterDelay({
+        maxDelayMs: 2_147_483_647,
+        jitterRatio: 1,
+      })
+      expect(atTheBound(1, context(response(503, "2147483647")))).toBe(
+        2_147_483_647,
+      )
+
+      // The documented default keeps its documented worst case, so the clamp is
+      // not quietly reshaping ordinary configurations.
+      expect(createRetryAfterDelay()(1, context(response(503, "600")))).toBe(
+        33_000,
+      )
+    } finally {
+      random.mockRestore()
+    }
   })
 })
 
