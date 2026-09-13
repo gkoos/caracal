@@ -142,3 +142,52 @@ jobs:
         env:
           CARACAL_POSTGRES_URL: postgresql://caracal:caracal@127.0.0.1:5432/caracal_test
           CARACAL_REDIS_URL: redis://127.0.0.1:6379
+
+  soak:
+    name: Soak and chaos (Valkey)
+    runs-on: ubuntu-latest
+    services:
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Soak and chaos
+        run: npm run test:integration:soak
+        env:
+          CARACAL_REDIS_URL: redis://127.0.0.1:6379
+          CARACAL_SOAK_MINUTES: "1"
+
+  bench:
+    name: Bench gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Asserts latency ratios and allocation ceilings, both machine independent.
+      # The Redis transport section skips itself without a server.
+      - name: Bench gate
+        run: npm run bench:gate

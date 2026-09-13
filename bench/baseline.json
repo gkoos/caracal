@@ -1,0 +1,83 @@
+{
+  "generatedAt": "2026-09-13T01:31:21.829Z",
+  "node": "v24.2.0",
+  "platform": "win32-x64",
+  "results": [
+    {
+      "label": "bare adapter call (no framework)",
+      "iterations": 50000,
+      "medianUs": 0.2,
+      "p99Us": 1.5,
+      "opsPerSec": 2744779
+    },
+    {
+      "label": "no policy (baseline)",
+      "iterations": 50000,
+      "medianUs": 1.3,
+      "p99Us": 5.7,
+      "opsPerSec": 562752
+    },
+    {
+      "label": "timeout only",
+      "iterations": 50000,
+      "medianUs": 18.9,
+      "p99Us": 45.5,
+      "opsPerSec": 48443
+    },
+    {
+      "label": "retry only (1 attempt, success)",
+      "iterations": 50000,
+      "medianUs": 1.7,
+      "p99Us": 5.1,
+      "opsPerSec": 518946
+    },
+    {
+      "label": "timeout + retry (success path)",
+      "iterations": 50000,
+      "medianUs": 19.1,
+      "p99Us": 44.8,
+      "opsPerSec": 48744
+    },
+    {
+      "label": "local bulkhead (uncontested)",
+      "iterations": 50000,
+      "medianUs": 1.8,
+      "p99Us": 6.8,
+      "opsPerSec": 449705
+    },
+    {
+      "label": "local circuit breaker (always closed)",
+      "iterations": 50000,
+      "medianUs": 1.7,
+      "p99Us": 5.5,
+      "opsPerSec": 509017
+    },
+    {
+      "label": "timeout + retry + breaker + bulkhead",
+      "iterations": 50000,
+      "medianUs": 24.4,
+      "p99Us": 50.5,
+      "opsPerSec": 38515
+    }
+  ],
+  "allocations": [
+    {
+      "label": "bare adapter call (no framework)",
+      "iterations": 20000,
+      "bytesPerAttempt": 664.4444,
+      "retainedBytesPerAttempt": 0
+    },
+    {
+      "label": "no policy",
+      "iterations": 20000,
+      "bytesPerAttempt": 3104.668,
+      "retainedBytesPerAttempt": 1.4872
+    },
+    {
+      "label": "full local set",
+      "iterations": 20000,
+      "bytesPerAttempt": 7011.2896,
+      "retainedBytesPerAttempt": 1.648
+    }
+  ]
+}

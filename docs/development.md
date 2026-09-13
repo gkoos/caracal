@@ -33,7 +33,7 @@ npm run check
 | `npm run test:integration` | Integration suite (`test/integration`); requires services and `CARACAL_*` URLs. |
 | `npm run check` | `format:check` -> `lint` -> `typecheck` -> `build` -> unit tests. |
 | `npm run test:all` | `check`, then the property, fuzz, and integration suites. |
-| `npm run bench` | Builds, then runs the local-policy baseline and the Redis `EVAL`/`EVALSHA` script-transport comparison. |
+| `npm run bench` | Builds, then runs the local-policy baseline (latency and allocations per attempt) and the Redis `EVAL`/`EVALSHA` script-transport comparison. |
 | `npm run audit:bundle` | Builds, then asserts the public exports and the root bundle's dependencies. |
 | `npm run changeset` | Records a changeset describing a pending release. |
 | `npm run version` | Applies pending changesets: bumps the version, updates `CHANGELOG.md`, and syncs `SECURITY.md`'s supported-versions table. |
@@ -45,6 +45,9 @@ npm run check
 | `npm run postgres:down` | Stops the Compose services. |
 | `npm run test:integration:postgres` | Starts PostgreSQL, sets `CARACAL_POSTGRES_URL`, and runs the full integration suite. |
 | `npm run test:integration:cluster` | Starts a three-master Valkey cluster, sets `CARACAL_REDIS_CLUSTER_URLS`, and runs the cluster suite. |
+| `npm run test:integration:soak` | Starts Valkey unless `CARACAL_REDIS_URL` is set, then runs the soak and chaos suite. |
+| `npm run bench:gate` | Builds, then runs the benchmark and fails on a machine-independent regression. |
+| `npm run bench:baseline` | Builds, then re-records `bench/baseline.json` from this machine. |
 | `npm run redis:cluster:up` | Starts the local Valkey Cluster container (ports 7000-7002). |
 | `npm run redis:cluster:logs` | Follows the Valkey Cluster container logs. |
 | `npm run redis:cluster:down` | Stops the Valkey Cluster container. |
@@ -156,6 +159,33 @@ Prose is only a contract while something fails when it stops being true, so the 
 | `test/unit/docs-claims.test.ts` | the `Retry-After` worst case, `node:check`'s floor against `engines`, every exported value being named in the docs, the shape of each policy object, and the error reference |
 
 Adding an event, an export or a documented number without updating these is a red test, not a review comment. `test/support/package-surface.ts` holds the entry and documentation readers they share.
+
+## Soak and chaos
+
+```sh
+npm run test:integration:soak
+CARACAL_SOAK_MINUTES=10 CARACAL_SOAK_SEED=7 npm run test:integration:soak
+```
+
+Worker processes run the shipped distributed policies in a loop while the parent kills one mid-permit, freezes another past its lease, cuts the network through a TCP proxy, and deletes the breaker's state hash. It asserts the claims that matter: live permits never exceed `limit`, they never drop below the work the workers believe they hold, work resumes after every action, nothing outlives its lease, and the Lua the workers send is the shipped script rather than a test-only near-copy.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CARACAL_SOAK_MINUTES` | `0.25` | Run length. CI uses `1`. |
+| `CARACAL_SOAK_SEED` | `1` | Seeds the worker schedule, so a failing run replays exactly. |
+| `CARACAL_SOAK_WORKERS` | `4` | Worker processes. |
+| `CARACAL_SOAK_LIMIT` | `3` | Shared permit limit. |
+| `CARACAL_SOAK_LEASE_MS` | `400` | Lease length, short enough that expiry happens during the run. |
+
+A soak test that cannot fail is theatre, so mutate the shipped script and watch it go red: disabling the limit check fails on `maxLive`, and making `release` a no-op fails the immediate-release check.
+
+## Bench gate
+
+```sh
+npm run bench:gate
+```
+
+Fails on regressions that do not depend on the machine: per-policy latency relative to the `no policy` row measured in the same run, allocations per attempt against `bench/baseline.json`, and retained bytes per attempt as an absolute leak check. Absolute microseconds are printed but never asserted - a shared runner is not a stable clock. Re-record the baseline with `npm run bench:baseline` when a change is intended; the committed one was written on the machine that generated it, and only its allocation ceiling is load-bearing.
 
 ## Bundle audit
 

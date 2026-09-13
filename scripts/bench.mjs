@@ -51,6 +51,15 @@ function p99(sorted) {
   return sorted[Math.floor(sorted.length * 0.99)]
 }
 
+const jsonPath = process.argv
+  .find((arg) => arg.startsWith("--json="))
+  ?.slice("--json=".length)
+
+/** Latency rows, for the JSON report the gate reads. */
+const results = []
+/** Allocation rows, for the JSON report the gate reads. */
+const allocations = []
+
 async function bench(label, op, iterations = 50_000) {
   // Warm up
   for (let i = 0; i < 1_000; i++) await op.execute(undefined).catch(() => {})
@@ -69,8 +78,71 @@ async function bench(label, op, iterations = 50_000) {
     1_000 / (times.reduce((a, b) => a + b, 0) / times.length),
   )
 
+  results.push({
+    label,
+    iterations,
+    medianUs: Number(medUs),
+    p99Us: Number(p99Us),
+    opsPerSec,
+  })
   console.log(
     `${label.padEnd(40)} median=${medUs.padStart(7)}µs  p99=${p99Us.padStart(7)}µs  ops/s=${String(opsPerSec).padStart(8)}`,
+  )
+}
+
+/**
+ * Bytes allocated per operation, and bytes retained per operation.
+ *
+ * Both numbers come from `process.memoryUsage().heapUsed` around a forced
+ * collection, which measures what V8 reports rather than an allocation profiler:
+ *
+ * - `bytesPerAttempt` samples the heap every `batch` iterations *without*
+ *   collecting in between, so it approximates allocation volume. The batch is
+ *   sized well below the young generation, so a batch's allocations are still
+ *   live when it is sampled. It is an approximation, and the gate that reads it
+ *   uses a generous ceiling.
+ * - `retainedBytesPerAttempt` collects at both ends, so it measures per-attempt
+ *   growth. That one is exact enough to be a leak check: the runtime must not
+ *   accumulate per-attempt state.
+ *
+ * `--expose-gc` is required, so the section skips rather than reporting a
+ * meaningless number without it.
+ */
+async function benchAllocations(label, op, iterations = 20_000) {
+  if (typeof globalThis.gc !== "function") {
+    console.log(`  ${label.padEnd(38)} skipped - run with: node --expose-gc`)
+    return
+  }
+
+  const batch = 2_000
+  for (let i = 0; i < 1_000; i++) await op.execute(undefined).catch(() => {})
+
+  globalThis.gc()
+  const settled = process.memoryUsage().heapUsed
+  let allocated = 0
+  let previous = settled
+  for (let done = 0; done < iterations; done += batch) {
+    const count = Math.min(batch, iterations - done)
+    for (let i = 0; i < count; i++) await op.execute(undefined).catch(() => {})
+    const current = process.memoryUsage().heapUsed
+    allocated += Math.max(0, current - previous)
+    previous = current
+  }
+
+  globalThis.gc()
+  const retained = Math.max(0, process.memoryUsage().heapUsed - settled)
+  const bytesPerAttempt = allocated / iterations
+  const retainedBytesPerAttempt = retained / iterations
+
+  allocations.push({
+    label,
+    iterations,
+    bytesPerAttempt,
+    retainedBytesPerAttempt,
+  })
+  console.log(
+    `  ${label.padEnd(38)} ${bytesPerAttempt.toFixed(0).padStart(6)} B/attempt allocated` +
+      `  ${retainedBytesPerAttempt.toFixed(2).padStart(6)} B/attempt retained`,
   )
 }
 
@@ -91,6 +163,10 @@ console.log("\n=== Caracal local policy baseline benchmarks ===\n")
 console.log(
   "Each row: 50 000 operations through the named policy combination.\n",
 )
+
+await bench("bare adapter call (no framework)", {
+  execute: async () => noopAdapter.execute(),
+})
 
 await bench(
   "no policy (baseline)",
@@ -163,6 +239,32 @@ await bench(
 // ---------------------------------------------------------------------------
 // Part 2: Redis script transport (EVAL vs EVALSHA)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Allocations per operation
+// ---------------------------------------------------------------------------
+
+console.log("\n=== Allocation per operation (requires --expose-gc) ===\n")
+await benchAllocations("bare adapter call (no framework)", {
+  execute: async () => noopAdapter.execute(),
+})
+await benchAllocations(
+  "no policy",
+  operation({ name: "alloc", adapter: noopAdapter }),
+)
+await benchAllocations(
+  "full local set",
+  operation({
+    name: "alloc",
+    adapter: noopAdapter,
+    policies: [
+      timeout({ ms: 5_000 }),
+      retry({ maxAttempts: 3 }),
+      bulkhead.local({ name: "alloc", limit: 1_000 }),
+      circuitBreaker.local({ name: "alloc" }),
+    ],
+  }),
+)
 
 const REDIS_URL =
   process.argv
@@ -360,12 +462,27 @@ async function timeCalls(client, call, iterations, concurrency) {
  * Runs `drive` through a real coordinator behind the counting proxy and returns
  * the captured `[luaBody, numberOfKeys, ...args]` tuple of the first EVAL.
  */
+/**
+ * Runs `drive` through a real coordinator behind the counting proxy and returns
+ * the captured `[luaBody, numberOfKeys, ...args]` tuple of the first EVAL.
+ *
+ * `evalScript` prefers `EVALSHA`, and the server keeps its script cache across
+ * runs - so on a warm cache no EVAL is ever sent and there would be nothing to
+ * capture. The client handed to `drive` therefore omits `evalsha`, which makes
+ * the coordinator send the body with `EVAL`. That is what this section measures;
+ * it deliberately does not flush the server's cache.
+ */
 async function captureCoordinatorEvalArgs(drive) {
   const proxy = await startCaptureProxy(REDIS_URL)
   const client = createCoordinationClient(proxy.url)
+  const bodyOnly = {
+    eval: (script, numberOfKeys, ...args) =>
+      client.eval(script, numberOfKeys, ...args),
+    hmget: (key, ...fields) => client.hmget(key, ...fields),
+  }
   try {
     await client.connect()
-    await drive(client)
+    await drive(bodyOnly)
     for (let attempt = 0; attempt < 50; attempt++) {
       if (proxy.capture.evalArgs !== null) break
       await new Promise((resolve) => setTimeout(resolve, 20))
@@ -550,3 +667,22 @@ async function benchRedisScriptTransport() {
 }
 
 await benchRedisScriptTransport()
+
+if (jsonPath) {
+  const { writeFileSync } = await import("node:fs")
+  writeFileSync(
+    jsonPath,
+    `${JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        node: process.version,
+        platform: `${process.platform}-${process.arch}`,
+        results,
+        allocations,
+      },
+      null,
+      2,
+    )}\n`,
+  )
+  console.log(`\nJSON report written to ${jsonPath}\n`)
+}

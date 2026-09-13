@@ -94,7 +94,10 @@
     "redis:cluster:logs": "docker compose -f compose.cluster.yaml logs -f valkey-cluster",
     "redis:cluster:down": "docker compose -f compose.cluster.yaml down",
     "test:integration:cluster": "node scripts/test-redis-cluster.mjs",
-    "bench": "npm run build && node scripts/bench.mjs",
+    "test:integration:soak": "node scripts/test-soak.mjs",
+    "bench": "npm run build && node --expose-gc scripts/bench.mjs",
+    "bench:gate": "npm run build && node --expose-gc scripts/bench-gate.mjs",
+    "bench:baseline": "npm run build && node --expose-gc scripts/bench-gate.mjs --update-baseline",
     "audit:bundle": "npm run build && node scripts/audit-bundle.mjs",
     "changeset": "changeset",
     "version": "changeset version && node scripts/sync-security-versions.mjs"
