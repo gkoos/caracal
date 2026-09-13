@@ -29,6 +29,15 @@ export function sourceFiles(): string[] {
   )
 }
 
+/** Every test file, so a guard can assert that a claim is asserted somewhere. */
+export function testFiles(): string[] {
+  return readdirSync(new URL("../../test", import.meta.url), {
+    recursive: true,
+  })
+    .map((name) => `test/${String(name).replaceAll("\\", "/")}`)
+    .filter((file) => file.endsWith(".ts"))
+}
+
 /** Build entries, read from the tsup configuration the build actually uses. */
 export function buildEntries(): string[] {
   return [

@@ -66,7 +66,7 @@ const op = operation({
 | `bulkhead.degraded` | `lease-uncertain` | A renewal failed while the permit was in flight |
 | `bulkhead.degraded` | `release-unknown` | The release of a permit failed |
 
-`BulkheadRejectedError` reasons are a superset of the event reasons: `lease-lost` marks a permit whose lease could not be renewed mid-flight, and `admission-expired` marks a permit whose lease deadline passed before the call started (that one also emits `bulkhead.rejected`).
+`BulkheadRejectedError` reasons and event reasons are two different sets, and neither is a superset of the other: a rejection that fails closed on a coordinator error rethrows `CoordinatorUnavailableError` instead, so `coordinator-unavailable` never appears on that error, `lease-lost` is only ever delivered as an abort reason and never as a `bulkhead.rejected` reason, and `cancelled` is event-only because an aborted waiter receives its own abort reason. `BulkheadRejectedReason` and `BulkheadEventReason` in the type surface encode both sets.
 
 Every `outcome` field on an event is an `EventOutcome`: just `{ status: "success" }` or `{ status: "failure" }`. Neither the result value nor the error object reaches a sink, so a sink cannot retain response bodies or credentials, and emitting is side-effect free - a sink cannot change what a policy decides. The `classification` next to it is the adapter's verdict on that attempt.
 

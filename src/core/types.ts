@@ -131,6 +131,33 @@ export type BreakerDegradedEvent = Readonly<{
   behavior: "fail-open" | "fail-closed"
 }>
 
+/**
+ * The closed set of `reason` values a `BulkheadRejectedError` can carry.
+ *
+ * Narrower than the event set, and not a subset either: a rejection that fails
+ * closed on a coordinator error rethrows the coordinator's own error instead of
+ * constructing this one, an aborted waiter receives its own abort reason (the
+ * `bulkhead.rejected` event reports `cancelled`), and `lease-lost` is delivered
+ * as an abort reason mid-flight rather than as a rejection.
+ */
+export type BulkheadRejectedReason =
+  | "capacity"
+  | "wait-timeout"
+  | "admission-expired"
+  | "lease-lost"
+
+/** The closed set of `reason` values a bulkhead event can carry. */
+export type BulkheadEventReason =
+  | "capacity"
+  | "wait-timeout"
+  | "cancelled"
+  | "coordinator-unavailable"
+  | "admission-expired"
+  | "already-expired-or-released"
+  | "admission-unknown"
+  | "lease-uncertain"
+  | "release-unknown"
+
 // ---------------------------------------------------------------------------
 // Unified operation event union
 // ---------------------------------------------------------------------------
@@ -157,7 +184,7 @@ export type OperationEvent =
       policyName: string
       scope: string
       occupancy?: number
-      reason?: string
+      reason?: BulkheadEventReason
     }>
   | Readonly<{
       type: "execution.started"

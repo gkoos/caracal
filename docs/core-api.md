@@ -205,7 +205,7 @@ Every returned policy carries a `coordination` property (`"local"` or `"distribu
 | `BulkheadRejectedError` | `bulkhead`, when a permit is refused or a wait times out | `coordination`, `policyName`, `scope`, `reason` |
 | `CoordinatorUnavailableError` | the Redis coordinators, exported from `@gkoos/caracal/redis` | `coordination` (`"distributed"`), `cause` |
 
-`BulkheadRejectedError.reason` is `capacity`, `wait-timeout` or `cancelled` locally, and `capacity`, `coordinator-unavailable`, `admission-expired` or `lease-lost` when distributed. [Events and observability](events-and-observability.md#bulkhead) lists the `reason` each bulkhead event reports.
+**`BulkheadRejectedError.reason`** is one of `capacity`, `wait-timeout`, `admission-expired`, `lease-lost`. A caller that aborts while queued receives its own abort reason and the `bulkhead.rejected` event reports `cancelled`, so that value only ever appears on events. A failed lease request fails closed by rethrowing the coordinator's own `CoordinatorUnavailableError` instead of constructing this error, so `coordinator-unavailable` is an event reason with no error counterpart. `lease-lost` is delivered as the abort reason when a renewal fails mid-flight, so a caller only observes it when the adapter honours `context.signal`. [Events and observability](events-and-observability.md#bulkhead) lists the `reason` each bulkhead event reports.
 
 ## Events
 

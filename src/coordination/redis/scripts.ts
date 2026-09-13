@@ -74,9 +74,14 @@ export const bulkheadLeaseV1 = `local function transition()\n${leaseV1}\nend\nlo
  *                 cleanup from resurrecting them.
  *
  * Epochs:
- *   `generation` increments on every transition, and a brand new value is minted
- *   whenever the state hash has to be recreated while observation members from a
- *   previous epoch are still present (state lost to eviction or admin cleanup).
+ *   `generation` increments on every transition that moves the window's epoch -
+ *   CLOSED→OPEN, and anything leaving HALF_OPEN - and a brand new value is
+ *   minted whenever the state hash has to be recreated while observation members
+ *   from a previous epoch are still present (state lost to eviction or admin
+ *   cleanup).  OPEN→HALF_OPEN deliberately keeps the generation: it stays the
+ *   same epoch, and the superseded probe tokens are cleared with a DEL on the
+ *   probe set instead, so the membership key of the window does not move while
+ *   the recovery window changes.
  *   Window membership is decided by comparing the stored epoch, so members from
  *   a superseded epoch can never be counted again, and an attempt holding a
  *   pre-loss generation can never pass the staleness check.  A scope that has
@@ -210,7 +215,8 @@ if state == 'open' then
   -- OPEN/HALF_OPEN must never expire; PERSIST removes any prior cleanup TTL.
   redis.call('PERSIST', KEYS[1])
   -- Tokens from the superseded recovery window must not consume slots in this
-  -- one; their settle is dropped by the generation check anyway.
+  -- one; their settle finds no token and is dropped, and observations from the
+  -- same window are dropped by the epoch-scoped window instead.
   redis.call('DEL', KEYS[2])
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)

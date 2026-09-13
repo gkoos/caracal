@@ -22,6 +22,8 @@ export type {
 export { CircuitOpenError, circuitBreaker } from "./core/circuit-breaker.js"
 export type {
   Adapter,
+  BulkheadEventReason,
+  BulkheadRejectedReason,
   Classification,
   EventOutcome,
   EventSink,
