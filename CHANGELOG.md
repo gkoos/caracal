@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- 0e09c1b: Changed
+  
+  - `BulkheadRejectedError.reason` and the bulkhead event `reason` are closed unions (`BulkheadRejectedReason`, `BulkheadEventReason`) instead of `string`, and both types are exported. The two sets are different: `coordinator-unavailable` never appears on the error, because that failure rethrows `CoordinatorUnavailableError`; `lease-lost` is only ever delivered as an abort reason; and `cancelled` is event-only, since an aborted waiter receives its own abort reason rather than a `BulkheadRejectedError`
+  
+  Fixed
+  
+  - `core-api.md` and `events-and-observability.md` disagreed with each other and with the code about those reason sets. The error reasons are `capacity`, `wait-timeout`, `admission-expired` and `lease-lost`
+  - five documented reason values - `admission-unknown`, `lease-uncertain`, `already-expired-or-released`, `coordinator-unavailable` and the event-side `cancelled` - had no test asserting them. They do now, and `reason-contract.test.ts` fails when a documented reason stops being reachable or the docs drift from the unions
+  - `redis.md` claimed both clients disable offline queueing. The cluster client cannot: ioredis 6 keeps `enableOfflineQueue` at its own default for cluster node connections, wherever the flag is set. The documented safeguards are now the ones that do reach those connections - no command replay, no per-request retries, bounded command and connect timeouts - and the cluster integration suite pins the live node configuration
+  - `redis.md` and `circuit-breaker.md` described in-process scope-state retention as proportional to the scopes currently OPEN or HALF_OPEN. Entries are only removed when that scope is next read or settled as CLOSED, so a scope that opens once and goes quiet is retained for the lifetime of the process
+  - `scripts.ts` claimed the generation increments on every transition. The distributed `OPEN -> HALF_OPEN` edge deliberately keeps it and clears the probe set instead, which the docs now state alongside the local breaker's differing behaviour
+- c5c9758: Changed
+  
+  - events no longer carry the attempt payload: `outcome` on `attempt.settled`, `execution.settled`, `retry.scheduled`, `retry.exhausted` and `retry.declined` is an `EventOutcome` (`{ status }` only), so neither a result value nor an error object reaches a sink. Previously the error was passed through verbatim while the type claimed otherwise, which let a sink retain a response body or a credential - and mutate the same error object a policy would classify afterwards
+  - the `timeout` documentation is precise about what it bounds: the wrapped work, not the coordinator calls an outer distributed policy makes. A new composition section shows the outer-timeout arrangement for a total deadline
+  
+  Fixed
+  
+  - documented that a replay-safe `POST` still needs a re-sendable body: a `Request` argument is single-use and fails on its second attempt, and a stream body cannot be replayed at all. Body-bearing retries are now covered by the fetch integration suite
+  - documented that Caracal does not dispose a response body that `retry` discards - a known gap with no cleanup hook yet, with the safe workarounds
+  - `SECURITY.md`'s supported versions track the released line, every Node-floor mention matches `engines` (both now asserted by the package-contract test), the README's truncated comparison intro is complete and labelled a snapshot, and `redis.md` states which topologies CI exercises
+- 4710c90: Changed
+  
+  - `windowSize` above 10 000 is now rejected at construction in both coordinations. Threshold evaluation scans every retained member inside a blocking Lua script, so only a lower bound was safe to allow; a configuration above the cap must lower it
+  
+  Fixed
+  
+  - constructing an operation no longer freezes the caller's `events` array. `normalizeSinks` returned the array by reference and the result was frozen, so a user's own array became non-extensible as a side effect of `operation({ ... })`. Policies were already copied first; sinks now match
+  - `breaker.observation` reports the generation the coordinator recorded the observation under, rather than the generation the attempt was admitted with. The two differ when the state hash was lost while its window survived and the script mints a new epoch
+  - `classify` is documented as pure and as called more than once per attempt (the operation, `retry` and the breaker each ask). The operation no longer calls it at all when no event sink is configured, because the verdict is only used to fill the `attempt.settled` event
+  - the composite admission signal is derived once per context instead of on every read. It was rebuilt five to eight times per attempt and was not stable by identity, which would have leaked any future `removeEventListener` against it
+  - coordination keys are memoized per identity in a bounded cache: the breaker computes three keys per coordinator call and uses one or two, and each costs a SHA-256 digest and five byte-length checks
+  - operation-level overhead per execution drops: the attempt/outer policy partition is computed once at construction rather than by two `filter` calls per execution, and the event outcome summaries are shared frozen constants
+- 6c1ccf6: Added
+  
+  - `EventOutcome` is exported from the package root. It was already documented as the shape of every `outcome` field on an event, but only the internal core entry exported it, so a sink author could not name the type
+  
+  Fixed
+  
+  - `retry.declined` no longer fires for a call that succeeded. It reports a retry policy declining to schedule another attempt for a **non-success** outcome - which is what the events reference and the 0.2.0 changelog describe - so a counter over it no longer tracks successes
+  - `fetch.md` states the real ceiling of `retryAfterDelay`: `maxDelayMs` caps the deterministic wait and additive jitter extends it, so the longest wait with the defaults is 33s, not 30s
+  - the local breaker's `open -> half-open` trigger is documented as what it is - the first admission attempt after `openMs` - instead of as a timer. `snapshot()` reports the last transition, so a breaker with no traffic still reads `open`
+  - `timeout-and-retry.md` lists `retry.declined` among its relevant events
+  - `development.md` states the real Node floor beside `node:check`, and `adapter-contracts.md` documents the lifecycle-order check the contract harness performs and the `runAdapterContractSuite` runner it exports
+  - `core-api.md` gains a consolidated error reference and states the `coordination` property every returned policy carries; `docs/README.md` indexes the documentation
+
+### Patch Changes
+
+- 2718ed4: Fixed
+  
+  - an operation with no event sink no longer builds events. Both `emitRuntimeEvent` and the operation's own emitter constructed the event object - including a `Date.now()` call - before checking whether a sink would receive it, so four lifecycle events per execution were allocated for nobody. `test/unit/no-sink-fast-path.test.ts` pins it and `npm run bench:gate` measures it
+  - `npm run bench` no longer fails when the Redis script cache is already warm: capturing a script body used to depend on the server choosing `EVAL`, which it does not when it already has the SHA
+
 ## 0.2.0
 
 ### Minor Changes
