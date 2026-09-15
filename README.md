@@ -24,31 +24,33 @@ There are many libraries for applying resilience policies to operations, but mos
 
 If 40 replicas each enforce a local concurrency limit of 20, the downstream can still receive 800 concurrent requests. If each replica maintains its own circuit breaker, you get 40 independent failure windows and 40 independent recovery probes. Caracal uses Redis to coordinate those constraints across whichever scope actually matches your failure domain: region, shard, tenant, credential, workload class, or any grouping that makes sense for your application.
 
+The [caracal-sandbox](https://github.com/gkoos/caracal-sandbox) repository runs the same workload with local, fleet-wide, per-region and per-tenant limits and records what the dependency saw.
+
 ## Quick start
 
 ```sh
 npm install @gkoos/caracal
-# Redis coordination (optional peer dependency for distributed policies):
+
+# Optional peers - only needed for the distributed policies and the Postgres adapter:
 npm install ioredis
-# PostgreSQL adapter (optional peer dependency for database operations):
 npm install pg
 ```
+
+Reads one order from a supplier's HTTP API. The breaker window and the concurrency limit are per region and shared by every replica in it, the timeout and the retry stay local to the process.
 
 ```ts
 import { bulkhead, circuitBreaker, operation, retry, timeout } from "@gkoos/caracal"
 import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
 import { fetchAdapter } from "@gkoos/caracal/fetch"
-import { Pool } from "pg"
-import { postgresAdapter } from "@gkoos/caracal/postgres"
 
 // Redis coordination - connect once, share across all policies
 const redis = createCoordinationClient(process.env.REDIS_URL!)
 await redis.connect()
 
-// Circuit breaker shared across all replicas, tracked per region.
-// Use circuitBreaker.local({ name, minimumThroughput, failureThreshold, openMs }) if you only need in-process tracking.
-const breaker = circuitBreaker.distributed({
-  name: "partner-api",
+// One breaker window per region, shared by every replica in it.
+// Use circuitBreaker.local(...) if per-process state is enough.
+const sharedBreaker = circuitBreaker.distributed({
+  name: "orders",
   coordinator: redisCircuitBreakerCoordinator(redis, { namespace: "svc:prod" }),
   scope: (ctx) => `region:${String(ctx.metadata.region)}`,
   minimumThroughput: 20,
@@ -58,55 +60,40 @@ const breaker = circuitBreaker.distributed({
   onCoordinatorError: "fail-open",
 })
 
-// Concurrency limit enforced across all replicas, per region.
-// Use bulkhead.local({ name, limit, queue }) if you only need a per-process limit.
-const capacity = bulkhead.distributed({
-  name: "partner-api",
+// One concurrency budget per region, shared by every replica in it.
+// Use bulkhead.local(...) if a per-process limit is enough.
+const sharedCapacity = bulkhead.distributed({
+  name: "orders",
   coordinator: redisCoordinator(redis, { namespace: "svc:prod" }),
   scope: (ctx) => `region:${String(ctx.metadata.region)}`,
   limit: 20,
   leaseMs: 30_000,
 })
 
-// Fetch operation: breaker outermost, bulkhead innermost around the adapter.
-// timeout bounds the whole retry sequence; retry drives individual attempts.
-const fetchOp = operation({
-  name: "partner-api",
+// Policies nest in array order, outermost first. The bulkhead is attempt-phase,
+// so it wraps each adapter call wherever it sits in the array.
+const getOrder = operation({
+  name: "orders",
   adapter: fetchAdapter(),
   policies: [
-    breaker,
+    sharedBreaker,
     timeout({ ms: 10_000 }),
     retry({ maxAttempts: 3, delay: (n) => 100 * 2 ** (n - 1) }),
-    capacity,
+    sharedCapacity,
   ],
   events: { emit: (e) => console.log(e.type, e) },
 })
 
-const response = await fetchOp.execute(
-  { url: "https://api.partner.com/orders/42" },
-  { metadata: { region: "eu-west-2" } },
-)
-
-// PostgreSQL operation reusing the same policy instances.
-// A distributed policy is identified by (namespace, policy name, operation
-// name, scope), so `orders-db` gets its own breaker window and capacity
-// budget. Reuse the same operation name to share them deliberately.
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
-const dbOp = operation({
-  name: "orders-db",
-  adapter: postgresAdapter(pool),
-  policies: [breaker, retry({ maxAttempts: 2 }), timeout({ ms: 2_000 }), capacity],
-})
-
-const row = await dbOp.execute(
-  { sql: "select * from orders where id = $1", values: ["42"], replay: "safe" },
+const response = await getOrder.execute(
+  { url: "https://api.supplier.com/orders/42" },
   { metadata: { region: "eu-west-2" } },
 )
 
 // At shutdown
-await pool.end()
 redis.disconnect()
 ```
+
+Any adapter works: `@gkoos/caracal/fetch` wraps `fetch`, `@gkoos/caracal/postgres` wraps a `pg` pool or client, and [your own](docs/adapter-contracts.md) needs only the `Adapter` interface.
 
 Distributed policies coordinate by `(namespace, policy name, operation name, scope)`. Two operations with different names get independent budgets and breaker windows even when they reuse the same policy instances. To share a budget or breaker deliberately, give the operations the same name - see [bulkheads](docs/bulkhead.md) and the [Redis key scheme](docs/redis.md).
 
@@ -138,6 +125,8 @@ Policies are applied in array order, outermost first. The recommended ordering f
 // Schematic - order only; each entry is a constructed policy instance.
 policies: [breaker, timeout, retry, capacity]
 ```
+
+Array order is not the only rule. A policy can declare `phase: "attempt"` to wrap each individual adapter call; the bulkhead does, so it always sits directly around the adapter whatever its position in the array.
 
 Each policy is described below.
 
@@ -251,11 +240,7 @@ const op = operation({
 
 The full set can be found in the [Events and observability](docs/events-and-observability.md) section.
 
-## Why not just use X, bro?
-
-There are many libraries for applying resilience policies to operations, but most of them are designed for a single process. Caracal is built for the case where the constraint - capacity, health - belongs to a shared downstream rather than to one replica.
-
-The comparisons below summarise each project's documented scope at the time of writing: they are a snapshot, not a benchmark or a judgement of quality. Check the projects themselves before choosing.
+## Why not just using X, bro?
 
 | Library / category | What it covers | Distributed aspect | Caracal difference |
 |---|---|---|---|
@@ -314,6 +299,14 @@ See [Testing](docs/testing.md) and [Local development](docs/development.md) for 
 
 - [Fetch adapter](docs/fetch.md) - Cancellation, replay safety, response classification, streaming
 - [PostgreSQL adapter](docs/postgres.md) - Cancellation, replay safety, SQLSTATE classification
+
+### Operations
+
+- [Operations](docs/operations.md) - What one scope costs, what outlives its traffic, namespace lifetime, per-group coordinators
+
+### Case studies
+
+- [caracal-sandbox](https://github.com/gkoos/caracal-sandbox) - The same workload under local, fleet-wide, per-region and per-tenant limits
 
 ### Contributing
 

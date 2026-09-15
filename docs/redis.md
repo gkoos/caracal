@@ -198,6 +198,8 @@ Use stable, bounded scope values. Avoid high-cardinality identifiers (user IDs, 
 
 Redis is not the only place scope cardinality shows up. Each process also retains, in memory, the last **non-closed** state per `(operation, scope)` so it can decide fail-open versus fail-closed during a coordinator outage. CLOSED scopes are discarded, so the map tracks the scopes believed OPEN or HALF_OPEN rather than every scope ever observed - but entries are only removed when that same scope is next read or settled as CLOSED. A scope that opens once and then stops receiving traffic is therefore retained for the lifetime of the process, so bound the cardinality of scopes that can *ever* become non-closed, not just the ones open right now.
 
+[Operations](operations.md) works through what this costs at 10, 1 000 and 10 000 scopes, and the lifetime rules that go with it.
+
 ## Lease tuning
 
 ### Bulkhead `leaseMs`
