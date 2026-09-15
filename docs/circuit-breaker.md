@@ -4,7 +4,9 @@ A circuit breaker tracks the failure rate of an operation across a sliding windo
 
 By default, both local and distributed breakers use the adapter's outcome classification: `failure` and `retryable` count as failures, `success` counts as success, and `ignored` is not recorded. Returned values are classified too, so an HTTP 503 can count as a failure even though fetch resolves. Outside retry, the breaker classifies only the final outcome of the retry sequence.
 
-An explicit breaker `classify(error, isSuccess)` option overrides adapter classification. Its `isSuccess` argument indicates whether the wrapped execution resolved, regardless of how the adapter classifies the result.
+An admission refusal is the exception. A bulkhead declares `phase: "attempt"`, so it always sits directly around the adapter and its refusal (`capacity`, `wait-timeout`, `admission-expired`) always reaches an enclosing breaker - but the adapter call never started, so shedding is not evidence about the dependency and the refusal is not recorded. `countBulkheadRejections: true` records it as a failure instead. `lease-lost` is never covered by that setting: the permit was held and the call had started, so it counts, as a timeout does.
+
+An explicit breaker `classify(error, isSuccess)` option overrides the adapter classification and the refusal default. Its `isSuccess` argument indicates whether the wrapped execution resolved, regardless of how the adapter classifies the result.
 
 ## State machine
 

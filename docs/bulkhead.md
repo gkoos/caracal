@@ -4,6 +4,8 @@ A bulkhead limits the number of concurrent underlying adapter calls. Permits are
 
 This means if an adapter does not support abort, a caller can receive `TimeoutError` while the adapter call continues running and its permit remains held. The adapter promise boundary is the accounting unit, not proof that the remote server has stopped processing. For the fetch adapter specifically, settlement means response headers have arrived - streaming body consumption is outside the adapter promise. Use a custom adapter if body consumption is the capacity boundary you need.
 
+A refusal is not evidence about the dependency. The adapter call never started, so an enclosing circuit breaker does not record `capacity`, `wait-timeout` or `admission-expired` refusals; `countBulkheadRejections` on the breaker records them anyway. A `lease-lost` refusal is always recorded: that permit was held and the call had started. See [circuit breaker](circuit-breaker.md#ignored-results).
+
 ## Local
 
 Each process enforces its own limit independently. No coordinator or Redis connection is required.
