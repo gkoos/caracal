@@ -175,6 +175,8 @@ Admission uses two sequential coordinator calls — `readState` then (if non-clo
 
 Retention is per `(operation, scope)` and covers **only non-closed states**. A CLOSED read, a probe settlement that closes the breaker, or an `admitProbe` response of `closed` discards the entry, because CLOSED and "never seen" are treated identically here. Removal is traffic-dependent: an entry only goes away when that same scope is next read or settled as CLOSED, so a scope that opens once and then goes quiet is retained for the lifetime of the process. In-process memory therefore tracks the scopes believed OPEN or HALF_OPEN - the same scopes whose Redis state hash is kept without a TTL - provided those scopes keep receiving traffic.
 
+[Operations](operations.md) covers the consequences of that retention across many scopes, the namespace lifetime rule that goes with it, and per-group coordinators.
+
 ### Half-open probe arbitration
 
 - At most `halfOpenProbes` concurrent probes are admitted globally per scope. Enforced at the Redis level, not just per-process.

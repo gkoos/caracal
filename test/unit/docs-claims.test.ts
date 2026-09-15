@@ -166,6 +166,19 @@ describe("documentation claims", () => {
     }
   })
 
+  it("states the local/distributed state asymmetry in the same words", () => {
+    // #47: the asymmetry was stated only in the breaker page, so the bulkhead
+    // page could keep claiming that a shared instance shares its budget.
+    const asymmetry =
+      /one local instance shared by several operations \*merges\* their [^.]* into a single budget, whereas the distributed [a-z]+ keys by `\(namespace, policy name, operation name, scope\)` and keeps them separate/
+    for (const page of ["docs/bulkhead.md", "docs/circuit-breaker.md"]) {
+      expect(
+        readSource(page),
+        `${page} must state the local/distributed asymmetry`,
+      ).toMatch(asymmetry)
+    }
+  })
+
   it("describes the local half-open trigger as admission-driven", () => {
     const row = readSource("docs/circuit-breaker.md")
       .split("\n")
