@@ -186,7 +186,7 @@ Permits are held for the duration of the underlying adapter call only, not for t
 
 #### Circuit breaker
 
-Opens when the failure rate in a sliding window exceeds a threshold, blocking further attempts until a probe succeeds. Available as local (per-process) or distributed (shared across replicas via Redis).
+Opens when the failure rate in a sliding window exceeds a threshold, blocking further attempts until a probe succeeds. Available as local (per-process) or distributed (shared across replicas via Redis). A bulkhead's own admission refusals are not counted - a shed call never reached the dependency - and `countBulkheadRejections: true` records them anyway.
 
 ```ts
 import { circuitBreaker } from "@gkoos/caracal"

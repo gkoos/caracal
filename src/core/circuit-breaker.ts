@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto"
+import { BulkheadRejectedError } from "./bulkhead.js"
 import { emitRuntimeEvent } from "./runtime.js"
 import { createScopeStateCache } from "./scope-state-cache.js"
-import type { ExecutionContext, Next, Outcome, Policy } from "./types.js"
+import type {
+  BulkheadRejectedReason,
+  ExecutionContext,
+  Next,
+  Outcome,
+  Policy,
+} from "./types.js"
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -21,10 +28,35 @@ export type BreakerClassifier = (
   isSuccess: boolean,
 ) => BreakerOutcome
 
+/**
+ * Reasons a bulkhead refuses admission before the adapter call starts.  A
+ * refusal is client-side shedding: the work was never attempted, so it says
+ * nothing about the dependency's health.
+ *
+ * `lease-lost` is deliberately absent.  That permit was held and the adapter
+ * call had started, so the outcome is not a decision to shed, and it stays
+ * recorded.
+ */
+const ADMISSION_REFUSAL_REASONS: ReadonlySet<BulkheadRejectedReason> = new Set([
+  "capacity",
+  "wait-timeout",
+  "admission-expired",
+])
+
+function isAdmissionRefusal(outcome: Outcome<unknown>): boolean {
+  if (outcome.status !== "failure") return false
+  const { error } = outcome
+  return (
+    error instanceof BulkheadRejectedError &&
+    ADMISSION_REFUSAL_REASONS.has(error.reason)
+  )
+}
+
 function classifyOutcome(
   context: ExecutionContext,
   classifier: BreakerClassifier | undefined,
   outcome: Outcome<unknown>,
+  countBulkheadRejections: boolean,
 ): BreakerOutcome {
   if (classifier !== undefined) {
     return classifier(
@@ -32,6 +64,10 @@ function classifyOutcome(
       outcome.status === "success",
     )
   }
+
+  // Checked before the adapter's classification, which cannot see the
+  // difference: fetch, for one, reports every thrown error as retryable.
+  if (!countBulkheadRejections && isAdmissionRefusal(outcome)) return "ignored"
 
   const classification = context.classify(outcome)
   return classification === "retryable" ? "failure" : classification
@@ -72,6 +108,20 @@ export interface LocalBreakerOptions {
   readonly windowSize?: number
   /** Custom outcome classifier. Defaults to the adapter classification; retryable counts as failure. */
   readonly classify?: BreakerClassifier
+  /**
+   * Whether a bulkhead admission refusal counts as a dependency failure.
+   * Default: `false`.
+   *
+   * A refusal (`capacity`, `wait-timeout`, `admission-expired`) means the
+   * adapter call never started - the work was shed on purpose - so it is not
+   * evidence about the dependency. Turn this on to restore the older behaviour,
+   * where a saturated bulkhead could open an outer breaker and have it shed the
+   * rest of the run reporting the dependency as unhealthy.
+   *
+   * A refusal whose reason is `lease-lost` is never covered: that permit was
+   * held and the call had started. An explicit `classify` takes precedence.
+   */
+  readonly countBulkheadRejections?: boolean
 }
 
 export interface BreakerSnapshot {
@@ -256,6 +306,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
   const halfOpenProbeLimit = options.halfOpenProbes ?? DEFAULT_HALF_OPEN_PROBES
   const windowSize = options.windowSize ?? DEFAULT_WINDOW_SIZE
   const classifier = options.classify
+  const countBulkheadRejections = options.countBulkheadRejections ?? false
 
   let state: BreakerState = "closed"
   let generation = 0
@@ -373,7 +424,12 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
     // contribute observations or release a probe slot in the new generation.
     if (admittedGeneration !== generation || admitted !== state) return
 
-    const outcome = classifyOutcome(context, classifier, settled)
+    const outcome = classifyOutcome(
+      context,
+      classifier,
+      settled,
+      countBulkheadRejections,
+    )
 
     if (outcome === "ignored") {
       if (admitted === "half-open") {
@@ -665,6 +721,20 @@ export interface DistributedBreakerOptions {
   readonly onCoordinatorError?: "fail-open" | "fail-closed"
   /** Custom outcome classifier.  Defaults to the adapter classification; retryable counts as failure. */
   readonly classify?: BreakerClassifier
+  /**
+   * Whether a bulkhead admission refusal counts as a dependency failure.
+   * Default: `false`.
+   *
+   * A refusal (`capacity`, `wait-timeout`, `admission-expired`) means the
+   * adapter call never started - the work was shed on purpose - so it is not
+   * evidence about the dependency. Turn this on to restore the older behaviour,
+   * where a saturated bulkhead could open an outer breaker and have it shed the
+   * rest of the run reporting the dependency as unhealthy.
+   *
+   * A refusal whose reason is `lease-lost` is never covered: that permit was
+   * held and the call had started. An explicit `classify` takes precedence.
+   */
+  readonly countBulkheadRejections?: boolean
 }
 
 const DEFAULT_DIST_MINIMUM_THROUGHPUT = 20
@@ -767,6 +837,7 @@ function distributed(
   const onCoordinatorError =
     options.onCoordinatorError ?? DEFAULT_DIST_ON_COORDINATOR_ERROR
   const classifier = options.classify
+  const countBulkheadRejections = options.countBulkheadRejections ?? false
 
   // Per-(operation, scope) record of the last known NON-CLOSED state.
   // Used as a fallback when readState() fails: if the last confirmed state was
@@ -984,6 +1055,7 @@ function distributed(
           isSuccess
             ? { status: "success", value }
             : { status: "failure", error: thrownError },
+          countBulkheadRejections,
         )
         // An ignored result is never recorded.  A probe still has to settle
         // though: releasing the slot it holds is what lets the next probe
