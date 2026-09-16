@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- 9b5b2a6: The `Adapter` interface gains an optional `dispose(outcome, context)` hook. The runtime invokes it whenever it abandons a settled result rather than returning it to the caller - today, when `retry` schedules another attempt - so an adapter can release a body or handle instead of leaking it. `dispose` is fire-and-forget and isolated like event sinks. The fetch adapter implements it by cancelling the abandoned response's body, and the adapter contract suite now checks that an abandoned result is disposed.
+- 3f287ba: The local circuit breaker now arms a per-probe lease (`probeLeaseTtlMs`, default `openMs × 2`) when it admits a half-open probe. An adapter promise that never settles releases its slot when the lease expires and its late result is dropped as stale, so a hung attempt can no longer wedge the breaker in half-open for the lifetime of the process. A new `breaker.probe-expired` event reports the reclaim. This mirrors the distributed breaker's existing probe lease.
+- dffa4b0: The local bulkhead gains an optional `leaseMs` permit lease. A holder that has not settled after `leaseMs` is aborted, so an `abort: "supported"` adapter settles and releases its permit instead of wedging the bulkhead; an `abort: "unsupported"` holder keeps its permit and the expiry is reported as a `bulkhead.lease-lost` event. No default, so behavior is unchanged unless configured.
+- e815abc: An outer `timeout` now disposes a result that settles after its deadline has fired. When the timeout supersedes the inner pipeline, the losing value or error is disposed via the adapter's `dispose` hook instead of being leaked, closing the remaining part of the "definition of abandoned" from #44.
+
+### Patch Changes
+
+- 7ae5c20: `node scripts/bench.mjs` now measures coordinator round trips per execution (bulkhead, closed and half-open breakers, and both together) and per-call EVALSHA latency against `commandTimeout`. The counts in `redis.md`'s round-trip table are asserted by an integration test, so a policy that adds a coordinator call fails CI instead of silently raising the distributed cost.
+
 ## 0.5.0
 
 ### Minor Changes
