@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { BulkheadRejectedError } from "./bulkhead.js"
-import { emitRuntimeEvent } from "./runtime.js"
+import { MAX_TIMER_MS, emitRuntimeEvent } from "./runtime.js"
 import { createScopeStateCache } from "./scope-state-cache.js"
 import type {
   BulkheadRejectedReason,
@@ -101,6 +101,12 @@ export interface LocalBreakerOptions {
    * Default: 1.
    */
   readonly halfOpenProbes?: number
+  /**
+   * How long (ms) a half-open probe may stay in flight before its slot is
+   * released. An adapter promise that never settles is reclaimed here, so a
+   * hung attempt cannot wedge the breaker in half-open. Default: `openMs × 2`.
+   */
+  readonly probeLeaseTtlMs?: number
   /**
    * Sliding-window size (number of observations retained).
    * Default: 100.
@@ -234,6 +240,16 @@ function validate(opts: LocalBreakerOptions): void {
     throw new RangeError(
       `windowSize must be an integer between 1 and ${MAX_WINDOW_SIZE}`,
     )
+
+  const { probeLeaseTtlMs = openMs * 2 } = opts
+  if (
+    !Number.isInteger(probeLeaseTtlMs) ||
+    probeLeaseTtlMs < 1 ||
+    probeLeaseTtlMs > MAX_TIMER_MS
+  )
+    throw new RangeError(
+      `probeLeaseTtlMs must be an integer between 1 and ${MAX_TIMER_MS}`,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -312,8 +328,17 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
   let generation = 0
   let openedAt = 0
   let halfOpenSuccessCount = 0
-  let halfOpenProbesInFlight = 0
   const window = new SlidingWindow(windowSize)
+
+  const probeLeaseTtlMs = options.probeLeaseTtlMs ?? openMs * 2
+
+  type LocalProbe = {
+    readonly token: string
+    readonly context: ExecutionContext
+    timer: ReturnType<typeof setTimeout> | undefined
+    settled: boolean
+  }
+  const probes = new Map<string, LocalProbe>()
 
   // ---------------------------------------------------------------------------
   // Transition helpers
@@ -327,7 +352,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
     generation++
     openedAt = Date.now()
     halfOpenSuccessCount = 0
-    halfOpenProbesInFlight = 0
+    clearProbes()
     window.reset()
     emitRuntimeEvent(context, {
       type: "breaker.state-changed",
@@ -343,7 +368,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
     state = "half-open"
     generation++
     halfOpenSuccessCount = 0
-    halfOpenProbesInFlight = 0
+    clearProbes()
     window.reset()
     emitRuntimeEvent(context, {
       type: "breaker.state-changed",
@@ -359,7 +384,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
     state = "closed"
     generation++
     halfOpenSuccessCount = 0
-    halfOpenProbesInFlight = 0
+    clearProbes()
     window.reset()
     emitRuntimeEvent(context, {
       type: "breaker.state-changed",
@@ -371,10 +396,33 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
     })
   }
 
-  function admit(
-    context: ExecutionContext,
-  ): "closed" | "half-open" | "rejected" {
-    if (state === "closed") return "closed"
+  type Admission =
+    | { readonly kind: "closed" }
+    | { readonly kind: "rejected" }
+    | { readonly kind: "half-open"; readonly token: string }
+
+  function expireProbe(probe: LocalProbe): void {
+    if (probe.settled) return
+    probe.settled = true
+    if (probe.timer !== undefined) clearTimeout(probe.timer)
+    probes.delete(probe.token)
+    emitRuntimeEvent(probe.context, {
+      type: "breaker.probe-expired",
+      coordination: "local",
+      policyName: name,
+      scope: "process",
+    })
+  }
+
+  function clearProbes(): void {
+    for (const probe of probes.values()) {
+      if (probe.timer !== undefined) clearTimeout(probe.timer)
+    }
+    probes.clear()
+  }
+
+  function admit(context: ExecutionContext): Admission {
+    if (state === "closed") return { kind: "closed" }
 
     if (state === "open") {
       if (Date.now() - openedAt >= openMs) {
@@ -388,12 +436,12 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
           scope: "process",
           state: "open",
         })
-        return "rejected"
+        return { kind: "rejected" }
       }
     }
 
     // half-open
-    if (halfOpenProbesInFlight >= halfOpenProbeLimit) {
+    if (probes.size >= halfOpenProbeLimit) {
       emitRuntimeEvent(context, {
         type: "breaker.rejected",
         coordination: "local",
@@ -401,28 +449,51 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
         scope: "process",
         state: "half-open",
       })
-      return "rejected"
+      return { kind: "rejected" }
     }
 
-    halfOpenProbesInFlight++
+    const token = randomUUID()
+    const probe: LocalProbe = {
+      token,
+      context,
+      timer: undefined,
+      settled: false,
+    }
+    probe.timer = setTimeout(() => expireProbe(probe), probeLeaseTtlMs)
+    probe.timer?.unref?.()
+    probes.set(token, probe)
     emitRuntimeEvent(context, {
       type: "breaker.probe-started",
       coordination: "local",
       policyName: name,
       scope: "process",
     })
-    return "half-open"
+    return { kind: "half-open", token }
   }
 
   function observe(
     context: ExecutionContext,
-    admitted: "closed" | "half-open",
+    admission: Admission,
     admittedGeneration: number,
     settled: Outcome<unknown>,
   ): void {
     // Transitions reset the window and probe accounting. Older work must not
     // contribute observations or release a probe slot in the new generation.
-    if (admittedGeneration !== generation || admitted !== state) return
+    if (admittedGeneration !== generation) return
+
+    if (admission.kind === "half-open") {
+      if (state !== "half-open") return
+      const probe = probes.get(admission.token)
+      // The lease already reclaimed the slot (or a transition discarded the
+      // token): the late settle is stale, so it neither double-releases nor
+      // records an outcome.
+      if (probe === undefined || probe.settled) return
+      probe.settled = true
+      if (probe.timer !== undefined) clearTimeout(probe.timer)
+      probes.delete(admission.token)
+    } else if (state !== "closed") {
+      return
+    }
 
     const outcome = classifyOutcome(
       context,
@@ -432,9 +503,8 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
     )
 
     if (outcome === "ignored") {
-      if (admitted === "half-open") {
-        halfOpenProbesInFlight = Math.max(0, halfOpenProbesInFlight - 1)
-      }
+      // The probe slot was released above; an ignored result records nothing
+      // and advances recovery.
       return
     }
 
@@ -448,9 +518,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
       outcome,
     })
 
-    if (admitted === "half-open") {
-      halfOpenProbesInFlight = Math.max(0, halfOpenProbesInFlight - 1)
-
+    if (admission.kind === "half-open") {
       if (failure) {
         transitionToOpen(context, "half-open")
         return
@@ -463,7 +531,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
       return
     }
 
-    // admitted === "closed"
+    // admission.kind === "closed"
     window.record(failure)
 
     if (
@@ -489,7 +557,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
         failures: window.failures,
         successes: window.successes,
         observations: window.count,
-        probesInFlight: halfOpenProbesInFlight,
+        probesInFlight: probes.size,
         halfOpenSuccesses: halfOpenSuccessCount,
       }
     },
@@ -498,10 +566,10 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
       context: ExecutionContext,
       next: Next<Result>,
     ): Promise<Result> {
-      const admitted = admit(context)
+      const admission = admit(context)
       const admittedGeneration = generation
 
-      if (admitted === "rejected") {
+      if (admission.kind === "rejected") {
         throw new CircuitOpenError(name, "local", "process")
       }
 
@@ -519,7 +587,7 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
       } finally {
         observe(
           context,
-          admitted,
+          admission,
           admittedGeneration,
           isSuccess
             ? { status: "success", value }

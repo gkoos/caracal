@@ -80,6 +80,7 @@ Every `outcome` field on an event is an `EventOutcome`: just `{ status: "success
 | `breaker.rejected` | Admission blocked (open or half-open probe limit reached) | `coordination`, `policyName`, `scope`, `state` |
 | `breaker.observation` | After each non-ignored settled attempt | `coordination`, `policyName`, `scope`, `outcome` |
 | `breaker.probe-started` | A half-open probe is admitted | `coordination`, `policyName`, `scope` |
+| `breaker.probe-expired` | Local: a half-open probe's lease elapsed without the attempt settling, releasing its slot | `policyName`, `scope` |
 | `breaker.observation-stale` | Distributed: observation arrived for a superseded generation | `policyName`, `scope`, `attemptGeneration`, `currentGeneration` |
 | `breaker.coordinator-error` | Redis command failed during admit/observe/settle-probe | `policyName`, `scope`, `operation`, `error` |
 | `breaker.degraded` | Coordinator unavailable; fail-open/closed behaviour applied | `policyName`, `scope`, `reason`, `behavior` |

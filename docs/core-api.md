@@ -181,7 +181,7 @@ Local only: there is no distributed timeout.
 | `coordinator` | — | coordinator object | distributed |
 | `scope` | — | `(context) => string` | distributed |
 | `windowTtlMs` | `max(openMs × 3, 60_000)` | integer `>= 1` | distributed |
-| `probeLeaseTtlMs` | `openMs × 2` | integer `>= 1` | distributed |
+| `probeLeaseTtlMs` | `openMs × 2` | integer `>= 1` (local: at most `2147483647`) | both |
 | `onCoordinatorError` | `"fail-open"` | `"fail-open"` \| `"fail-closed"` | distributed |
 
 ### bulkhead

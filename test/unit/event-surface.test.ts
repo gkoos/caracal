@@ -62,6 +62,10 @@ const EVENT_COVERAGE = {
     emitters: ["src/core/circuit-breaker.ts"],
     relevantPages: ["docs/circuit-breaker.md"],
   },
+  "breaker.probe-expired": {
+    emitters: ["src/core/circuit-breaker.ts"],
+    relevantPages: ["docs/circuit-breaker.md"],
+  },
   "breaker.observation-stale": {
     emitters: ["src/core/circuit-breaker.ts"],
     relevantPages: ["docs/circuit-breaker.md"],
