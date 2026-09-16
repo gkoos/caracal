@@ -105,7 +105,7 @@ The saving is worth having because the bodies are not small. Measured with `npm 
 
 ### Round trips per execution
 
-Script transport is only half the cost: the coordinator calls themselves are sequential and depend on `commandTimeout` rather than on the script size. No local benchmark measures them, so the count is worth stating outright:
+Script transport is only half the cost: the coordinator calls themselves are sequential and depend on `commandTimeout` rather than on the script size. `node scripts/bench.mjs` measures the count per execution against a local Valkey, and the integration suite asserts it stays at these numbers, so a policy that adds a coordinator call fails a test rather than silently raising the cost:
 
 | Configuration | Coordinator calls per execution |
 |---|---|

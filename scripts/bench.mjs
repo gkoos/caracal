@@ -59,6 +59,8 @@ const jsonPath = process.argv
 const results = []
 /** Allocation rows, for the JSON report the gate reads. */
 const allocations = []
+/** Coordinator round-trip rows, for the JSON report the integration suite checks. */
+const roundTrips = []
 
 async function bench(label, op, iterations = 50_000) {
   // Warm up
@@ -666,7 +668,201 @@ async function benchRedisScriptTransport() {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Part 3: coordinator round trips per execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Counts the coordinator commands each documented configuration issues per
+ * execution, and times a bare EVALSHA round trip against the client's
+ * commandTimeout. The counts are what docs/redis.md's "Round trips per
+ * execution" table states; measuring them here means a policy that adds a
+ * coordinator call shows up as a changed number rather than a silently higher
+ * cost. Needs a reachable Redis and skips otherwise, like the transport
+ * section above.
+ */
+async function benchCoordinatorRoundTrips() {
+  console.log("\n=== Coordinator round trips per execution ===\n")
+
+  if (!(await isReachable(REDIS_URL))) {
+    console.log(
+      `Skipped: no Redis at ${REDIS_URL}. Start one with: npm run redis:up\n`,
+    )
+    return
+  }
+
+  const namespace = `bench-rt-${randomUUID()}`
+  const identity = { name: "bench", operation: "bench", scope: "shared" }
+  const client = createCoordinationClient(REDIS_URL)
+  await client.connect()
+
+  const adapter = {
+    capabilities: () => ({ abort: "unsupported", replay: "safe" }),
+    execute: async () => "ok",
+  }
+
+  // Count the coordinator's top-level commands. INFO commandstats would also
+  // count the HMGET/ZADD calls the Lua scripts make inside EVALSHA, so the
+  // round trips are counted at the client boundary instead.
+  let roundTripCalls = 0
+  const counting = {
+    eval(script, numberOfKeys, ...args) {
+      roundTripCalls += 1
+      return client.eval(script, numberOfKeys, ...args)
+    },
+    evalsha(sha, numberOfKeys, ...args) {
+      roundTripCalls += 1
+      return client.evalsha(sha, numberOfKeys, ...args)
+    },
+    hmget(key, ...fields) {
+      roundTripCalls += 1
+      return client.hmget(key, ...fields)
+    },
+  }
+
+  try {
+    /** Coordinator calls per `drive`, averaged over `executions` runs. */
+    async function measure(drive, executions) {
+      for (let index = 0; index < 100; index++) await drive()
+      roundTripCalls = 0
+      for (let index = 0; index < executions; index++) await drive()
+      return roundTripCalls / executions
+    }
+
+    // bulkhead.distributed: acquire + release (a fast attempt never renews).
+    const bulkheadPolicy = bulkhead.distributed({
+      name: "rt",
+      coordinator: redisCoordinator(counting, { namespace }),
+      scope: () => "shared",
+      limit: 1_000,
+      leaseMs: 30_000,
+    })
+    const bulkheadOp = operation({
+      name: "rt",
+      adapter,
+      policies: [bulkheadPolicy],
+    })
+    roundTrips.push({
+      config: "bulkhead.distributed",
+      calls: await measure(() => bulkheadOp.execute(undefined), 500),
+    })
+
+    // circuitBreaker.distributed, CLOSED: readState + observe.
+    const closedPolicy = circuitBreaker.distributed({
+      name: "rt",
+      coordinator: redisCircuitBreakerCoordinator(counting, { namespace }),
+      scope: () => "shared",
+      minimumThroughput: 1_000_000,
+      failureThreshold: 0.5,
+      openMs: 30_000,
+    })
+    const closedOp = operation({
+      name: "rt",
+      adapter,
+      policies: [closedPolicy],
+    })
+    roundTrips.push({
+      config: "circuitBreaker.distributed (CLOSED)",
+      calls: await measure(() => closedOp.execute(undefined), 500),
+    })
+
+    // circuitBreaker.distributed, HALF_OPEN: readState + admitProbe + settleProbe.
+    // halfOpenSuccesses is unreachable, so every probe stays half-open and costs
+    // the full three calls.
+    let shouldFail = true
+    const halfOpenPolicy = circuitBreaker.distributed({
+      name: "rt-half",
+      coordinator: redisCircuitBreakerCoordinator(counting, { namespace }),
+      scope: () => "shared",
+      minimumThroughput: 1,
+      failureThreshold: 0.5,
+      openMs: 1,
+      halfOpenProbes: 1,
+      halfOpenSuccesses: 100_000,
+    })
+    const halfOpenOp = operation({
+      name: "rt-half",
+      adapter: {
+        capabilities: () => ({ abort: "unsupported", replay: "safe" }),
+        execute: async () => {
+          if (shouldFail) throw new Error("bench boom")
+          return "ok"
+        },
+      },
+      policies: [halfOpenPolicy],
+    })
+    await halfOpenOp.execute(undefined).catch(() => {})
+    shouldFail = false
+    await new Promise((resolve) => setTimeout(resolve, 2))
+    roundTrips.push({
+      config: "circuitBreaker.distributed (HALF_OPEN)",
+      calls: await measure(() => halfOpenOp.execute(undefined), 200),
+    })
+
+    // Both policies on one operation.
+    const combinedOp = operation({
+      name: "rt",
+      adapter,
+      policies: [
+        circuitBreaker.distributed({
+          name: "rt",
+          coordinator: redisCircuitBreakerCoordinator(counting, { namespace }),
+          scope: () => "shared",
+          minimumThroughput: 1_000_000,
+          failureThreshold: 0.5,
+          openMs: 30_000,
+        }),
+        bulkhead.distributed({
+          name: "rt",
+          coordinator: redisCoordinator(counting, { namespace }),
+          scope: () => "shared",
+          limit: 1_000,
+          leaseMs: 30_000,
+        }),
+      ],
+    })
+    roundTrips.push({
+      config: "both policies",
+      calls: await measure(() => combinedOp.execute(undefined), 500),
+    })
+
+    // Per-call latency: a bare EVALSHA round trip against commandTimeout.
+    const script = await captureCoordinatorEvalArgs((bodyOnly) =>
+      redisCoordinator(bodyOnly, { namespace }).command(
+        identity,
+        "acquire",
+        "bench-token",
+        30_000,
+        1_000,
+      ),
+    )
+    const [body, numberOfKeys, ...args] = script
+    const sha = createHash("sha1").update(body).digest("hex")
+    await client.script("LOAD", body)
+    const sequential = await timeCalls(
+      client,
+      () => client.evalsha(sha, numberOfKeys, ...args),
+      SEQUENTIAL_ITERATIONS,
+      1,
+    )
+    const latencies = sequential.latencies.sort((a, b) => a - b)
+
+    console.log(`${"Configuration".padEnd(42)}Calls per execution`)
+    for (const row of roundTrips) {
+      console.log(`  ${row.config.padEnd(40)} ${row.calls}`)
+    }
+    console.log(
+      `\n  per-call latency: median ${(percentile(latencies, 0.5) * 1_000).toFixed(0)}µs, ` +
+        `p99 ${(percentile(latencies, 0.99) * 1_000).toFixed(0)}µs ` +
+        `(commandTimeout 1000ms default)\n`,
+    )
+  } finally {
+    client.disconnect()
+  }
+}
+
 await benchRedisScriptTransport()
+await benchCoordinatorRoundTrips()
 
 if (jsonPath) {
   const { writeFileSync } = await import("node:fs")
@@ -679,6 +875,7 @@ if (jsonPath) {
         platform: `${process.platform}-${process.arch}`,
         results,
         allocations,
+        roundTrips,
       },
       null,
       2,
