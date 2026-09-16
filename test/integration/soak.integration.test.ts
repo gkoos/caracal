@@ -2,7 +2,12 @@ import { fork, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
-import { bulkhead, operation } from "../../src/index.js"
+import {
+  bulkhead,
+  circuitBreaker,
+  CircuitOpenError,
+  operation,
+} from "../../src/index.js"
 import { createCoordinationClient } from "../../src/coordination/redis/client.js"
 import { scriptSha } from "../../src/coordination/redis/eval-script.js"
 import { coordinationKey } from "../../src/coordination/redis/keys.js"
@@ -520,5 +525,69 @@ describe.skipIf(!redisUrl)("distributed soak and chaos", () => {
         scriptSha(breakerSettleProbeV1),
       ]).toContain(script)
     }
+  })
+})
+
+describe("local breaker soak — hung adapter", () => {
+  it("recovers from a hung adapter instead of wedging half-open", {
+    timeout: 20_000,
+  }, async () => {
+    const policy = circuitBreaker.local({
+      name: "local-soak",
+      minimumThroughput: 1,
+      failureThreshold: 0.5,
+      openMs: 20,
+      halfOpenProbes: 3,
+      halfOpenSuccesses: 1,
+      probeLeaseTtlMs: 60,
+    })
+
+    let hang = false
+    let calls = 0
+    const subject = operation({
+      name: "local-soak",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async () => {
+          calls += 1
+          if (calls === 1) throw new Error("boom")
+          if (hang) return await new Promise<never>(() => {})
+          return "ok"
+        },
+      },
+      policies: [policy],
+    })
+
+    // Open the breaker with one failure.
+    await subject.execute(undefined).catch(() => {})
+    expect(policy.snapshot().state).toBe("open")
+
+    await sleep(20) // openMs
+
+    // Saturate half-open with hung probes.
+    hang = true
+    const hung = Array.from({ length: 3 }, () => subject.execute(undefined))
+    expect(policy.snapshot().state).toBe("half-open")
+    expect(policy.snapshot().probesInFlight).toBe(3)
+
+    // While saturated, further attempts are shed.
+    await expect(subject.execute(undefined)).rejects.toBeInstanceOf(
+      CircuitOpenError,
+    )
+
+    // The lease reclaims the slots and the breaker admits again.
+    await sleep(80) // > probeLeaseTtlMs
+    expect(policy.snapshot().probesInFlight).toBe(0)
+
+    // A fresh success probe now closes the breaker.
+    hang = false
+    await expect(subject.execute(undefined)).resolves.toBe("ok")
+    expect(policy.snapshot().state).toBe("closed")
+
+    // The hung promises never settle; nothing to await.
+    for (const promise of hung) void promise
   })
 })

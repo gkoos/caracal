@@ -96,6 +96,15 @@ export type BreakerProbeStartedEvent = Readonly<{
   generation?: number
 }>
 
+export type BreakerProbeExpiredEvent = Readonly<{
+  type: "breaker.probe-expired"
+  at: number
+  context: ExecutionContext
+  coordination: "local"
+  policyName: string
+  scope: string
+}>
+
 export type BreakerObservationStaleEvent = Readonly<{
   type: "breaker.observation-stale"
   at: number
@@ -167,6 +176,7 @@ export type OperationEvent =
   | BreakerRejectedEvent
   | BreakerObservationEvent
   | BreakerProbeStartedEvent
+  | BreakerProbeExpiredEvent
   | BreakerObservationStaleEvent
   | BreakerCoordinatorErrorEvent
   | BreakerDegradedEvent

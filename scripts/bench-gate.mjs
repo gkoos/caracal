@@ -64,7 +64,6 @@ if (benchExit !== 0) {
 
 const report = JSON.parse(readFileSync(reportPath, "utf8"))
 const latency = new Map(report.results.map((row) => [row.label, row]))
-const allocation = new Map(report.allocations.map((row) => [row.label, row]))
 
 if (updateBaseline) {
   mkdirSync(dirname(BASELINE_PATH), { recursive: true })
