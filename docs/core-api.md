@@ -193,7 +193,7 @@ Local only: there is no distributed timeout.
 | `queue` | none (reject immediately) | `{ limit: integer >= 1, timeoutMs: 1..2147483647 }` | local |
 | `coordinator` | — | coordinator object | distributed |
 | `scope` | — | `(context) => string` | distributed |
-| `leaseMs` | `30_000` | `100..86400000` | distributed |
+| `leaseMs` | `30_000` (distributed) / none (local) | distributed `100..86400000`; local `1..2147483647` | both |
 
 Every returned policy carries a `coordination` property (`"local"` or `"distributed"`) alongside the `Policy` members, so a policy can be introspected without knowing which factory built it. `snapshot()` is available on local policies only: `{ coordination, occupancy, waiting }` for the bulkhead, `{ coordination, state, failures, successes, observations, probesInFlight, halfOpenSuccesses }` for the breaker. Distributed occupancy and breaker state live in Redis.
 

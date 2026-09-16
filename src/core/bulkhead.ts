@@ -29,6 +29,14 @@ export interface LocalBulkheadOptions {
   readonly name: string
   readonly limit: number
   readonly queue?: { readonly limit: number; readonly timeoutMs: number }
+  /**
+   * How long (ms) a permit may be held before the holder is aborted. An
+   * `abort: "supported"` holder settles on the abort and releases its permit;
+   * an `abort: "unsupported"` holder keeps it, and the expiry is observable via
+   * the `bulkhead.lease-lost` event. No default: without it, a holder that
+   * never settles is never reclaimed.
+   */
+  readonly leaseMs?: number
 }
 /** Policy-specific capability supplied by caracal/redis. */
 export interface BulkheadCoordinator {
@@ -88,6 +96,7 @@ function local(options: LocalBulkheadOptions): Policy & {
 } {
   const { name, limit } = options
   const queue = options.queue && { ...options.queue }
+  const leaseMs = options.leaseMs
   validate(name, limit)
   if (
     queue &&
@@ -98,6 +107,13 @@ function local(options: LocalBulkheadOptions): Policy & {
       queue.timeoutMs > MAX_TIMER_MS)
   )
     throw new RangeError("Invalid bounded queue")
+  if (
+    leaseMs !== undefined &&
+    (!Number.isSafeInteger(leaseMs) || leaseMs < 1 || leaseMs > MAX_TIMER_MS)
+  )
+    throw new RangeError(
+      `leaseMs must be an integer between 1 and ${MAX_TIMER_MS}`,
+    )
   let occupancy = 0
   const waiting: (() => void)[] = []
   return Object.freeze({
@@ -157,10 +173,45 @@ function local(options: LocalBulkheadOptions): Policy & {
         })
       } else occupancy++
       event(context, "local", name, "process", "admitted", occupancy)
+
+      // A permit lease reclaims the slot by aborting its holder. For an
+      // `abort: "supported"` adapter the abort settles it and the `finally`
+      // below releases the permit; an `abort: "unsupported"` holder keeps the
+      // permit, and the `bulkhead.lease-lost` event is the only signal.
+      let controller: AbortController | undefined
+      let leaseTimer: ReturnType<typeof setTimeout> | undefined
+      if (leaseMs !== undefined) {
+        const holder = new AbortController()
+        controller = holder
+        const timer = setTimeout(() => {
+          event(context, "local", name, "process", "lease-lost")
+          holder.abort(
+            new BulkheadRejectedError("local", name, "process", "lease-lost"),
+          )
+        }, leaseMs)
+        timer.unref?.()
+        leaseTimer = timer
+      }
+
       try {
         signal?.throwIfAborted()
-        return await next(context)
+        return await next(
+          controller === undefined
+            ? context
+            : withAdmissionSignal(
+                context.capabilities.abort === "supported"
+                  ? withSignal(
+                      context,
+                      context.signal
+                        ? AbortSignal.any([context.signal, controller.signal])
+                        : controller.signal,
+                    )
+                  : context,
+                controller.signal,
+              ),
+        )
       } finally {
+        if (leaseTimer !== undefined) clearTimeout(leaseTimer)
         occupancy--
         // Report the released permit before handing it to the queued successor:
         // granting first would make this event's occupancy already include the

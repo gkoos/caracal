@@ -46,12 +46,12 @@ const op = operation({
 | `bulkhead.released` | Permit returned after the adapter settles | both | `policyName`, `scope`, `occupancy`, `reason` (distributed only, when the coordinator reports the permit as already expired or released) |
 | `bulkhead.rejected` | Permit denied | both | `policyName`, `scope`, `reason`, `occupancy` |
 | `bulkhead.waited` | Request entered the local queue | local | `policyName`, `scope`, `occupancy` |
-| `bulkhead.lease-lost` | Distributed lease could not be renewed | distributed | `policyName`, `scope` |
+| `bulkhead.lease-lost` | Distributed: lease could not be renewed. Local: a holder exceeded `leaseMs` and was aborted | both | `policyName`, `scope` |
 | `bulkhead.degraded` | Coordinator error during an in-flight permit | distributed | `policyName`, `scope`, `reason` |
 
 `bulkhead.waited` is local-only: the distributed policy has no queue, so it rejects immediately when the shared limit is reached. The other bulkhead events are emitted by both coordinations, reporting the occupancy the coordinator returned - except where the coordinator returned nothing at all: the `coordinator-unavailable` rejection, `bulkhead.degraded` and `bulkhead.lease-lost` omit `occupancy`, because no reply came back to read it from.
 
-`bulkhead.lease-lost` and `bulkhead.degraded` with reason `lease-uncertain` are emitted together and nowhere else: they come from the same lost-lease path, so they describe one failure with two audiences rather than two independent ones. Alerting on both double-counts a single lost permit.
+Distributed `bulkhead.lease-lost` and `bulkhead.degraded` with reason `lease-uncertain` are emitted together and nowhere else: they come from the same lost-lease path, so they describe one failure with two audiences rather than two independent ones. Alerting on both double-counts a single lost permit. A local `bulkhead.lease-lost` is emitted alone - it reports a holder exceeding the local `leaseMs`, not a coordinator failure, so there is no accompanying `bulkhead.degraded`.
 
 `reason` values by event:
 

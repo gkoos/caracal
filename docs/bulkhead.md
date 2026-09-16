@@ -17,6 +17,7 @@ const capacity = bulkhead.local({
   name: "partner-api",
   limit: 12,
   queue: { limit: 24, timeoutMs: 250 }, // optional; default is immediate rejection
+  leaseMs: 30_000, // optional; abort a holder held longer than this
 })
 
 const op = operation({ name: "orders", adapter, policies: [capacity] })
@@ -29,6 +30,8 @@ The returned policy carries `coordination` (`"local"` or `"distributed"`), so co
 Local state is per instance, not per name: two instances with the same name are completely independent, each owns its own in-process state - and the converse holds: one local instance shared by several operations *merges* their permits into a single budget, whereas the distributed bulkhead keys by `(namespace, policy name, operation name, scope)` and keeps them separate.
 
 The optional queue holds waiters in FIFO order up to `queue.limit` waiters (24 in the example above, independent of the `limit` permits). A waiter that times out or is cancelled is removed from the queue. A full queue or elapsed wait rejects with `BulkheadRejectedError`. Waiting consumes no permit.
+
+The optional `leaseMs` aborts a permit holder whose adapter still hasn't settled after that long. For an `abort: "supported"` adapter the abort settles it, so its `finally` releases the permit and the queued successor is granted instead of the bulkhead wedging at `limit`. An `abort: "unsupported"` holder keeps its permit - the runtime cannot release it without admitting overlapping work - and the expiry is reported as a `bulkhead.lease-lost` event. There is no default: without `leaseMs`, a holder that never settles is never reclaimed.
 
 ## Distributed
 
