@@ -565,7 +565,10 @@ describe("local breaker soak — hung adapter", () => {
     await subject.execute(undefined).catch(() => {})
     expect(policy.snapshot().state).toBe("open")
 
-    await sleep(20) // openMs
+    // Give the lazy open -> half-open transition comfortable headroom: the
+    // transition fires on the first admission once openMs has elapsed, and a
+    // wall clock that advances in coarse steps must not land short of it.
+    await sleep(100)
 
     // Saturate half-open with hung probes.
     hang = true
@@ -578,8 +581,9 @@ describe("local breaker soak — hung adapter", () => {
       CircuitOpenError,
     )
 
-    // The lease reclaims the slots and the breaker admits again.
-    await sleep(80) // > probeLeaseTtlMs
+    // The lease reclaims the slots and the breaker admits again. Sleep well
+    // past probeLeaseTtlMs so the unref'd lease timers have fired.
+    await sleep(200)
     expect(policy.snapshot().probesInFlight).toBe(0)
 
     // A fresh success probe now closes the breaker.
