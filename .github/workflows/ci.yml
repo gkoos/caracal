@@ -93,7 +93,7 @@ jobs:
         run: npm ci
 
       - name: Redis integration tests
-        run: npm run test:integration -- --reporter=verbose test/integration/redis.integration.test.ts test/integration/bulkhead.redis.integration.test.ts test/integration/circuit-breaker.redis.integration.test.ts test/integration/coordinator-conformance.integration.test.ts test/integration/redis-acl.integration.test.ts
+        run: npm run test:integration -- --reporter=verbose test/integration/redis.integration.test.ts test/integration/bulkhead.redis.integration.test.ts test/integration/circuit-breaker.redis.integration.test.ts test/integration/coordinator-conformance.integration.test.ts test/integration/redis-acl.integration.test.ts test/integration/coordinator-round-trips.integration.test.ts
         env:
           CARACAL_REDIS_URL: redis://127.0.0.1:6379
 
@@ -172,6 +172,11 @@ jobs:
         env:
           CARACAL_REDIS_URL: redis://127.0.0.1:6379
           CARACAL_SOAK_MINUTES: "1"
+
+      - name: Report coordinator round trips
+        run: npm run bench
+        env:
+          CARACAL_REDIS_URL: redis://127.0.0.1:6379
 
   bench:
     name: Bench gate
