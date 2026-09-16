@@ -157,6 +157,10 @@ export function disposeAbandoned(
   }
 }
 
+export function hasDisposer(context: ExecutionContext): boolean {
+  return disposers.get(context) !== undefined
+}
+
 /**
  * Largest delay `setTimeout` honours.  Anything above it is silently clamped to
  * 1 ms by the platform, so accepting larger values would turn a long wait into
