@@ -30,4 +30,30 @@ describe("adapter contract harness", () => {
       Promise.all(suite.checks.map((check) => check.run())),
     ).resolves.toHaveLength(2)
   })
+
+  it("checks that an abandoned result is disposed", async () => {
+    const suite = defineAdapterContractSuite({
+      name: "disposing",
+      adapter: {
+        capabilities: () => ({ abort: "unsupported", replay: "safe" }),
+        execute: async () => "ok",
+        dispose: () => undefined,
+      },
+      success: { args: undefined },
+      capabilities: [
+        { args: undefined, expected: { abort: "unsupported", replay: "safe" } },
+      ],
+    })
+
+    expect(suite.checks.map((check) => check.name)).toContain(
+      "disposing: abandoned result is disposed",
+    )
+    await expect(
+      suite.checks
+        .find(
+          (check) => check.name === "disposing: abandoned result is disposed",
+        )
+        ?.run(),
+    ).resolves.toBeUndefined()
+  })
 })

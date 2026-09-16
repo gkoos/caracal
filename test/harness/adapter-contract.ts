@@ -1,4 +1,5 @@
 import { operation } from "../../src/core/operation.js"
+import { retry } from "../../src/core/retry.js"
 import type {
   Adapter,
   Classification,
@@ -154,6 +155,37 @@ export function defineAdapterContractSuite<Args, Result>(
               signal: controller.signal,
             }),
         })
+      },
+    })
+  }
+
+  if (options.adapter.dispose !== undefined) {
+    checks.push({
+      name: `${options.name}: abandoned result is disposed`,
+      async run(): Promise<void> {
+        const disposed: Array<Outcome<unknown>> = []
+        const wrapped: Adapter<Args, Result> = {
+          capabilities(args) {
+            return { ...options.adapter.capabilities(args), replay: "safe" }
+          },
+          execute(args, context) {
+            return options.adapter.execute(args, context)
+          },
+          classify: () => "retryable",
+          dispose(outcome, context) {
+            disposed.push(outcome)
+            return options.adapter.dispose?.(outcome, context)
+          },
+        }
+        const subject = operation({
+          name: `adapter-contract:${options.name}`,
+          adapter: wrapped,
+          policies: [retry({ maxAttempts: 2 })],
+        })
+        await subject.execute(options.success.args, {
+          executionId: "adapter-contract-dispose",
+        })
+        assertEqual(disposed.length, 1, "abandoned results disposed")
       },
     })
   }

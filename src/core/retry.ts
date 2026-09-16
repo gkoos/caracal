@@ -1,6 +1,7 @@
 import {
   MAX_TIMER_MS,
   admissionSignal,
+  disposeAbandoned,
   emitRuntimeEvent,
   nextAttempt,
 } from "./runtime.js"
@@ -199,6 +200,7 @@ export function retry(options: RetryOptions): Policy {
             outcome: summarized(outcome),
             classification: outcomeClassification,
           })
+          disposeAbandoned(context, outcome)
           await wait(delayMs, admissionSignal(context))
           context = nextAttempt(context)
         } catch (error) {
@@ -247,6 +249,7 @@ export function retry(options: RetryOptions): Policy {
             outcome: summarized(outcome),
             classification: outcomeClassification,
           })
+          disposeAbandoned(context, outcome)
           await wait(delayMs, admissionSignal(context))
           context = nextAttempt(context)
         }

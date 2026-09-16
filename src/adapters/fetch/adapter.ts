@@ -118,5 +118,9 @@ export function fetchAdapter(
         defaultResponseClassification(outcome.value)
       )
     },
+    dispose(outcome: Outcome<Response>): void | Promise<void> {
+      if (outcome.status !== "success") return
+      return outcome.value.body?.cancel()
+    },
   })
 }
