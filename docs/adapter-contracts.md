@@ -24,6 +24,12 @@ const myAdapter: Adapter<MyArgs, MyResult> = {
     }
     return "success"
   },
+  // Optional - clean up a settled result the runtime abandons
+  dispose(outcome, context) {
+    if (outcome.status === "success") {
+      outcome.value.release()
+    }
+  },
 }
 ```
 
@@ -55,6 +61,12 @@ The `classify` method maps each settled outcome to one of four values:
 If `classify` is omitted, thrown errors become `"failure"` and resolved values become `"success"`.
 
 `classify` is called more than once for the same outcome: the operation classifies it to fill in the `attempt.settled` event, `retry` classifies it to decide whether to try again, and the circuit breaker classifies it to record the observation. It must therefore be pure - counting, logging or memoising inside it will see each attempt two or three times, and the calls must not depend on one another. When no event sink is configured the operation skips its own call, so the count is two rather than three.
+
+### Disposal
+
+If a settled result holds a body or handle - a response stream, a pooled connection - declare the optional `dispose` method so the runtime can release it when it abandons the result rather than returning it to the caller. Caracal invokes `dispose` when `retry` schedules another attempt, passing the abandoned `Outcome` and the attempt's `ExecutionContext`.
+
+`dispose` follows the same isolation discipline as event sinks: it is fire-and-forget, it is never awaited on the caller path, and a synchronous throw or a rejected promise never changes what the caller sees. Return nothing (or `undefined`) when the outcome has nothing to release - an error outcome for an adapter that only disposes values is the common case.
 
 ### ExecutionContext
 

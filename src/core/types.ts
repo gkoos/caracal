@@ -29,6 +29,11 @@ export interface Adapter<Args, Result> {
   execute(args: Args, context: ExecutionContext): Promise<Result>
   capabilities(args: Args): OperationCapabilities
   classify?(outcome: Outcome<Result>): Classification
+  /** Optional cleanup for a settled outcome the runtime abandons. */
+  dispose?(
+    outcome: Outcome<Result>,
+    context: ExecutionContext,
+  ): void | Promise<void>
 }
 
 export type ExecutionMetadata = Readonly<Record<string, unknown>>

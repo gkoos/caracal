@@ -20,6 +20,18 @@ const admissionSignals = new WeakMap<ExecutionContext, AbortSignal>()
  */
 const compositeSignals = new WeakMap<ExecutionContext, AbortSignal>()
 
+/**
+ * Adapter disposal hooks, attached to the context an operation creates and
+ * inherited by every derived attempt context. The runtime invokes one for a
+ * settled outcome it abandons; the adapter knows what to release.
+ */
+const disposers = new WeakMap<ExecutionContext, Disposer>()
+
+type Disposer = (
+  outcome: Outcome<unknown>,
+  context: ExecutionContext,
+) => void | Promise<void>
+
 export function admissionSignal(
   context: ExecutionContext,
 ): AbortSignal | undefined {
@@ -47,6 +59,7 @@ export function withAdmissionSignal(
     derived,
     previous ? AbortSignal.any([previous, signal]) : signal,
   )
+  inheritDisposer(context, derived)
   return derived
 }
 function inheritAdmission(
@@ -89,26 +102,59 @@ export function createExecutionContext(
 }
 
 export function nextAttempt(context: ExecutionContext): ExecutionContext {
-  return inheritAdmission(
-    context,
-    attachRuntime(
-      { ...context, attempt: context.attempt + 1 },
-      runtimeContext(context)[eventSinks] ?? [],
-    ),
+  const derived = attachRuntime(
+    { ...context, attempt: context.attempt + 1 },
+    runtimeContext(context)[eventSinks] ?? [],
   )
+  inheritAdmission(context, derived)
+  inheritDisposer(context, derived)
+  return derived
 }
 
 export function withSignal(
   context: ExecutionContext,
   signal: AbortSignal | undefined,
 ): ExecutionContext {
-  return inheritAdmission(
-    context,
-    attachRuntime(
-      { ...context, signal },
-      runtimeContext(context)[eventSinks] ?? [],
-    ),
+  const derived = attachRuntime(
+    { ...context, signal },
+    runtimeContext(context)[eventSinks] ?? [],
   )
+  inheritAdmission(context, derived)
+  inheritDisposer(context, derived)
+  return derived
+}
+
+export function setDisposer(
+  context: ExecutionContext,
+  dispose: Disposer,
+): void {
+  disposers.set(context, dispose)
+}
+
+function inheritDisposer(
+  source: ExecutionContext,
+  target: ExecutionContext,
+): ExecutionContext {
+  const dispose = disposers.get(source)
+  if (dispose !== undefined) disposers.set(target, dispose)
+  return target
+}
+
+export function disposeAbandoned(
+  context: ExecutionContext,
+  outcome: Outcome<unknown>,
+): void {
+  const dispose = disposers.get(context)
+  if (dispose === undefined) return
+  try {
+    const pending = dispose(outcome, context) as unknown
+    const thenable = pending as { catch?: unknown } | null | undefined
+    if (typeof thenable?.catch === "function") {
+      void (pending as Promise<unknown>).catch(() => {})
+    }
+  } catch {
+    // A throwing dispose must not change what the caller sees.
+  }
 }
 
 /**

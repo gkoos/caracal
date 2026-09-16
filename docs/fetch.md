@@ -157,6 +157,6 @@ delay: (attempt, context) =>
 
 ### Discarded responses
 
-Caracal does not read or cancel a response body it abandons, and this is a known gap rather than a contract: when `retry` decides to make another attempt, the previous attempt's response is still an open, unconsumed stream, and the adapter never learns that it was discarded. Under sustained `5xx` responses - exactly when retries fire - that retains sockets and buffers.
+The fetch adapter declares a `dispose` hook, and Caracal invokes it whenever it abandons a settled response rather than returning it to the caller - today that is when `retry` schedules another attempt. `dispose` cancels the abandoned response's body, releasing its socket and buffer. Under sustained `5xx` responses - exactly when retries fire - each discarded response is now cancelled instead of being held until garbage collection.
 
-Until a disposal hook exists, the safe options are to avoid body-bearing retries (`replay: "unsafe"` returns the response to the caller instead of discarding it), or to consume or cancel the body inside a custom `fetch` implementation injected through the adapter options.
+`dispose` follows the same isolation discipline as event sinks: it is fire-and-forget, a throwing or rejected disposal never changes what the caller sees, and it is never awaited on the caller path. Cancelling the body is the adapter's own cleanup, so it still runs for an `abort: "unsupported"` attempt - it does not depend on the attempt's signal.

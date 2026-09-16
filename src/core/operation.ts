@@ -5,6 +5,7 @@ import {
   createClassifier,
   createExecutionContext,
   emitToSink,
+  setDisposer,
   type EventWithoutRuntimeFields,
 } from "./runtime.js"
 import type {
@@ -164,6 +165,12 @@ export function operation<Args, Result>(
         },
         sinks,
       )
+      if (options.adapter.dispose !== undefined) {
+        const dispose = options.adapter.dispose
+        setDisposer(context, (outcome, ctx) =>
+          dispose(outcome as Outcome<Result>, ctx),
+        )
+      }
       const adapter = createPipeline(
         attemptPolicies,
         invokeAdapter(options.adapter, args, sinks),
