@@ -157,6 +157,6 @@ delay: (attempt, context) =>
 
 ### Discarded responses
 
-The fetch adapter declares a `dispose` hook, and Caracal invokes it whenever it abandons a settled response rather than returning it to the caller - today that is when `retry` schedules another attempt. `dispose` cancels the abandoned response's body, releasing its socket and buffer. Under sustained `5xx` responses - exactly when retries fire - each discarded response is now cancelled instead of being held until garbage collection.
+The fetch adapter declares a `dispose` hook, and Caracal invokes it whenever it abandons a settled response rather than returning it to the caller - when `retry` schedules another attempt, or a `timeout` supersedes a response that settled after its deadline. `dispose` cancels the abandoned response's body, releasing its socket and buffer. Under sustained `5xx` responses - exactly when retries fire - each discarded response is now cancelled instead of being held until garbage collection.
 
 `dispose` follows the same isolation discipline as event sinks: it is fire-and-forget, a throwing or rejected disposal never changes what the caller sees, and it is never awaited on the caller path. Cancelling the body is the adapter's own cleanup, so it still runs for an `abort: "unsupported"` attempt - it does not depend on the attempt's signal.

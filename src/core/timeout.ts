@@ -1,6 +1,8 @@
 import {
   MAX_TIMER_MS,
+  disposeAbandoned,
   emitRuntimeEvent,
+  hasDisposer,
   withAdmissionSignal,
   withSignal,
 } from "./runtime.js"
@@ -57,9 +59,11 @@ export function timeout(options: TimeoutOptions): Policy {
         controller.signal,
       )
       let timer: ReturnType<typeof setTimeout> | undefined
+      let timedOut = false
 
       const timeoutPromise = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
+          timedOut = true
           // Built here rather than above, and that is a trade-off, not a free
           // win. Constructing an Error captures a stack, which measures ~6us
           // against ~0.6us with `Error.stackTraceLimit = 0` and grows with
@@ -80,8 +84,26 @@ export function timeout(options: TimeoutOptions): Policy {
         }, options.ms)
       })
 
+      // A value the timeout supersedes is abandoned, not returned: watch the
+      // attempt so a result that settles after the deadline can be disposed.
+      const attempt = next(attemptContext)
+      if (hasDisposer(attemptContext)) {
+        void attempt.then(
+          (value) => {
+            if (timedOut) {
+              disposeAbandoned(attemptContext, { status: "success", value })
+            }
+          },
+          (error) => {
+            if (timedOut) {
+              disposeAbandoned(attemptContext, { status: "failure", error })
+            }
+          },
+        )
+      }
+
       try {
-        return await Promise.race([next(attemptContext), timeoutPromise])
+        return await Promise.race([attempt, timeoutPromise])
       } finally {
         if (timer !== undefined) {
           clearTimeout(timer)

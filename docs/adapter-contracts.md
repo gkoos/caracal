@@ -64,7 +64,7 @@ If `classify` is omitted, thrown errors become `"failure"` and resolved values b
 
 ### Disposal
 
-If a settled result holds a body or handle - a response stream, a pooled connection - declare the optional `dispose` method so the runtime can release it when it abandons the result rather than returning it to the caller. Caracal invokes `dispose` when `retry` schedules another attempt, passing the abandoned `Outcome` and the attempt's `ExecutionContext`.
+If a settled result holds a body or handle - a response stream, a pooled connection - declare the optional `dispose` method so the runtime can release it when it abandons the result rather than returning it to the caller. Caracal invokes `dispose` when `retry` schedules another attempt, or when an outer `timeout` supersedes a result that settled after its deadline, passing the abandoned `Outcome` and the attempt's `ExecutionContext`.
 
 `dispose` follows the same isolation discipline as event sinks: it is fire-and-forget, it is never awaited on the caller path, and a synchronous throw or a rejected promise never changes what the caller sees. Return nothing (or `undefined`) when the outcome has nothing to release - an error outcome for an adapter that only disposes values is the common case.
 

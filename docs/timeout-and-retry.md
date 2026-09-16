@@ -12,7 +12,7 @@ timeout({ ms: 5_000 })
 
 Bounds how long the wrapped work may take: the timer starts when the policy runs and the caller is rejected when it expires, whether or not the adapter honours the abort signal. It does not cover coordinator calls an outer distributed policy makes - see [composition](#composition).
 
-If the adapter declares `abort: "unsupported"`, Caracal does not invent cancellation. The caller receives `TimeoutError` on schedule, but the underlying work may continue. Its eventual settlement is still visible through `attempt.settled` events, and any bulkhead permit it holds remains held until the adapter promise actually resolves or rejects.
+If the adapter declares `abort: "unsupported"`, Caracal does not invent cancellation. The caller receives `TimeoutError` on schedule, but the underlying work may continue. Its eventual settlement is still visible through `attempt.settled` events, and any bulkhead permit it holds remains held until the adapter promise actually resolves or rejects. If the adapter declares a `dispose` hook, a result that settles after the deadline has already fired is disposed rather than leaked.
 
 An internal admission signal separately cancels queued bulkhead waiters and prevents new retry attempts from starting once the timed section has expired, without falsely signaling cancellation to the adapter.
 
