@@ -10,7 +10,7 @@ Use [GitHub private security advisories](https://github.com/gkoos/caracal/securi
 
 | Version | Supported |
 | ------- | --------- |
-| 0.6.x   | ✅        |
+| 0.7.x   | ✅        |
 
 Older versions are not supported once a new minor or major release is available.
 
