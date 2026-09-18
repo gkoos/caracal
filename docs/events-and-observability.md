@@ -90,3 +90,24 @@ Distributed `breaker.state-changed`, `breaker.observation`, `breaker.probe-start
 `breaker.degraded` carries `reason: "coordinator-unavailable"` plus `behavior: "fail-open" | "fail-closed"`. `breaker.coordinator-error` carries `operation: "admit" | "observe" | "settle-probe"`.
 
 When the coordinator read fails and the policy fails closed, `breaker.rejected` reports `state: "open"` even though no state was read: with no evidence that the breaker is open, the event means "do not send traffic". Read it as a fail-closed signal, not as a state observation.
+
+## Rate limit
+
+| Event | When | Key fields |
+|---|---|---|
+| `ratelimit.admitted` | A call is admitted under the rate | `policyName`, `scope` |
+| `ratelimit.rejected` | A call is rejected (rate exceeded, or the coordinator was unreachable) | `policyName`, `scope`, `reason`, `retryAfterMs` (`rate-exceeded` only) |
+| `ratelimit.degraded` | Coordinator error during admission | `policyName`, `scope`, `reason` |
+
+The local and distributed paths report the same three events. `retryAfterMs` is present only on a `rate-exceeded` rejection: it is the GCRA catch-up time, the delay until the next call would be admissible, and it matches the `retryAfterMs` on the thrown `RateLimitExceededError`.
+
+`reason` values by event:
+
+| Event | `reason` | Meaning |
+|---|---|---|
+| `ratelimit.rejected` (local) | `rate-exceeded` | The arrival was more than the burst tolerance ahead of schedule |
+| `ratelimit.rejected` (distributed) | `rate-exceeded` | The shared GCRA cell rejected the arrival; `retryAfterMs` is the catch-up time |
+| `ratelimit.rejected` (distributed) | `coordinator-unavailable` | The admission request failed, so the attempt fails closed |
+| `ratelimit.degraded` | `admission-unknown` | The admission result is unknown (the request failed) |
+
+`RateLimitExceededError` carries `retryAfterMs`, not a `reason`: the only rejection a caller observes from this policy is `rate-exceeded`, and a coordinator failure rethrows the coordinator's own `CoordinatorUnavailableError`. `RateLimitRejectedReason` and `RateLimitEventReason` in the type surface encode both sets.

@@ -38,6 +38,7 @@ const RATIO_LIMITS = {
   "retry only (1 attempt, success)": 5,
   "local bulkhead (uncontested)": 5,
   "local circuit breaker (always closed)": 5,
+  "local rate limit (uncontested)": 5,
   "timeout only": 8,
   "timeout + retry (success path)": 8,
   "timeout + retry + breaker + bulkhead": 10,

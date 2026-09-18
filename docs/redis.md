@@ -1,8 +1,8 @@
 # Redis foundation
 
-Distributed bulkheads and circuit breakers require a Redis coordinator. If you only use local policies, no Redis connection is needed.
+Distributed bulkheads, circuit breakers and rate limiters require a Redis coordinator. If you only use local policies, no Redis connection is needed.
 
-You create **one** Redis client and pass it to both coordinator factories. The factories just wrap the same client with different operation contracts suited to each policy.
+You create **one** Redis client and pass it to the coordinator factories. The factories just wrap the same client with different operation contracts suited to each policy.
 
 `createCoordinationClient(url, commandTimeout?)` (and `createCoordinationClusterClient(nodes, commandTimeout?, connectionOptions?)`) take the command timeout as a positional argument in milliseconds, default `1000`. It bounds every coordinator command, so it is the knob to raise when Redis is slow and commands are being abandoned:
 
@@ -11,24 +11,26 @@ const client = createCoordinationClient(process.env.REDIS_URL!, 5_000) // 5 s pe
 ```
 
 ```ts
-import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
+import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator, redisRateLimitCoordinator } from "@gkoos/caracal/redis"
 
 const client = createCoordinationClient(process.env.REDIS_URL!) // url, then optional commandTimeout ms (default 1000)
 await client.connect()
 
-// Same client, two coordinator wrappers
+// Same client, three coordinator wrappers
 const bulkheadCoord = redisCoordinator(client, { namespace: "svc:prod" })
 const breakerCoord  = redisCircuitBreakerCoordinator(client, { namespace: "svc:prod" })
+const rateCoord     = redisRateLimitCoordinator(client, { namespace: "svc:prod" })
 
 // Then pass each to its policy
-const capacity = bulkhead.distributed({ coordinator: bulkheadCoord, /* ... */ })
-const breaker  = circuitBreaker.distributed({ coordinator: breakerCoord, /* ... */ })
+const capacity   = bulkhead.distributed({ coordinator: bulkheadCoord, /* ... */ })
+const breaker    = circuitBreaker.distributed({ coordinator: breakerCoord, /* ... */ })
+const sharedRate = rateLimit.distributed({ coordinator: rateCoord, /* ... */ })
 
 // At shutdown
 client.disconnect()
 ```
 
-The two factories exist because the policies need different things from Redis. The bulkhead coordinator handles acquire/renew/release against a single sorted-set key. The circuit breaker coordinator handles state reads, windowed observations, and probe arbitration across three key types. They implement separate internal interfaces, so they have separate factories, but they share the connection.
+The three factories exist because the policies need different things from Redis. The bulkhead coordinator handles acquire/renew/release against a single sorted-set key. The circuit breaker coordinator handles state reads, windowed observations, and probe arbitration across three key types. The rate limit coordinator handles a single atomic GCRA admission against one string key. They implement separate internal interfaces, so they have separate factories, but they share the connection.
 
 ## Standalone vs Cluster
 
@@ -83,6 +85,7 @@ Every coordination slot is keyed by `caracal:v1:{sha256(JSON([namespace, policy,
 | `breaker` | circuit breaker | State hash (`state`, `generation`, `openedAt`, …) |
 | `observations` | circuit breaker | Sliding observation window sorted set |
 | `probes` | circuit breaker | Half-open probe token sorted set |
+| `rate` | rate limit | GCRA theoretical arrival time (string value) |
 
 Empty identities and components over 1 024 UTF-8 bytes are rejected. The SHA-256 pre-image includes the raw namespace/policy/operation/scope strings; **these are not anonymised**, treat them as potentially observable in Redis keyspace.
 
@@ -112,6 +115,7 @@ Script transport is only half the cost: the coordinator calls themselves are seq
 | `bulkhead.distributed` | `acquire` + `release`, plus `renew` every `leaseMs / 3` while the attempt is in flight |
 | `circuitBreaker.distributed`, CLOSED | `readState` + `observe` |
 | `circuitBreaker.distributed`, HALF_OPEN | `readState` + `admitProbe` + `settleProbe` |
+| `rateLimit.distributed` | one atomic GCRA admission, before the wrapped work starts |
 | Both policies on one operation | four, two of them before the wrapped work starts |
 
 `readState` is not cached, deliberately: the point of reading it is to see state another process may have changed since the last attempt. [Timeouts and retries](timeout-and-retry.md) works through what the sequence does to a caller's deadline, and [lease tuning](#lease-tuning) covers the renewal load.
@@ -154,6 +158,8 @@ The full set of commands required by the coordination scripts is:
 | `PERSIST` | breaker scripts | removes TTL from OPEN/HALF_OPEN state hash so it is never silently expired |
 | `EXISTS` | breaker `breakerObserveV1` | checks whether the state hash and observation set exist |
 | `DEL` | breaker `breakerAdmitProbeV1` / `breakerSettleProbeV1` | clears the probe set when a recovery window ends |
+| `GET` | rate limit `rateLimitV1` | reads the GCRA theoretical arrival time |
+| `SET` | rate limit `rateLimitV1` | writes the advanced GCRA theoretical arrival time |
 | `PING` | client health checks only | `client.ping()`; not used by the coordinators themselves |
 
 ```
@@ -165,10 +171,11 @@ ACL SETUSER caracal-prod on >strongpassword ~caracal:v1:* \
   +ZREVRANGE +ZRANGE +ZREMRANGEBYSCORE +ZREMRANGEBYRANK \
   +PEXPIRE +PEXPIREAT +PERSIST \
   +EXISTS +DEL \
+  +GET +SET \
   +PING
 ```
 
-> **Note:** every command above is load-bearing. `EVALSHA` carries the script and `TIME` is its first inner call, so denying either turns every coordinator operation into a permission error. The two policies degrade differently. A **distributed bulkhead always fails closed**: the attempt is rejected with reason `coordinator-unavailable`, so a broken grant stops traffic instead of letting all of it through. A **circuit breaker** follows `onCoordinatorError` (default `"fail-open"`) only while no prior read has established that the scope is non-closed; once a scope has been seen OPEN or HALF_OPEN, that knowledge is retained in process and an outage fails closed for that scope regardless of the setting - and because the state hash is persistent, the scope keeps rejecting traffic. See the per-scenario table in [circuit breaker](circuit-breaker.md#coordinator-loss-behaviour).
+> **Note:** every command above is load-bearing. `EVALSHA` carries the script and `TIME` is its first inner call, so denying either turns every coordinator operation into a permission error. The three policies degrade differently. A **distributed bulkhead always fails closed**: the attempt is rejected with reason `coordinator-unavailable`, so a broken grant stops traffic instead of letting all of it through. A **distributed rate limit always fails closed** the same way: admission cannot be read, so the call is rejected rather than admitted without the rate it exists to enforce. A **circuit breaker** follows `onCoordinatorError` (default `"fail-open"`) only while no prior read has established that the scope is non-closed; once a scope has been seen OPEN or HALF_OPEN, that knowledge is retained in process and an outage fails closed for that scope regardless of the setting - and because the state hash is persistent, the scope keeps rejecting traffic. See the per-scenario table in [circuit breaker](circuit-breaker.md#coordinator-loss-behaviour).
 >
 > A permission error inside a script does **not** roll back what the script already did. Deny `DEL` and the OPEN→HALF_OPEN or →CLOSED transition is still applied while the call itself fails: the caller sees a coordinator error and that request is rejected, the probe set is never cleared, and the recovery window that should have started clean inherits stale tokens.
 >
@@ -189,10 +196,11 @@ Separate namespaces for separate environments (`prod`, `staging`, `dev`) are str
 
 ## Key cardinality
 
-Each unique combination of `(namespace, policyName, operationName, scope)` creates up to 4 Redis keys. Key count grows linearly with scope cardinality. Guidelines:
+Each unique combination of `(namespace, policyName, operationName, scope)` creates up to 5 Redis keys. Key count grows linearly with scope cardinality. Guidelines:
 
 - **Bulkhead:** One `leases` sorted-set key per active `(policy, operation, scope)` triple. Keys expire after the last live lease deadline. Low cardinality is safe.
 - **Circuit breaker:** Three keys per active scope: the state hash, the observations sorted set, and the probe set. The hash is created by the first observation and records which epoch the window belongs to; a missing hash = CLOSED. While the scope is OPEN or HALF_OPEN the hash is kept without a TTL; once CLOSED it expires after `max(openMs × 2, windowTtlMs)`, so cleanup cannot outlive the observations that reference its epoch. Observations are pruned by `windowTtlMs` and capped at `windowSize` entries; the probe set is discarded whenever a recovery window ends. High-cardinality scopes (e.g., one scope per user) create proportionally many Redis keys - design scope functions with bounded cardinality.
+- **Rate limit:** One `rate` string key per active scope holding the GCRA theoretical arrival time. The key expires the moment its value stops influencing future admissions - once the stored arrival time is in the past it is reset to `now` on the next read, so an idle scope's key self-cleans without a background process.
 
 Use stable, bounded scope values. Avoid high-cardinality identifiers (user IDs, request IDs, trace IDs) as scope keys unless you have explicitly bounded the number of active scopes. The SHA-256 hashing does not reduce key count; it only prevents key collisions.
 
@@ -272,6 +280,24 @@ circuitBreaker.distributed({
 
 Closing the breaker starts a new epoch for the observation window, so a breaker that just closed does not immediately reopen from the failures that opened it, and cleanup cannot bring those failures back: the state hash outlives the window it governs, and if it is lost anyway the next observation mints a fresh epoch instead of reusing one the retained members would match.
 
+### Keeping the rate-limit knobs consistent
+
+The two knobs - `rate` and `burst` - interact through the emission interval. Caracal resolves `rate` to `emissionIntervalMs = round(1000 / rate)` and `burst` to `burstDelayMs = (burst - 1) × emissionIntervalMs`, then validates each in isolation (`rate` in range, `burst` a positive integer). It deliberately does **not** reject combinations that are consistent but surprising, because what is right depends on your traffic shape:
+
+| Constraint | Why it matters |
+|---|---|
+| `rate <= 1000` (a 1 ms emission-interval floor) | `TIME` is millisecond-granular, so sub-millisecond intervals cannot be expressed. A higher configured rate would round to a lower effective rate |
+| `burst` is the whole-fleet burst, not a per-replica burst | the distributed policy shares one GCRA cell, so `burst: 20` allows 20 calls to cluster across the *fleet*, not per process |
+| `rate` and `burst` identical across every replica sharing a scope | the coordinator stores only the emission interval and burst tolerance the caller sent; a replica with a different `rate` competes under different rules |
+
+Symptoms point at the constraint that is violated:
+
+| Symptom | Usually means | Fix |
+|---|---|---|
+| Calls rejected with `rate-exceeded` more often than expected | `rate` too low, or the whole fleet is sharing one scope when you expected per-replica budgets | raise `rate`, or widen/divide the scope |
+| Burst never observed despite `burst > 1` | the scope's traffic is spread out, so the arrival cluster is smaller than `burst` | nothing - the burst is an allowance, not a promise |
+| Effective rate lower than configured | `rate` resolved to a coarser millisecond interval, or another replica configured a different `rate` | use a `rate` whose `1000 / rate` is close to a whole millisecond, and keep configuration consistent |
+
 ## Production monitoring
 
 ### Metrics
@@ -285,6 +311,8 @@ See [events and observability](events-and-observability.md) for the full event r
 - **`breaker.state-changed` to `open`**: the dependency's failure rate breached `failureThreshold`. Investigate the dependency before assuming the breaker will recover.
 - **Repeated `breaker.state-changed` open↔half-open** without closing: probes are consistently failing. The dependency may not have recovered.
 - **`breaker.coordinator-error`**: Redis is unreachable or responding slowly. `fail-open` behavior is in effect if configured; verify the Redis connection.
+- **Sustained `ratelimit.rejected`** with reason `rate-exceeded`: the configured rate is too low for current load, or the fleet is sharing a scope you expected to be per-replica. Check the `retryAfterMs` hint and the scope cardinality.
+- **`ratelimit.degraded`**: Redis is unreachable during rate-limit admission, so the attempt fails closed. Check Redis latency and the client's `commandTimeout`.
 
 ## Local verification
 

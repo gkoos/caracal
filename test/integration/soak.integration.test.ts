@@ -7,11 +7,13 @@ import {
   circuitBreaker,
   CircuitOpenError,
   operation,
+  rateLimit,
 } from "../../src/index.js"
 import { createCoordinationClient } from "../../src/coordination/redis/client.js"
 import { scriptSha } from "../../src/coordination/redis/eval-script.js"
 import { coordinationKey } from "../../src/coordination/redis/keys.js"
 import { redisCoordinator } from "../../src/coordination/redis/bulkhead.js"
+import { redisRateLimitCoordinator } from "../../src/coordination/redis/rate-limit.js"
 import {
   breakerAdmitProbeV1,
   breakerObserveV1,
@@ -524,6 +526,109 @@ describe.skipIf(!redisUrl)("distributed soak and chaos", () => {
         scriptSha(breakerAdmitProbeV1),
         scriptSha(breakerSettleProbeV1),
       ]).toContain(script)
+    }
+  })
+})
+
+describe.skipIf(!redisUrl)("distributed rate limit soak — chaos", () => {
+  it("fails closed during an outage and resumes after recovery", {
+    timeout: 30_000,
+  }, async () => {
+    const proxy = await redisProxy(new URL(redisUrl as string))
+    const remote = createCoordinationClient(proxy.url, 100)
+    const namespace = `soak-rate-${randomUUID()}`
+    try {
+      await remote.connect()
+      const policy = rateLimit.distributed({
+        name: "rate-soak",
+        rate: 1000, // 1 ms emission interval
+        burst: 20,
+        coordinator: redisRateLimitCoordinator(remote, { namespace }),
+        scope: () => "shared",
+      })
+      let starts = 0
+      let coordinatorErrors = 0
+      const op = operation({
+        name: "rate-soak",
+        adapter: {
+          capabilities: () => ({ abort: "unsupported", replay: "safe" }),
+          execute: async () => {
+            starts += 1
+            return "ok"
+          },
+        },
+        policies: [policy],
+      })
+
+      // Reachable: the first admission goes through.
+      await expect(op.execute(undefined)).resolves.toBe("ok")
+      expect(starts).toBe(1)
+
+      // Outage: every admission fails closed and none starts the adapter.
+      proxy.disconnect()
+      for (let i = 0; i < 5; i++) {
+        await op.execute(undefined).catch((err) => {
+          if ((err as { name?: string }).name === "CoordinatorUnavailableError")
+            coordinatorErrors += 1
+        })
+      }
+      expect(coordinatorErrors).toBeGreaterThan(0)
+      expect(starts).toBe(1)
+
+      // Recovery: admissions resume after the connection heals.
+      proxy.restore()
+      await expect.poll(() => remote.status).toBe("ready")
+      await expect(op.execute(undefined)).resolves.toBe("ok")
+      expect(starts).toBe(2)
+    } finally {
+      remote.disconnect()
+      await proxy.close()
+    }
+  })
+
+  it("never admits more than the sustained rate plus burst", {
+    timeout: 30_000,
+  }, async () => {
+    const remote = createCoordinationClient(redisUrl as string, 200)
+    const namespace = `soak-rate-${randomUUID()}`
+    try {
+      await remote.connect()
+      const ratePerSecond = 200 // 5 ms emission interval
+      const burst = 5
+      const policy = rateLimit.distributed({
+        name: "rate-soak",
+        rate: ratePerSecond,
+        burst,
+        coordinator: redisRateLimitCoordinator(remote, { namespace }),
+        scope: () => "shared",
+      })
+      let starts = 0
+      const op = operation({
+        name: "rate-soak",
+        adapter: {
+          capabilities: () => ({ abort: "unsupported", replay: "safe" }),
+          execute: async () => {
+            starts += 1
+            return "ok"
+          },
+        },
+        policies: [policy],
+      })
+
+      const runMs = 500
+      const begin = Date.now()
+      while (Date.now() - begin < runMs) {
+        await op.execute(undefined).catch(() => {})
+      }
+
+      // A loose ceiling: the sustained rate over the window, plus one burst,
+      // plus headroom for timer granularity. It catches gross over-admission
+      // without being sensitive to the exact arrival schedule.
+      const ceiling = ratePerSecond * (runMs / 1000) + burst + 5
+      expect(starts).toBeGreaterThan(0)
+      expect(starts).toBeLessThanOrEqual(ceiling)
+    } finally {
+      remote.disconnect()
     }
   })
 })

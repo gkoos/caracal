@@ -36,4 +36,6 @@ export type {
   Outcome,
   OutcomeClassifier,
   Policy,
+  RateLimitEventReason,
+  RateLimitRejectedReason,
 } from "./types.js"

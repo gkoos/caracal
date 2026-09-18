@@ -1,9 +1,23 @@
 import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import { bulkhead, circuitBreaker, operation } from "../../src/index.js"
+import {
+  bulkhead,
+  circuitBreaker,
+  operation,
+  rateLimit,
+} from "../../src/index.js"
 import { redisCoordinator } from "../../src/coordination/redis/bulkhead.js"
 import { redisCircuitBreakerCoordinator } from "../../src/coordination/redis/circuit-breaker.js"
+import { redisRateLimitCoordinator } from "../../src/coordination/redis/rate-limit.js"
 import { createCoordinationClient } from "../../src/coordination/redis/client.js"
+import { scriptSha } from "../../src/coordination/redis/eval-script.js"
+import {
+  breakerAdmitProbeV1,
+  breakerObserveV1,
+  breakerSettleProbeV1,
+  bulkheadLeaseV1,
+  rateLimitV1,
+} from "../../src/coordination/redis/scripts.js"
 
 const url = process.env.CARACAL_REDIS_URL
 
@@ -20,6 +34,22 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
     const client = createCoordinationClient(url)
 
     let calls = 0
+    // SHA -> body for every script the coordinators ship. The round-trip table
+    // counts logical coordinator calls, not transport retries: when the server
+    // evicts a script from its cache (a restart, a concurrent SCRIPT FLUSH, or
+    // Valkey 8's LRU eviction), EVALSHA answers NOSCRIPT and the coordinator
+    // re-sends the body with EVAL. Resolving the SHA here - from the shipped
+    // bodies, so it never depends on having seen a prior EVAL - keeps that
+    // fallback from counting as two calls.
+    const scriptBodies = new Map<string, string>(
+      [
+        breakerAdmitProbeV1,
+        breakerObserveV1,
+        breakerSettleProbeV1,
+        bulkheadLeaseV1,
+        rateLimitV1,
+      ].map((script) => [scriptSha(script), script]),
+    )
     const counting = {
       eval(script: string, numberOfKeys: number, ...args: (string | number)[]) {
         calls += 1
@@ -27,6 +57,8 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
       },
       evalsha(sha: string, numberOfKeys: number, ...args: (string | number)[]) {
         calls += 1
+        const body = scriptBodies.get(sha)
+        if (body !== undefined) return client.eval(body, numberOfKeys, ...args)
         return client.evalsha(sha, numberOfKeys, ...args)
       },
       hmget(key: string, ...fields: string[]) {
@@ -153,6 +185,25 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
       expect(
         await callsPerExecution(() => combinedOp.execute(undefined), 200),
       ).toBe(4)
+
+      // rateLimit.distributed: one atomic GCRA admission. The burst covers the
+      // whole run so every call admits and the count is a pure admission path.
+      const rateOp = operation({
+        name: "rt",
+        adapter,
+        policies: [
+          rateLimit.distributed({
+            name: "rt",
+            rate: 1000,
+            burst: 1000,
+            coordinator: redisRateLimitCoordinator(counting, { namespace }),
+            scope: () => "shared",
+          }),
+        ],
+      })
+      expect(
+        await callsPerExecution(() => rateOp.execute(undefined), 200),
+      ).toBe(1)
     } finally {
       client.disconnect()
     }

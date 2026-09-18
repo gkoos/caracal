@@ -31,6 +31,41 @@ return 1
 export const bulkheadLeaseV1 = `local function transition()\n${leaseV1}\nend\nlocal allowed = transition()\nreturn {allowed, redis.call('ZCARD', KEYS[1])}`
 
 // ---------------------------------------------------------------------------
+// Rate-limit script
+//
+// Generic Cell Rate Algorithm (GCRA) over a single state key. The stored value
+// is the theoretical arrival time (TAT) of the next cell, an absolute ms
+// timestamp on the server clock. A TAT in the past is reset to `now`, so an
+// idle scope always admits immediately and the key can be expired the moment
+// its value stops influencing future admissions.
+//
+// KEYS[1] = rate state key  (:rate)
+// ARGV[1] = emissionIntervalMs  min time between cells at the sustained rate
+// ARGV[2] = burstDelayMs        how far ahead of schedule an arrival may be
+//
+// Returns: {allowed, retryAfterMs}
+//   allowed 1 = admitted; the TAT advanced and was stored
+//   allowed 0 = rejected; retryAfterMs is when the next arrival would be
+//               admissible (always > 0 on rejection)
+// ---------------------------------------------------------------------------
+
+export const rateLimitV1 = `
+local emission = tonumber(ARGV[1])
+local burstDelay = tonumber(ARGV[2])
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+local tat = tonumber(redis.call('GET', KEYS[1]) or '0')
+local anchored = math.max(tat, now)
+if anchored - now > burstDelay then
+  return {0, anchored - burstDelay - now}
+end
+local nextTat = anchored + emission
+redis.call('SET', KEYS[1], nextTat)
+redis.call('PEXPIREAT', KEYS[1], nextTat)
+return {1, 0}
+`
+
+// ---------------------------------------------------------------------------
 // Circuit-breaker scripts
 //
 // Return arrays use fixed positions so the TypeScript caller can validate

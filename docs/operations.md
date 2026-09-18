@@ -1,10 +1,10 @@
 # Operations
 
-Each `(namespace, policy name, operation name, scope)` is a coordination identity: it has its own Redis keys, coordinator round trips, and its own entry in every process that has seen it. This page collects what that costs and what outlives what. The mechanism is in [Redis foundation](redis.md), per-policy semantics are in [bulkheads](bulkhead.md) and [circuit breaker](circuit-breaker.md).
+Each `(namespace, policy name, operation name, scope)` is a coordination identity: it has its own Redis keys, coordinator round trips, and its own entry in every process that has seen it. This page collects what that costs and what outlives what. The mechanism is in [Redis foundation](redis.md), per-policy semantics are in [bulkheads](bulkhead.md), [circuit breaker](circuit-breaker.md) and [rate limiting](rate-limit.md).
 
 ## What one scope costs
 
-- One identity, up to four Redis keys: `leases` for the bulkhead, and `breaker`, `observations`, `probes` for the circuit breaker. A bulkhead and a breaker sharing a policy name, operation and scope are one identity and share all four.
+- One identity, up to five Redis keys: `leases` for the bulkhead, `breaker`, `observations`, `probes` for the circuit breaker, and `rate` for the rate limit. A bulkhead and a breaker sharing a policy name, operation and scope are one identity and share all four; a rate limit on the same identity adds a fifth.
 - Up to `windowSize` members in the window (default 100), plus one probe token per in-flight probe.
 - One retained entry per process, per operation, for every scope that has ever been non-closed - each process keeps the last state it saw so it can choose between fail-open and fail-closed during a coordinator outage.
 - A key name is `caracal:v1:{<64 hex>}:<suffix>`, 85 to 91 bytes before Redis's own per-key overhead.
@@ -19,6 +19,7 @@ That is per scope, and it multiplies: hashing the identity does not reduce key c
 | `breaker` (state hash) | none while OPEN or HALF_OPEN; `max(openMs × 2, windowTtlMs)` once CLOSED |
 | `observations` | `windowTtlMs` from the last write |
 | `probes` | `probeLeaseTtlMs + 1 s` from the last admission |
+| `rate` | until the stored theoretical arrival time passes (then a fresh read resets it) |
 
 Leases, observation windows and probe tokens clean themselves up. The state hash is the one that can outlive its traffic indefinitely, and deliberately so: a missing hash reads as CLOSED, so expiring an open breaker would silently admit unrestricted traffic. Removal is traffic-dependent - the key goes away when that same scope is next settled as CLOSED - so a scope that opens once and then goes quiet leaves its hash in Redis, and an entry in the memory of every process that saw it, until something touches that scope again.
 
@@ -62,5 +63,5 @@ What that buys and what it costs:
 
 - `leaseMs`, and the constraints between `openMs`, `probeLeaseTtlMs`, `windowTtlMs`, `minimumThroughput` and `windowSize`: [lease tuning](redis.md#lease-tuning) and [keeping the breaker knobs consistent](redis.md#keeping-the-breaker-knobs-consistent).
 - What to watch: [production monitoring](redis.md#production-monitoring) lists the metrics and the alerts worth having.
-- Still open by design: leases are not fencing tokens, and a scope is not a rate limit. See [lease semantics and failure guarantees](bulkhead.md#lease-semantics-and-failure-guarantees).
+- Still open by design: leases are not fencing tokens, and a bulkhead is not a rate limit - use `rateLimit` for that axis. See [lease semantics and failure guarantees](bulkhead.md#lease-semantics-and-failure-guarantees).
 

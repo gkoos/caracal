@@ -102,6 +102,18 @@ const EVENT_COVERAGE = {
     emitters: ["src/core/bulkhead.ts"],
     relevantPages: ["docs/bulkhead.md"],
   },
+  "ratelimit.admitted": {
+    emitters: ["src/core/rate-limit.ts"],
+    relevantPages: ["docs/rate-limit.md"],
+  },
+  "ratelimit.rejected": {
+    emitters: ["src/core/rate-limit.ts"],
+    relevantPages: ["docs/rate-limit.md"],
+  },
+  "ratelimit.degraded": {
+    emitters: ["src/core/rate-limit.ts"],
+    relevantPages: ["docs/rate-limit.md"],
+  },
 } satisfies Record<OperationEvent["type"], EventCoverage>
 
 function readSource(relative: string): string {
