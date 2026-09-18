@@ -75,3 +75,45 @@ describe("reason contract", () => {
     }
   })
 })
+
+describe("rate limit reason contract", () => {
+  const rejected = unionMembers("RateLimitRejectedReason")
+  const emitted = unionMembers("RateLimitEventReason")
+
+  it("declares both closed sets", () => {
+    expect(rejected).toEqual(["rate-exceeded"])
+    expect(emitted.sort()).toEqual(
+      ["rate-exceeded", "coordinator-unavailable", "admission-unknown"].sort(),
+    )
+  })
+
+  it("matches the rate-limit reason table in the events reference", () => {
+    const table =
+      readSource("docs/events-and-observability.md").split(
+        "## Rate limit",
+      )[1] ?? ""
+    const documented = [
+      ...new Set(
+        [
+          ...table.matchAll(
+            /^\| `ratelimit\.[a-z.-]+`(?: \([a-z]+\))? \| `([^`]+)` \|/gm,
+          ),
+        ].map((match) => match[1] as string),
+      ),
+    ].sort()
+    expect(documented.length).toBeGreaterThan(0)
+    expect(documented).toEqual([...emitted].sort())
+  })
+
+  it("asserts every rate-limit reason value in a test", () => {
+    const sources = testFiles()
+      .map((file) => readSource(file))
+      .join("\n")
+    for (const reason of [...new Set([...rejected, ...emitted])]) {
+      expect(
+        sources,
+        `no test asserts rate-limit reason: "${reason}"`,
+      ).toContain(`reason: "${reason}"`)
+    }
+  })
+})

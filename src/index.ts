@@ -7,6 +7,12 @@ export type {
 } from "./core/bulkhead.js"
 export { BulkheadRejectedError, bulkhead } from "./core/bulkhead.js"
 export type {
+  DistributedRateLimitOptions,
+  LocalRateLimitOptions,
+  RateLimitCoordinator,
+} from "./core/rate-limit.js"
+export { RateLimitExceededError, rateLimit } from "./core/rate-limit.js"
+export type {
   AdmitProbeResult,
   BreakerClassifier,
   BreakerCoordinator,
@@ -39,6 +45,8 @@ export type {
   Outcome,
   OutcomeClassifier,
   Policy,
+  RateLimitEventReason,
+  RateLimitRejectedReason,
   RetryContext,
   RetryDelay,
   RetryOptions,

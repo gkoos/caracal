@@ -172,6 +172,21 @@ export type BulkheadEventReason =
   | "lease-uncertain"
   | "release-unknown"
 
+/**
+ * The closed set of `reason` values a `RateLimitExceededError` can carry.
+ *
+ * `rate-exceeded` is the only one: a rejection that fails closed on a
+ * coordinator error rethrows the coordinator's own error instead of
+ * constructing this one.
+ */
+export type RateLimitRejectedReason = "rate-exceeded"
+
+/** The closed set of `reason` values a rate-limit event can carry. */
+export type RateLimitEventReason =
+  | "rate-exceeded"
+  | "coordinator-unavailable"
+  | "admission-unknown"
+
 // ---------------------------------------------------------------------------
 // Unified operation event union
 // ---------------------------------------------------------------------------
@@ -200,6 +215,17 @@ export type OperationEvent =
       scope: string
       occupancy?: number
       reason?: BulkheadEventReason
+    }>
+  | Readonly<{
+      type: "ratelimit.admitted" | "ratelimit.rejected" | "ratelimit.degraded"
+      at: number
+      context: ExecutionContext
+      coordination: "local" | "distributed"
+      policyName: string
+      scope: string
+      /** Present on `ratelimit.rejected` with reason `rate-exceeded`. */
+      retryAfterMs?: number
+      reason?: RateLimitEventReason
     }>
   | Readonly<{
       type: "execution.started"

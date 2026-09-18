@@ -8,6 +8,7 @@ Start with the [project README](../README.md) for installation and a first opera
 | [Timeouts and retries](timeout-and-retry.md) | what a deadline does and does not cover, retry pacing, declined retries |
 | [Circuit breaker](circuit-breaker.md) | state machine, sliding window, threshold resolution, probes |
 | [Bulkheads](bulkhead.md) | local queueing, distributed leases, admission expiry |
+| [Rate limiting](rate-limit.md) | GCRA, burst vs sustained rate, retry-after composition |
 | [Events and observability](events-and-observability.md) | every event, its fields and its `reason` values |
 | [Fetch adapter](fetch.md) | capability declaration, response classification, `Retry-After` |
 | [Postgres adapter](postgres.md) | statement execution as an operation |

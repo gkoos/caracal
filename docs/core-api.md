@@ -195,7 +195,17 @@ Local only: there is no distributed timeout.
 | `scope` | — | `(context) => string` | distributed |
 | `leaseMs` | `30_000` (distributed) / none (local) | distributed `100..86400000`; local `1..2147483647` | both |
 
-Every returned policy carries a `coordination` property (`"local"` or `"distributed"`) alongside the `Policy` members, so a policy can be introspected without knowing which factory built it. `snapshot()` is available on local policies only: `{ coordination, occupancy, waiting }` for the bulkhead, `{ coordination, state, failures, successes, observations, probesInFlight, halfOpenSuccesses }` for the breaker. Distributed occupancy and breaker state live in Redis.
+### rate limit
+
+| Option | Default | Bounds | Coordination |
+|---|---|---|---|
+| `name` | required | non-empty | both |
+| `rate` | required | finite, `0 < rate <= 1000` requests per second; resolved to the nearest whole millisecond | both |
+| `burst` | `1` | integer `>= 1` | both |
+| `coordinator` | — | coordinator object | distributed |
+| `scope` | — | `(context) => string` | distributed |
+
+Every returned policy carries a `coordination` property (`"local"` or `"distributed"`) alongside the `Policy` members, so a policy can be introspected without knowing which factory built it. `snapshot()` is available on local policies only: `{ coordination, occupancy, waiting }` for the bulkhead, `{ coordination, state, failures, successes, observations, probesInFlight, halfOpenSuccesses }` for the breaker, and `{ coordination, nextAllowedAt }` for the rate limit. Distributed occupancy, breaker state and rate-limit state live in Redis.
 
 ## Errors
 
@@ -204,6 +214,7 @@ Every returned policy carries a `coordination` property (`"local"` or `"distribu
 | `TimeoutError` | `timeout`, when the deadline expires | `timeoutMs` |
 | `CircuitOpenError` | `circuitBreaker`, when an attempt is rejected | `policyName`, `coordination`, `scope` |
 | `BulkheadRejectedError` | `bulkhead`, when a permit is refused or a wait times out | `coordination`, `policyName`, `scope`, `reason` |
+| `RateLimitExceededError` | `rateLimit`, when a call is rejected for exceeding the rate | `coordination`, `policyName`, `scope`, `retryAfterMs` |
 | `CoordinatorUnavailableError` | the Redis coordinators, exported from `@gkoos/caracal/redis` | `coordination` (`"distributed"`), `cause` |
 
 **`BulkheadRejectedError.reason`** is one of `capacity`, `wait-timeout`, `admission-expired`, `lease-lost`. A caller that aborts while queued receives its own abort reason and the `bulkhead.rejected` event reports `cancelled`, so that value only ever appears on events. A failed lease request fails closed by rethrowing the coordinator's own `CoordinatorUnavailableError` instead of constructing this error, so `coordinator-unavailable` is an event reason with no error counterpart. `lease-lost` is delivered as the abort reason when a renewal fails mid-flight, so a caller only observes it when the adapter honours `context.signal`. [Events and observability](events-and-observability.md#bulkhead) lists the `reason` each bulkhead event reports.

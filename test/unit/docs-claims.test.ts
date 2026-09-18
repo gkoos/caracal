@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { createRetryAfterDelay } from "../../src/fetch.js"
-import { bulkhead, circuitBreaker } from "../../src/index.js"
+import { bulkhead, circuitBreaker, rateLimit } from "../../src/index.js"
 import type {
   BreakerCoordinator,
   BulkheadCoordinator,
+  RateLimitCoordinator,
   RetryContext,
 } from "../../src/index.js"
 import {
@@ -127,6 +128,11 @@ describe("documentation claims", () => {
       },
     }
     const breakerCoordinator = {} as unknown as BreakerCoordinator
+    const rateCoordinator: RateLimitCoordinator = {
+      async command() {
+        return { allowed: true, retryAfterMs: 0 }
+      },
+    }
 
     expect(
       Object.keys(bulkhead.local({ name: "shape", limit: 1 })).sort(),
@@ -153,6 +159,19 @@ describe("documentation claims", () => {
         }),
       ).sort(),
     ).toEqual(["coordination", "execute", "name"])
+    expect(
+      Object.keys(rateLimit.local({ name: "shape", rate: 1 })).sort(),
+    ).toEqual(["coordination", "execute", "name", "phase", "snapshot"])
+    expect(
+      Object.keys(
+        rateLimit.distributed({
+          name: "shape",
+          rate: 1,
+          coordinator: rateCoordinator,
+          scope: () => "scope",
+        }),
+      ).sort(),
+    ).toEqual(["coordination", "execute", "name", "phase"])
   })
 
   it("documents the introspection every policy carries", () => {
@@ -212,5 +231,14 @@ describe("documentation claims", () => {
         `${name} is exported but has no row in the core-api.md Errors table`,
       ).toContain(`| \`${name}\` |`)
     }
+  })
+
+  it("states and enforces the rate limit's 1000/s millisecond ceiling", () => {
+    // docs/rate-limit.md documents the ceiling; the code must reject a rate
+    // that would resolve to a sub-millisecond emission interval.
+    const doc = readSource("docs/rate-limit.md")
+    expect(doc).toContain("1000")
+    expect(() => rateLimit.local({ name: "x", rate: 1000 })).not.toThrow()
+    expect(() => rateLimit.local({ name: "x", rate: 1001 })).toThrow()
   })
 })

@@ -39,8 +39,8 @@ npm install pg
 Reads one order from a supplier's HTTP API. The breaker window and the concurrency limit are per region and shared by every replica in it, the timeout and the retry stay local to the process.
 
 ```ts
-import { bulkhead, circuitBreaker, operation, retry, timeout } from "@gkoos/caracal"
-import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator } from "@gkoos/caracal/redis"
+import { bulkhead, circuitBreaker, operation, rateLimit, retry, timeout } from "@gkoos/caracal"
+import { createCoordinationClient, redisCoordinator, redisCircuitBreakerCoordinator, redisRateLimitCoordinator } from "@gkoos/caracal/redis"
 import { fetchAdapter } from "@gkoos/caracal/fetch"
 
 // Redis coordination - connect once, share across all policies
@@ -70,8 +70,18 @@ const sharedCapacity = bulkhead.distributed({
   leaseMs: 30_000,
 })
 
-// Policies nest in array order, outermost first. The bulkhead is attempt-phase,
-// so it wraps each adapter call wherever it sits in the array.
+// One shared arrival-rate budget per region, shared by every replica in it.
+// Use rateLimit.local(...) if a per-process limit is enough.
+const sharedRate = rateLimit.distributed({
+  name: "orders",
+  coordinator: redisRateLimitCoordinator(redis, { namespace: "svc:prod" }),
+  scope: (ctx) => `region:${String(ctx.metadata.region)}`,
+  rate: 100,
+  burst: 20,
+})
+
+// Policies nest in array order, outermost first. The bulkhead and rate limit
+// are attempt-phase, so they wrap each adapter call wherever they sit.
 const getOrder = operation({
   name: "orders",
   adapter: fetchAdapter(),
@@ -80,6 +90,7 @@ const getOrder = operation({
     timeout({ ms: 10_000 }),
     retry({ maxAttempts: 3, delay: (n) => 100 * 2 ** (n - 1) }),
     sharedCapacity,
+    sharedRate,
   ],
   events: { emit: (e) => console.log(e.type, e) },
 })
@@ -293,6 +304,7 @@ See [Testing](docs/testing.md) and [Local development](docs/development.md) for 
 - [Timeout and retry](docs/timeout-and-retry.md) - Cancellation semantics, backoff, replay safety
 - [Bulkheads](docs/bulkhead.md) - Local and distributed, lease guarantees, failure modes
 - [Circuit breaker](docs/circuit-breaker.md) - State machine, sliding window, distributed coordination
+- [Rate limiting](docs/rate-limit.md) - GCRA, burst vs sustained rate, retry-after composition
 - [Events and observability](docs/events-and-observability.md) - Full event reference, metrics, alerting
 
 ### Adapters

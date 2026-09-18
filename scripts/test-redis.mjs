@@ -19,6 +19,7 @@ await run(
     "test/integration/redis.integration.test.ts",
     "test/integration/bulkhead.redis.integration.test.ts",
     "test/integration/circuit-breaker.redis.integration.test.ts",
+    "test/integration/rate-limit.redis.integration.test.ts",
     "test/integration/coordinator-conformance.integration.test.ts",
     "test/integration/redis-acl.integration.test.ts",
   ],

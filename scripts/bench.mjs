@@ -30,6 +30,7 @@ import {
   bulkhead,
   circuitBreaker,
   operation,
+  rateLimit,
   retry,
   timeout,
 } from "../dist/index.js"
@@ -216,6 +217,14 @@ const localBreaker = circuitBreaker.local({
 await bench(
   "local circuit breaker (always closed)",
   operation({ name: "b", adapter: noopAdapter, policies: [localBreaker] }),
+)
+
+// The burst covers the whole run, so every call admits and the row measures the
+// admission decision rather than the rejection path (the rate itself is 1 ms).
+const localRate = rateLimit.local({ name: "b", rate: 1000, burst: 100_000 })
+await bench(
+  "local rate limit (uncontested)",
+  operation({ name: "b", adapter: noopAdapter, policies: [localRate] }),
 )
 
 const fullLocal = circuitBreaker.local({

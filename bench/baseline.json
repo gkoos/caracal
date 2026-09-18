@@ -53,6 +53,13 @@
       "opsPerSec": 509017
     },
     {
+      "label": "local rate limit (uncontested)",
+      "iterations": 50000,
+      "medianUs": 1.3,
+      "p99Us": 5.8,
+      "opsPerSec": 606748
+    },
+    {
       "label": "timeout + retry + breaker + bulkhead",
       "iterations": 50000,
       "medianUs": 24.4,
