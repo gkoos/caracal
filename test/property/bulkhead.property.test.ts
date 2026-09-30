@@ -88,6 +88,8 @@ interface Step {
     | "lease-lost"
     | "degraded"
   readonly at: number
+  /** The execution that emitted the event, so a step belongs to one call. */
+  readonly executionId: string
   readonly occupancy: number | undefined
   readonly reason: string | undefined
 }
@@ -105,6 +107,8 @@ interface Trace {
   readonly steps: readonly Step[]
   /** The clock time each adapter body started, or `null` if it never ran. */
   readonly started: readonly (number | null)[]
+  /** The execution id each started call ran under, or `null` if it never ran. */
+  readonly executionIds: readonly (string | null)[]
   /** How each caller's promise ended, or `null` if it never settled. */
   readonly terminal: readonly (Terminal | null)[]
   readonly occupancy: number
@@ -134,6 +138,7 @@ async function drive(spec: Spec): Promise<Trace> {
   const zero = Date.now()
   const events: OperationEvent[] = []
   const started: Array<number | null> = arrivals.map(() => null)
+  const executionIds: Array<string | null> = arrivals.map(() => null)
   const terminal: Array<Terminal | null> = arrivals.map(() => null)
   const gates = arrivals.map(() => new Deferred<void>())
 
@@ -149,6 +154,7 @@ async function drive(spec: Spec): Promise<Trace> {
       }),
       execute: async (index: number, context: ExecutionContext) => {
         started[index] = Date.now() - zero
+        executionIds[index] = context.executionId
         const gate = gates[index]
         if (gate === undefined) {
           throw new Error(`unknown call ${index}`)
@@ -244,6 +250,7 @@ async function drive(spec: Spec): Promise<Trace> {
         steps.push({
           type: "admitted",
           at,
+          executionId: event.context.executionId,
           occupancy: event.occupancy,
           reason: event.reason,
         })
@@ -252,6 +259,7 @@ async function drive(spec: Spec): Promise<Trace> {
         steps.push({
           type: "rejected",
           at,
+          executionId: event.context.executionId,
           occupancy: event.occupancy,
           reason: event.reason,
         })
@@ -260,6 +268,7 @@ async function drive(spec: Spec): Promise<Trace> {
         steps.push({
           type: "waited",
           at,
+          executionId: event.context.executionId,
           occupancy: event.occupancy,
           reason: event.reason,
         })
@@ -268,6 +277,7 @@ async function drive(spec: Spec): Promise<Trace> {
         steps.push({
           type: "released",
           at,
+          executionId: event.context.executionId,
           occupancy: event.occupancy,
           reason: event.reason,
         })
@@ -276,6 +286,7 @@ async function drive(spec: Spec): Promise<Trace> {
         steps.push({
           type: "lease-lost",
           at,
+          executionId: event.context.executionId,
           occupancy: event.occupancy,
           reason: event.reason,
         })
@@ -284,6 +295,7 @@ async function drive(spec: Spec): Promise<Trace> {
         steps.push({
           type: "degraded",
           at,
+          executionId: event.context.executionId,
           occupancy: event.occupancy,
           reason: event.reason,
         })
@@ -298,6 +310,7 @@ async function drive(spec: Spec): Promise<Trace> {
     arrivals,
     steps,
     started,
+    executionIds,
     terminal,
     occupancy: snapshot.occupancy,
     waiting: snapshot.waiting,
@@ -536,9 +549,9 @@ describe(`local bulkhead - generated permit schedules (seed=${suite.seed} replay
     async (spec: Spec) => {
       await withFakeTimers(async () => {
         const trace = await drive(spec)
-        const leaseLost = trace.steps.filter(
-          (step) => step.type === "lease-lost",
-        )
+        const stepsOfType = (type: Step["type"]): Step[] =>
+          trace.steps.filter((step) => step.type === type)
+        const leaseLost = stepsOfType("lease-lost")
 
         for (const [index, mode] of spec.modes.entries()) {
           // Only a permit holder can lose a lease: a refusal never ran.
@@ -548,12 +561,15 @@ describe(`local bulkhead - generated permit schedules (seed=${suite.seed} replay
             continue
           }
           const context = `call=${index} mode=${mode} leaseMs=${spec.leaseMs} limit=${spec.limit}`
+          const executionId = trace.executionIds[index] ?? null
 
-          // Either way the expiry is reported, so a sink can see that a permit
-          // sat expired instead of being retained silently.
+          // Either way this holder's expiry is reported, so a sink can see that
+          // a permit sat expired instead of being retained silently. The event
+          // is attributed by execution id: a bare count lets one holder's
+          // expiry stand in for another's that was never reported.
           expect(
-            leaseLost.length,
-            `no lease-lost event: ${context}`,
+            leaseLost.filter((step) => step.executionId === executionId).length,
+            `no lease-lost event for this holder: ${context}`,
           ).toBeGreaterThan(0)
 
           if (mode === "supported") {
@@ -575,6 +591,38 @@ describe(`local bulkhead - generated permit schedules (seed=${suite.seed} replay
             ).toBeGreaterThanOrEqual(1)
           }
         }
+
+        // Every permit has one owner and one end: an execution reports a lost
+        // lease once, and gives up its permit once. Scoped by execution id, so a
+        // duplicated or misattributed event cannot pass.
+        for (const type of ["lease-lost", "released"] as const) {
+          const perExecution = new Map<string, number>()
+          for (const step of stepsOfType(type)) {
+            perExecution.set(
+              step.executionId,
+              (perExecution.get(step.executionId) ?? 0) + 1,
+            )
+          }
+          for (const [executionId, count] of perExecution) {
+            expect(
+              count,
+              `${type} reported ${count} times: execution=${executionId}`,
+            ).toBe(1)
+          }
+        }
+
+        // A call that was admitted and never settled still holds its permit at
+        // the end, so the snapshot cannot fall below how many such calls there
+        // are: a holder reclaimed while its caller stayed pending cannot hide
+        // behind another holder that kept its permit.
+        const heldToTheEnd = trace.started.filter(
+          (startedAt, index) =>
+            startedAt !== null && trace.terminal[index] === null,
+        ).length
+        expect(
+          trace.occupancy,
+          `occupancy below ${heldToTheEnd} unsettled holders`,
+        ).toBeGreaterThanOrEqual(heldToTheEnd)
       })
     },
     { runs: 100 },
