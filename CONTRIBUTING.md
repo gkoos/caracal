@@ -42,7 +42,7 @@ New invariants belong in a generated suite (`test/property` or `test/fuzz`) rath
 
 - Draw cases from the suite seed, never from `Math.random()`, and build the suite with the helper in `test/support/seed.ts` so every failure prints the command that replays it.
 - Revert the behaviour the invariant guards and confirm the suite goes red before opening the pull request. A property that cannot fail is not evidence - the same rule as a soak test that cannot fail.
-- Scale case counts through the suite's own depth knob instead of a literal, so `npm run test:generated:deep` explores more of the same contract without a second copy of the test.
+- Scale case counts through the suite's own depth knob instead of a literal, so `npm run test:generated:deep` explores more of the same contract without a second copy of the test. Give the suite a `maxCases` ceiling, and cap a count that would otherwise get too slow, so the deepest run stays bounded instead of growing with the knob.
 
 ## Code style
 

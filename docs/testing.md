@@ -6,7 +6,7 @@
 npm test                    # unit suite (test/unit) - fast, no external dependencies
 npm run test:property       # property suite (test/property) - fast-check, honouring CARACAL_TEST_SEED
 npm run test:fuzz           # fuzz suite (test/fuzz) - seeded random event-history generator
-npm run test:generated      # both generated suites in one run, under one seed and one depth
+npm run test:generated      # both generated suites in one run: one depth, a seed per suite
 npm run test:generated:deep # the same suites at a deeper case count (CARACAL_TEST_RUNS)
 npm run test:integration    # integration suite (test/integration) - requires services and CARACAL_* URLs
 npm run test:all            # check, then the generated and integration suites
@@ -41,9 +41,11 @@ npm run test:generated
 
 Every failure message includes the seed value and the exact replay command. With no seed set, each run draws a new one: the suites explore a different slice of the contract instead of re-checking a frozen history.
 
+A seed belongs to the suite that printed it, not to the run. `test/property` and `test/fuzz` each resolve their own - from `CARACAL_TEST_SEED` when it is set, otherwise from a fresh draw - so replaying one failure means replaying that suite with the seed in its message. Setting the variable is what puts every suite in a run under the one seed.
+
 ### Depth
 
-`CARACAL_TEST_RUNS` multiplies every generated case count, so a suite can be run deeper without a second copy of the test. It defaults to `1`, which is what CI runs on every pull request:
+`CARACAL_TEST_RUNS` multiplies each generated case count, so a suite can be run deeper without a second copy of the test. The multiplier is bounded rather than open-ended: every suite sets a `maxCases` ceiling at its `createGeneratedSuite` call (3,000 for the circuit-breaker model, 4,000 for rate limits, 2,000 for bulkheads and the fuzz suite), and an individual count can carry a tighter cap of its own. At depth 25, for example, the breaker model's 300 cases run to its 3,000 ceiling rather than to 7,500. It defaults to `1`, which is what CI runs on every pull request:
 
 ```sh
 CARACAL_TEST_RUNS=10 npm run test:generated

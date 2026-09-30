@@ -60,7 +60,7 @@ npm run check
 npm test                    # unit suite (test/unit) - fast, no external dependencies
 npm run test:property       # property suite (test/property) - fast-check, CARACAL_TEST_SEED for replay
 npm run test:fuzz           # fuzz suite (test/fuzz) - seeded random event-history generator
-npm run test:generated      # both generated suites in one run, under one seed and one depth
+npm run test:generated      # both generated suites in one run: one depth, a seed per suite
 npm run test:generated:deep # the same suites at a deeper case count (CARACAL_TEST_RUNS)
 npm run test:integration    # integration suite (test/integration); services and CARACAL_* URLs required
 npm run test:all            # check, then the generated and integration suites
@@ -84,9 +84,9 @@ $env:CARACAL_TEST_SEED = "123456"
 npm run test:generated
 ```
 
-Every failure message includes the seed value and the exact replay command, together with the depth when it is not the default.
+Every failure message includes the seed value and the exact replay command, together with the depth when it is not the default. Each generated suite resolves its own seed unless `CARACAL_TEST_SEED` is set, so a replay belongs to the suite that printed it - setting the variable is what runs every suite under one seed.
 
-`CARACAL_TEST_RUNS` multiplies every generated case count (default `1`, which is what CI runs on every pull request). `npm run test:generated:deep` sets it to 10, and `.github/workflows/nightly.yml` runs the same suites nightly at depth 25 under a seed derived from the workflow run number:
+`CARACAL_TEST_RUNS` multiplies each generated case count (default `1`, which is what CI runs on every pull request). The multiplier is bounded: each suite sets a `maxCases` ceiling at its `createGeneratedSuite` call, and an individual case count can carry a tighter cap, so the deepest run stays bounded rather than growing without limit - at depth 25, the circuit-breaker model's 300 cases run to its 3,000 ceiling, not to 7,500. `npm run test:generated:deep` sets it to 10, and `.github/workflows/nightly.yml` runs the same suites nightly at depth 25 under a seed derived from the workflow run number:
 
 ```sh
 CARACAL_TEST_RUNS=25 CARACAL_TEST_SEED=123456 npm run test:generated
