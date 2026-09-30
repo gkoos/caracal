@@ -277,9 +277,11 @@ npm run check     # format, lint, typecheck, build, unit tests
 npm test                    # unit suite (test/unit) - fast, no external dependencies
 npm run test:property       # property suite - fast-check, CARACAL_TEST_SEED for replay
 npm run test:fuzz           # fuzz suite - seeded event-history generator
+npm run test:generated      # both generated suites in one run, honouring CARACAL_TEST_SEED
+npm run test:generated:deep # the same suites deeper (CARACAL_TEST_RUNS); what nightly runs
 npm run test:integration    # integration suite - requires services and CARACAL_* URLs
 npm run test:integration:cluster  # cluster suite - local three-master Valkey cluster (not run in CI)
-npm run test:all            # check, then the property, fuzz, and integration suites
+npm run test:all            # check, then the generated and integration suites
 ```
 
 Integration tests use real Valkey and PostgreSQL via Docker Compose. Each suite skips itself unless its URL is set, so starting the containers alone is not enough:
@@ -290,7 +292,7 @@ CARACAL_REDIS_URL=redis://127.0.0.1:6379 npm run test:integration
 npm run redis:down
 ```
 
-See [Testing](docs/testing.md) and [Local development](docs/development.md) for the full test environment setup, seeded replay, and benchmarks.
+See [Testing](docs/testing.md) and [Local development](docs/development.md) for the full test environment setup, seeded replay, test depth, and benchmarks.
 
 ## Documentation
 
