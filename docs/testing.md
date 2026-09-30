@@ -6,17 +6,19 @@
 npm test                    # unit suite (test/unit) - fast, no external dependencies
 npm run test:property       # property suite (test/property) - fast-check, honouring CARACAL_TEST_SEED
 npm run test:fuzz           # fuzz suite (test/fuzz) - seeded random event-history generator
+npm run test:generated      # both generated suites in one run: one depth, a seed per suite
+npm run test:generated:deep # the same suites at a deeper case count (CARACAL_TEST_RUNS)
 npm run test:integration    # integration suite (test/integration) - requires services and CARACAL_* URLs
-npm run test:all            # check, then the property, fuzz, and integration suites
+npm run test:all            # check, then the generated and integration suites
 ```
 
 `npm test` runs `test/unit` only; the other suites are selected explicitly by the commands above.
 
 **Unit** tests cover the core operation runtime, all policies, and both adapters without any external dependencies. They run in under 3 seconds.
 
-**Property** tests use fast-check to verify circuit breaker state machine invariants across generated histories. They derive from a random seed by default and honour `CARACAL_TEST_SEED` for replay.
+**Property** tests use fast-check to verify invariants across generated histories: the circuit breaker state machine, the local GCRA rate limiter (admission arithmetic, burst envelope, the exact `retryAfterMs`, and `snapshot()`), and local bulkhead permit accounting (occupancy, queue timeouts, lease reclaim, FIFO handoff). They derive from a random seed by default and honour `CARACAL_TEST_SEED` for replay.
 
-**Fuzz** tests run a seeded random event-history generator against the circuit breaker to confirm no invalid state transitions occur under adversarial sequences.
+**Fuzz** tests run a seeded random event-history generator against the circuit breaker to confirm no invalid state transitions occur under adversarial sequences. Both generated suites are built with `test/support/seed.ts`, which owns the seed, the depth multiplier, and the replay instruction every failure prints.
 
 **Integration** tests run against real Valkey and PostgreSQL instances and exercise multi-process coordination scenarios that cannot be verified in-process. Each file skips itself unless its environment variable is set: `CARACAL_REDIS_URL` for Redis, `CARACAL_REDIS_CLUSTER_URLS` for cluster, and `CARACAL_POSTGRES_URL` for PostgreSQL. Starting the containers alone does not set them - see [Local development](development.md).
 
@@ -25,6 +27,7 @@ npm run test:all            # check, then the property, fuzz, and integration su
 Property and fuzz tests report their seed on failure. Replay a specific run:
 
 ```sh
+CARACAL_TEST_SEED=123456 npm run test:generated
 CARACAL_TEST_SEED=123456 npm run test:fuzz
 CARACAL_TEST_SEED=123456 npm run test:property
 ```
@@ -33,10 +36,33 @@ On PowerShell:
 
 ```powershell
 $env:CARACAL_TEST_SEED = "123456"
-npm run test:fuzz
+npm run test:generated
 ```
 
-Every failure message includes the seed value and the exact replay command.
+Every failure message includes the seed value and the exact replay command. With no seed set, each run draws a new one: the suites explore a different slice of the contract instead of re-checking a frozen history.
+
+A seed belongs to the suite that printed it, not to the run. `test/property` and `test/fuzz` each resolve their own - from `CARACAL_TEST_SEED` when it is set, otherwise from a fresh draw - so replaying one failure means replaying that suite with the seed in its message. Setting the variable is what puts every suite in a run under the one seed.
+
+### Depth
+
+`CARACAL_TEST_RUNS` multiplies each generated case count, so a suite can be run deeper without a second copy of the test. The multiplier is bounded rather than open-ended: every suite sets a `maxCases` ceiling at its `createGeneratedSuite` call (3,000 for the circuit-breaker model, 4,000 for rate limits, 2,000 for bulkheads and the fuzz suite), and an individual count can carry a tighter cap of its own. At depth 25, for example, the breaker model's 300 cases run to its 3,000 ceiling rather than to 7,500. It defaults to `1`, which is what CI runs on every pull request:
+
+```sh
+CARACAL_TEST_RUNS=10 npm run test:generated
+npm run test:generated:deep          # the same, defaulting to a depth of 10
+```
+
+A deep failure needs both variables to replay - the failure message prints them together:
+
+```sh
+CARACAL_TEST_SEED=123456 CARACAL_TEST_RUNS=10 npm run test:generated
+```
+
+`.github/workflows/nightly.yml` runs the deep suites every night with `CARACAL_TEST_SEED` set to the workflow run number, so each night draws different cases under a seed that can be replayed on demand. Scheduled runs never gate a pull request: a failure there is a signal to investigate, not a merge blocker.
+
+### The mutation rule
+
+A new invariant must be able to fail, so before opening a pull request revert the behaviour it guards - locally, never in the commit - and confirm the suite goes red. The rate-limit properties, for example, go red when `burstDelayMs` loses its `burst - 1` factor, when `round` becomes `floor`, or when `retryAfterMs` is off by one millisecond; the bulkhead properties go red when the released permit is reported after the handoff, when a lease stops reclaiming its holder, or when the queue hands off out of order.
 
 ## Integration test environments
 

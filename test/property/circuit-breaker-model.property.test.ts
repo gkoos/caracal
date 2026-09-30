@@ -14,7 +14,7 @@ import * as fc from "fast-check"
 import { describe, expect, it, vi } from "vitest"
 import type { OperationEvent } from "../../src/index.js"
 import { circuitBreaker, operation } from "../../src/index.js"
-import { replayInstruction, resolveTestSeed } from "../support/seed.js"
+import { createGeneratedSuite } from "../support/seed.js"
 
 // ---------------------------------------------------------------------------
 // Helpers — serial execution
@@ -124,8 +124,15 @@ function assertWindowConsistency(
 // Property tests
 // ---------------------------------------------------------------------------
 
-const SEED = resolveTestSeed()
-const REPLAY = replayInstruction("npm run test:property", SEED)
+const suite = createGeneratedSuite({
+  name: "circuit-breaker-model",
+  command: "npm run test:property",
+  // Each case drives a whole serial trace, so 3000 fast-check runs per property
+  // is already the slowest test in the generated set; deeper runs reuse it.
+  maxCases: 3000,
+})
+const SEED = suite.seed
+const REPLAY = suite.replay
 
 describe(`circuit breaker model — state machine invariants (seed=${SEED} replay="${REPLAY}")`, () => {
   it("never emits an invalid state transition in a serial failure-only trace", async () => {
@@ -152,7 +159,7 @@ describe(`circuit breaker model — state machine invariants (seed=${SEED} repla
           assertWindowConsistency(policy, cfg.windowSize, REPLAY)
         },
       ),
-      { numRuns: 300, seed: SEED },
+      suite.assertOptions(300),
     )
   })
 
@@ -181,7 +188,7 @@ describe(`circuit breaker model — state machine invariants (seed=${SEED} repla
           expect(policy.snapshot().state, REPLAY).toBe("closed")
         },
       ),
-      { numRuns: 300, seed: SEED },
+      suite.assertOptions(300),
     )
   })
 
@@ -207,7 +214,7 @@ describe(`circuit breaker model — state machine invariants (seed=${SEED} repla
           assertWindowConsistency(policy, cfg.windowSize, REPLAY)
         },
       ),
-      { numRuns: 300, seed: SEED },
+      suite.assertOptions(300),
     )
   })
 
@@ -232,7 +239,7 @@ describe(`circuit breaker model — state machine invariants (seed=${SEED} repla
           )
         },
       ),
-      { numRuns: 300, seed: SEED },
+      suite.assertOptions(300),
     )
   })
 
@@ -253,7 +260,7 @@ describe(`circuit breaker model — state machine invariants (seed=${SEED} repla
           assertWindowConsistency(policy, cfg.windowSize, REPLAY)
         },
       ),
-      { numRuns: 300, seed: SEED },
+      suite.assertOptions(300),
     )
   })
 
@@ -299,7 +306,7 @@ describe(`circuit breaker model — state machine invariants (seed=${SEED} repla
           ).toBe(extraAttempts)
         },
       ),
-      { numRuns: 200, seed: SEED },
+      suite.assertOptions(200),
     )
   })
 
@@ -331,7 +338,7 @@ describe(`circuit breaker model — state machine invariants (seed=${SEED} repla
           ).toBe(false)
         },
       ),
-      { numRuns: 200, seed: SEED },
+      suite.assertOptions(200),
     )
   })
 })

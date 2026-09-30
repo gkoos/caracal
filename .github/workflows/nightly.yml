@@ -1,0 +1,50 @@
+name: Nightly generated suites
+
+# Deep runs of every generated suite under a seed that changes each night, so
+# the seeded search keeps exploring cases the pull-request run never draws.
+# A scheduled workflow never gates a pull request: a failure here is a signal
+# to investigate, not a merge blocker.
+on:
+  schedule:
+    # 03:17 UTC, off the hour to avoid the busiest runner window.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      depth:
+        description: Case-count multiplier (CARACAL_TEST_RUNS)
+        required: false
+        default: "25"
+
+permissions: read-all
+
+concurrency:
+  group: nightly-generated
+  cancel-in-progress: false
+
+jobs:
+  generated-deep:
+    name: Generated suites (depth ${{ github.event.inputs.depth || '25' }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The seed is the run number, so every night draws different cases and any
+      # failure prints the exact CARACAL_TEST_SEED that reproduces it.
+      - name: Report the seed and depth
+        run: |
+          echo "CARACAL_TEST_SEED=${{ github.run_number }}"
+          echo "CARACAL_TEST_RUNS=${{ github.event.inputs.depth || '25' }}"
+
+      - name: Deep generated suites
+        run: npm run test:generated:deep
+        env:
+          CARACAL_TEST_SEED: ${{ github.run_number }}
+          CARACAL_TEST_RUNS: ${{ github.event.inputs.depth || '25' }}
