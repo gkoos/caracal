@@ -14,29 +14,7 @@ import { describe, expect, it } from "vitest"
 import type { OperationEvent } from "../../src/index.js"
 import { circuitBreaker, operation } from "../../src/index.js"
 import { memoryBreakerCoordinator } from "../support/memory-coordinator/memory-circuit-breaker.js"
-import { replayInstruction, resolveTestSeed } from "../support/seed.js"
-
-// ---------------------------------------------------------------------------
-// Seeded PRNG â€” mulberry32, period 2^32, reproducible from any 32-bit seed
-// ---------------------------------------------------------------------------
-
-function mulberry32(seed: number): () => number {
-  let s = seed >>> 0
-  return () => {
-    s = (s + 0x6d2b79f5) | 0
-    let t = Math.imul(s ^ (s >>> 15), 1 | s)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-function randInt(rng: () => number, lo: number, hi: number): number {
-  return lo + Math.floor(rng() * (hi - lo + 1))
-}
-
-function randFloat(rng: () => number, lo: number, hi: number): number {
-  return lo + rng() * (hi - lo)
-}
+import { createGeneratedSuite, randFloat, randInt } from "../support/seed.js"
 
 // ---------------------------------------------------------------------------
 // Helpers â€” strictly serial execution preserves deterministic event ordering
@@ -120,19 +98,27 @@ function assertLocalInvariants(
 }
 
 // ---------------------------------------------------------------------------
-// Shared seed â€” all describe blocks in this file derive from the same seed
+// Shared generated suite - every describe block in this file derives from one
+// seed, one run depth, and one replay instruction.
 // ---------------------------------------------------------------------------
 
-const SEED = resolveTestSeed()
-const REPLAY = replayInstruction("npm run test:fuzz", SEED)
+const suite = createGeneratedSuite({
+  name: "circuit-breaker-fuzz",
+  command: "npm run test:fuzz",
+  // The 200-run loops below cost a couple of seconds at depth 10, which is
+  // enough exploration per case; a higher depth must not park a runner.
+  maxCases: 2000,
+})
+const SEED = suite.seed
+const REPLAY = suite.replay
 
 // ---------------------------------------------------------------------------
 // Local circuit breaker fuzz
 // ---------------------------------------------------------------------------
 
 describe(`circuit breaker fuzz â€” local (seed=${SEED} replay="${REPLAY}")`, () => {
-  const rng = mulberry32(SEED)
-  const RUNS = 200
+  const rng = suite.rng()
+  const RUNS = suite.cases(200)
 
   it("failure-only histories never produce invalid transitions", async () => {
     for (let i = 0; i < RUNS; i++) {
@@ -279,9 +265,12 @@ describe(`circuit breaker fuzz â€” local (seed=${SEED} replay="${REPLAY}")`
 
   it("probesInFlight never exceeds halfOpenProbes under concurrent admission", async () => {
     // Use a sub-RNG offset to avoid sharing state with earlier tests
-    const subRng = mulberry32(SEED ^ 0xabcdef01)
+    const subRng = suite.rng(0xabcdef01)
 
-    for (let i = 0; i < 50; i++) {
+    // This loop runs several calls concurrently per case, so it scales less
+    // than the sequential loops above: at depth 10 its own count would already
+    // exceed the vitest per-test timeout.
+    for (let i = 0; i < suite.cases(50, 100); i++) {
       const halfOpenProbes = randInt(subRng, 1, 3)
       const halfOpenSuccesses = randInt(subRng, 1, 3)
       const minimumThroughput = randInt(subRng, 1, 5)
@@ -374,8 +363,8 @@ describe(`circuit breaker fuzz â€” local (seed=${SEED} replay="${REPLAY}")`
 // ---------------------------------------------------------------------------
 
 describe(`circuit breaker fuzz â€” distributed (seed=${SEED} replay="${REPLAY}")`, () => {
-  const rng = mulberry32(SEED ^ 0xdeadbeef)
-  const RUNS = 50
+  const rng = suite.rng(0xdeadbeef)
+  const RUNS = suite.cases(50)
 
   it("never produces invalid transitions in randomised distributed histories", async () => {
     for (let i = 0; i < RUNS; i++) {
@@ -446,7 +435,7 @@ describe(`circuit breaker fuzz â€” distributed (seed=${SEED} replay="${REPL
   })
 
   it("scope isolation holds across randomised multi-scope histories", async () => {
-    const scopeRng = mulberry32(SEED ^ 0xcafebabe)
+    const scopeRng = suite.rng(0xcafebabe)
 
     for (let i = 0; i < RUNS; i++) {
       const minimumThroughput = randInt(scopeRng, 3, 8)
@@ -529,8 +518,8 @@ describe(`circuit breaker fuzz â€” distributed (seed=${SEED} replay="${REPL
 // ---------------------------------------------------------------------------
 
 describe(`circuit breaker fuzz — distributed window invariants (seed=${SEED} replay="${REPLAY}")`, () => {
-  const rng = mulberry32(SEED ^ 0x5eed5eed)
-  const RUNS = 40
+  const rng = suite.rng(0x5eed5eed)
+  const RUNS = suite.cases(40)
 
   it("keeps window, generation and rejection invariants across randomised histories", async () => {
     for (let run = 0; run < RUNS; run++) {
@@ -628,8 +617,8 @@ describe(`circuit breaker fuzz — distributed window invariants (seed=${SEED} r
 // ---------------------------------------------------------------------------
 
 describe(`circuit breaker fuzz — distributed probe accounting (seed=${SEED} replay="${REPLAY}")`, () => {
-  const rng = mulberry32(SEED ^ 0x0ddba11)
-  const RUNS = 40
+  const rng = suite.rng(0x0ddba11)
+  const RUNS = suite.cases(40)
 
   it("never admits more probes than halfOpenProbes and releases one slot per settle", async () => {
     for (let run = 0; run < RUNS; run++) {

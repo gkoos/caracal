@@ -25,14 +25,24 @@ The cluster suite manages its own three-master container: `npm run test:integrat
 npm test                    # unit suite (test/unit) - fast, no external dependencies
 npm run test:property       # property suite (test/property) - CARACAL_TEST_SEED for replay
 npm run test:fuzz           # fuzz suite (test/fuzz) - seeded event-history generator
+npm run test:generated      # both generated suites in one run - CARACAL_TEST_SEED for replay
+npm run test:generated:deep # the same suites at a deeper case count (CARACAL_TEST_RUNS), as nightly runs
 npm run test:integration    # integration suite (test/integration) - services and CARACAL_* URLs required
 npm run test:integration:cluster  # cluster suite - starts a local cluster, not run in CI
-npm run test:all            # check, then the property, fuzz, and integration suites
+npm run test:all            # check, then the generated and integration suites
 ```
 
 The cluster suite needs a real cluster, so it is a local gate rather than a CI job.
 
-See [`docs/testing.md`](docs/testing.md) for details on seed-based replay, integration setup, and the cluster suite.
+See [`docs/testing.md`](docs/testing.md) for details on seed-based replay, test depth, the mutation rule for new invariants, integration setup, and the cluster suite.
+
+## Generated tests and mutations
+
+New invariants belong in a generated suite (`test/property` or `test/fuzz`) rather than in a single example, and they have to be able to fail:
+
+- Draw cases from the suite seed, never from `Math.random()`, and build the suite with the helper in `test/support/seed.ts` so every failure prints the command that replays it.
+- Revert the behaviour the invariant guards and confirm the suite goes red before opening the pull request. A property that cannot fail is not evidence - the same rule as a soak test that cannot fail.
+- Scale case counts through the suite's own depth knob instead of a literal, so `npm run test:generated:deep` explores more of the same contract without a second copy of the test.
 
 ## Code style
 

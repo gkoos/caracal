@@ -30,9 +30,11 @@ npm run check
 | `npm run test:watch` | Vitest in watch mode. |
 | `npm run test:property` | Property suite (`test/property`); honours `CARACAL_TEST_SEED`. |
 | `npm run test:fuzz` | Fuzz suite (`test/fuzz`); seeded random event-history generator. |
+| `npm run test:generated` | Both generated suites (`test/property` + `test/fuzz`) in one run, honouring `CARACAL_TEST_SEED`. |
+| `npm run test:generated:deep` | The same suites at a deeper case count (`CARACAL_TEST_RUNS`, default 10); what the nightly workflow runs. |
 | `npm run test:integration` | Integration suite (`test/integration`); requires services and `CARACAL_*` URLs. |
 | `npm run check` | `format:check` -> `lint` -> `typecheck` -> `build` -> unit tests. |
-| `npm run test:all` | `check`, then the property, fuzz, and integration suites. |
+| `npm run test:all` | `check`, then the generated and integration suites. |
 | `npm run bench` | Builds, then runs the local-policy baseline (latency and allocations per attempt) and the Redis `EVAL`/`EVALSHA` script-transport comparison. |
 | `npm run audit:bundle` | Builds, then asserts the public exports and the root bundle's dependencies. |
 | `npm run changeset` | Records a changeset describing a pending release. |
@@ -58,8 +60,10 @@ npm run check
 npm test                    # unit suite (test/unit) - fast, no external dependencies
 npm run test:property       # property suite (test/property) - fast-check, CARACAL_TEST_SEED for replay
 npm run test:fuzz           # fuzz suite (test/fuzz) - seeded random event-history generator
+npm run test:generated      # both generated suites in one run, under one seed and one depth
+npm run test:generated:deep # the same suites at a deeper case count (CARACAL_TEST_RUNS)
 npm run test:integration    # integration suite (test/integration); services and CARACAL_* URLs required
-npm run test:all            # check, then the property, fuzz, and integration suites
+npm run test:all            # check, then the generated and integration suites
 ```
 
 Each script selects its own directory (see the table above), so the fast unit suite runs without Docker. Integration files skip unless their environment variable is set.
@@ -69,18 +73,26 @@ Each script selects its own directory (see the table above), so the fast unit su
 Property and fuzz tests report a seed in their failure output. Replay with the same command and `CARACAL_TEST_SEED`:
 
 ```sh
+CARACAL_TEST_SEED=123456 npm run test:generated
 CARACAL_TEST_SEED=123456 npm run test:property
-CARACAL_TEST_SEED=123456 npm run test:fuzz
 ```
 
 On PowerShell:
 
 ```powershell
 $env:CARACAL_TEST_SEED = "123456"
-npm run test:fuzz
+npm run test:generated
 ```
 
-Every failure message includes the seed value and the exact replay command.
+Every failure message includes the seed value and the exact replay command, together with the depth when it is not the default.
+
+`CARACAL_TEST_RUNS` multiplies every generated case count (default `1`, which is what CI runs on every pull request). `npm run test:generated:deep` sets it to 10, and `.github/workflows/nightly.yml` runs the same suites nightly at depth 25 under a seed derived from the workflow run number:
+
+```sh
+CARACAL_TEST_RUNS=25 CARACAL_TEST_SEED=123456 npm run test:generated
+```
+
+A new invariant must be shown to fail: revert the behaviour it guards and confirm the suite goes red before opening a pull request. See [Testing](testing.md#the-mutation-rule) for that rule plus the depth and replay details.
 
 ## Redis/Valkey integration environment
 
