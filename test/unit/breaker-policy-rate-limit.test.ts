@@ -162,6 +162,13 @@ describe.each(["local", "distributed"] as const)(
       await expect(op.execute(undefined)).rejects.toBeInstanceOf(
         RateLimitExceededError,
       )
+
+      // The explicit classifier changes the verdict, not the shed: the second
+      // call was still refused before the adapter, so it ran once.
+      expect(calls).toBe(1)
+
+      // `classify` wins over the built-in refusal default: the refusal is
+      // recorded as a failure even though `countAdmissionRejections` is off.
       expect(observed(events)).toEqual(["success", "failure"])
     })
 
