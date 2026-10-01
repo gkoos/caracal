@@ -177,7 +177,7 @@ Local only: there is no distributed timeout.
 | `halfOpenProbes` | `1` / `3` | integer `>= 1` | both |
 | `windowSize` | `100` | integer `>= 1` | both |
 | `classify` | adapter classification | `(error, isSuccess) => BreakerOutcome` (`"success" \| "failure" \| "ignored"`) | both |
-| `countBulkheadRejections` | `false` | record a bulkhead admission refusal (`capacity`, `wait-timeout`, `admission-expired`) as a failure | both |
+| `countAdmissionRejections` | `false` | record a pre-adapter admission refusal as a failure — a bulkhead's `capacity`, `wait-timeout`, `admission-expired` or a rate limiter's `RateLimitExceededError` | both |
 | `coordinator` | — | coordinator object | distributed |
 | `scope` | — | `(context) => string` | distributed |
 | `windowTtlMs` | `max(openMs × 3, 60_000)` | integer `>= 1` | distributed |
