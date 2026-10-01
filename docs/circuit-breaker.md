@@ -51,7 +51,7 @@ Within that resolution the value is exact; a threshold that is not a multiple of
 - below `0.0005` the numerator would round to 0, which makes the comparison unconditionally true - the breaker would open on a success-only window and re-open after every recovery;
 - at or above `0.9995` it would round to 1000, requiring every observation to fail, so the breaker would effectively never open.
 
-The accepted range is `0.0005 <= failureThreshold < 0.9995`. The local breaker compares the exact ratio, but enforces the same range so one policy config works with either coordination.
+The accepted range is `0.0005 <= failureThreshold < 0.9995`. Both coordinations compare that numerator - the local breaker resolves and compares it in process, the coordinator does so in Lua - so one policy config behaves identically either way, down to which window opens it.
 
 ## Ignored results
 
