@@ -168,12 +168,41 @@ export class CircuitOpenError extends Error {
 // Defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MINIMUM_THROUGHPUT = 5
-const DEFAULT_FAILURE_THRESHOLD = 0.5
-const DEFAULT_OPEN_MS = 10_000
-const DEFAULT_HALF_OPEN_SUCCESSES = 1
-const DEFAULT_HALF_OPEN_PROBES = 1
-const DEFAULT_WINDOW_SIZE = 100
+interface BreakerNumberOptions {
+  readonly minimumThroughput?: number
+  readonly failureThreshold?: number
+  readonly openMs?: number
+  readonly halfOpenSuccesses?: number
+  readonly halfOpenProbes?: number
+  readonly windowSize?: number
+}
+
+interface BreakerNumberDefaults {
+  readonly minimumThroughput: number
+  readonly failureThreshold: number
+  readonly openMs: number
+  readonly halfOpenSuccesses: number
+  readonly halfOpenProbes: number
+  readonly windowSize: number
+}
+
+const LOCAL_BREAKER_DEFAULTS: BreakerNumberDefaults = {
+  minimumThroughput: 5,
+  failureThreshold: 0.5,
+  openMs: 10_000,
+  halfOpenSuccesses: 1,
+  halfOpenProbes: 1,
+  windowSize: 100,
+}
+
+const DISTRIBUTED_BREAKER_DEFAULTS: BreakerNumberDefaults = {
+  minimumThroughput: 20,
+  failureThreshold: 0.5,
+  openMs: 30_000,
+  halfOpenSuccesses: 2,
+  halfOpenProbes: 3,
+  windowSize: 100,
+}
 
 /**
  * Upper bound on the window, which is both a memory bound and a cost bound:
@@ -228,15 +257,30 @@ function assertResolvableThreshold(failureThreshold: number): void {
     )
 }
 
-function validate(opts: LocalBreakerOptions): void {
-  if (!opts.name.trim())
-    throw new RangeError("Circuit breaker name must not be empty")
+interface ResolvedBreakerNumbers {
+  readonly minimumThroughput: number
+  readonly failureThresholdNumerator: number
+  readonly openMs: number
+  readonly halfOpenSuccesses: number
+  readonly halfOpenProbes: number
+  readonly windowSize: number
+}
 
-  const { minimumThroughput = DEFAULT_MINIMUM_THROUGHPUT } = opts
+/**
+ * Validates and resolves the numeric options the local and distributed breakers
+ * share, applying the coordination's own defaults.  Field order matches the
+ * historical per-field checks, so the first invalid field reports the same error
+ * as before.
+ */
+function resolveBreakerNumbers(
+  opts: BreakerNumberOptions,
+  defaults: BreakerNumberDefaults,
+): ResolvedBreakerNumbers {
+  const minimumThroughput = opts.minimumThroughput ?? defaults.minimumThroughput
   if (!Number.isInteger(minimumThroughput) || minimumThroughput < 1)
     throw new RangeError("minimumThroughput must be a positive integer")
 
-  const { failureThreshold = DEFAULT_FAILURE_THRESHOLD } = opts
+  const failureThreshold = opts.failureThreshold ?? defaults.failureThreshold
   if (
     !Number.isFinite(failureThreshold) ||
     failureThreshold <= 0 ||
@@ -244,20 +288,22 @@ function validate(opts: LocalBreakerOptions): void {
   )
     throw new RangeError("failureThreshold must be a number in (0, 1)")
   assertResolvableThreshold(failureThreshold)
+  const failureThresholdNumerator =
+    resolveFailureThresholdNumerator(failureThreshold)
 
-  const { openMs = DEFAULT_OPEN_MS } = opts
+  const openMs = opts.openMs ?? defaults.openMs
   if (!Number.isInteger(openMs) || openMs < 1)
     throw new RangeError("openMs must be a positive integer")
 
-  const { halfOpenSuccesses = DEFAULT_HALF_OPEN_SUCCESSES } = opts
+  const halfOpenSuccesses = opts.halfOpenSuccesses ?? defaults.halfOpenSuccesses
   if (!Number.isInteger(halfOpenSuccesses) || halfOpenSuccesses < 1)
     throw new RangeError("halfOpenSuccesses must be a positive integer")
 
-  const { halfOpenProbes = DEFAULT_HALF_OPEN_PROBES } = opts
+  const halfOpenProbes = opts.halfOpenProbes ?? defaults.halfOpenProbes
   if (!Number.isInteger(halfOpenProbes) || halfOpenProbes < 1)
     throw new RangeError("halfOpenProbes must be a positive integer")
 
-  const { windowSize = DEFAULT_WINDOW_SIZE } = opts
+  const windowSize = opts.windowSize ?? defaults.windowSize
   if (
     !Number.isInteger(windowSize) ||
     windowSize < 1 ||
@@ -267,15 +313,14 @@ function validate(opts: LocalBreakerOptions): void {
       `windowSize must be an integer between 1 and ${MAX_WINDOW_SIZE}`,
     )
 
-  const { probeLeaseTtlMs = openMs * 2 } = opts
-  if (
-    !Number.isInteger(probeLeaseTtlMs) ||
-    probeLeaseTtlMs < 1 ||
-    probeLeaseTtlMs > MAX_TIMER_MS
-  )
-    throw new RangeError(
-      `probeLeaseTtlMs must be an integer between 1 and ${MAX_TIMER_MS}`,
-    )
+  return {
+    minimumThroughput,
+    failureThresholdNumerator,
+    openMs,
+    halfOpenSuccesses,
+    halfOpenProbes,
+    windowSize,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,19 +381,29 @@ type LocalBreakerPolicy = Policy & {
 }
 
 function local(options: LocalBreakerOptions): LocalBreakerPolicy {
-  validate(options)
+  if (!options.name.trim())
+    throw new RangeError("Circuit breaker name must not be empty")
+
+  const {
+    minimumThroughput,
+    failureThresholdNumerator,
+    openMs,
+    halfOpenSuccesses: halfOpenSuccessTarget,
+    halfOpenProbes: halfOpenProbeLimit,
+    windowSize,
+  } = resolveBreakerNumbers(options, LOCAL_BREAKER_DEFAULTS)
+
+  const probeLeaseTtlMs = options.probeLeaseTtlMs ?? openMs * 2
+  if (
+    !Number.isInteger(probeLeaseTtlMs) ||
+    probeLeaseTtlMs < 1 ||
+    probeLeaseTtlMs > MAX_TIMER_MS
+  )
+    throw new RangeError(
+      `probeLeaseTtlMs must be an integer between 1 and ${MAX_TIMER_MS}`,
+    )
 
   const name = options.name
-  const minimumThroughput =
-    options.minimumThroughput ?? DEFAULT_MINIMUM_THROUGHPUT
-  const failureThresholdNumerator = resolveFailureThresholdNumerator(
-    options.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD,
-  )
-  const openMs = options.openMs ?? DEFAULT_OPEN_MS
-  const halfOpenSuccessTarget =
-    options.halfOpenSuccesses ?? DEFAULT_HALF_OPEN_SUCCESSES
-  const halfOpenProbeLimit = options.halfOpenProbes ?? DEFAULT_HALF_OPEN_PROBES
-  const windowSize = options.windowSize ?? DEFAULT_WINDOW_SIZE
   const classifier = options.classify
   const countAdmissionRejections = options.countAdmissionRejections ?? false
 
@@ -357,8 +412,6 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
   let openedAt = 0
   let halfOpenSuccessCount = 0
   const window = new SlidingWindow(windowSize)
-
-  const probeLeaseTtlMs = options.probeLeaseTtlMs ?? openMs * 2
 
   type LocalProbe = {
     readonly token: string
@@ -847,76 +900,7 @@ export interface DistributedBreakerOptions {
   readonly countAdmissionRejections?: boolean
 }
 
-const DEFAULT_DIST_MINIMUM_THROUGHPUT = 20
-const DEFAULT_DIST_FAILURE_THRESHOLD = 0.5
-const DEFAULT_DIST_WINDOW_SIZE = 100
-const DEFAULT_DIST_OPEN_MS = 30_000
-const DEFAULT_DIST_HALF_OPEN_PROBES = 3
-const DEFAULT_DIST_HALF_OPEN_SUCCESSES = 2
 const DEFAULT_DIST_ON_COORDINATOR_ERROR = "fail-open" as const
-
-function validateDistributed(opts: DistributedBreakerOptions): void {
-  if (typeof opts.name !== "string" || !opts.name.trim())
-    throw new RangeError("Distributed circuit breaker name must not be empty")
-  if (!opts.coordinator || typeof opts.coordinator !== "object")
-    throw new TypeError("coordinator is required")
-  if (typeof opts.scope !== "function")
-    throw new TypeError("scope must be a function")
-
-  const { minimumThroughput = DEFAULT_DIST_MINIMUM_THROUGHPUT } = opts
-  if (!Number.isInteger(minimumThroughput) || minimumThroughput < 1)
-    throw new RangeError("minimumThroughput must be a positive integer")
-
-  const { failureThreshold = DEFAULT_DIST_FAILURE_THRESHOLD } = opts
-  if (
-    !Number.isFinite(failureThreshold) ||
-    failureThreshold <= 0 ||
-    failureThreshold >= 1
-  )
-    throw new RangeError("failureThreshold must be a number in (0, 1)")
-  assertResolvableThreshold(failureThreshold)
-
-  const { openMs = DEFAULT_DIST_OPEN_MS } = opts
-  if (!Number.isInteger(openMs) || openMs < 1)
-    throw new RangeError("openMs must be a positive integer")
-
-  const { halfOpenSuccesses = DEFAULT_DIST_HALF_OPEN_SUCCESSES } = opts
-  if (!Number.isInteger(halfOpenSuccesses) || halfOpenSuccesses < 1)
-    throw new RangeError("halfOpenSuccesses must be a positive integer")
-
-  const { halfOpenProbes = DEFAULT_DIST_HALF_OPEN_PROBES } = opts
-  if (!Number.isInteger(halfOpenProbes) || halfOpenProbes < 1)
-    throw new RangeError("halfOpenProbes must be a positive integer")
-
-  const { windowSize = DEFAULT_DIST_WINDOW_SIZE } = opts
-  if (
-    !Number.isInteger(windowSize) ||
-    windowSize < 1 ||
-    windowSize > MAX_WINDOW_SIZE
-  )
-    throw new RangeError(
-      `windowSize must be an integer between 1 and ${MAX_WINDOW_SIZE}`,
-    )
-
-  if (opts.windowTtlMs !== undefined) {
-    if (!Number.isInteger(opts.windowTtlMs) || opts.windowTtlMs < 1)
-      throw new RangeError("windowTtlMs must be a positive integer")
-  }
-
-  if (opts.probeLeaseTtlMs !== undefined) {
-    if (!Number.isInteger(opts.probeLeaseTtlMs) || opts.probeLeaseTtlMs < 1)
-      throw new RangeError("probeLeaseTtlMs must be a positive integer")
-  }
-
-  if (
-    opts.onCoordinatorError !== undefined &&
-    opts.onCoordinatorError !== "fail-open" &&
-    opts.onCoordinatorError !== "fail-closed"
-  )
-    throw new TypeError(
-      'onCoordinatorError must be "fail-open" or "fail-closed"',
-    )
-}
 
 type DistributedBreakerPolicy = Policy & {
   readonly coordination: "distributed"
@@ -925,23 +909,48 @@ type DistributedBreakerPolicy = Policy & {
 function distributed(
   options: DistributedBreakerOptions,
 ): DistributedBreakerPolicy {
-  validateDistributed(options)
+  if (typeof options.name !== "string" || !options.name.trim())
+    throw new RangeError("Distributed circuit breaker name must not be empty")
+  if (!options.coordinator || typeof options.coordinator !== "object")
+    throw new TypeError("coordinator is required")
+  if (typeof options.scope !== "function")
+    throw new TypeError("scope must be a function")
+
+  const {
+    minimumThroughput,
+    failureThresholdNumerator,
+    openMs,
+    halfOpenSuccesses,
+    halfOpenProbes,
+    windowSize,
+  } = resolveBreakerNumbers(options, DISTRIBUTED_BREAKER_DEFAULTS)
+
+  if (options.windowTtlMs !== undefined) {
+    if (!Number.isInteger(options.windowTtlMs) || options.windowTtlMs < 1)
+      throw new RangeError("windowTtlMs must be a positive integer")
+  }
+
+  if (options.probeLeaseTtlMs !== undefined) {
+    if (
+      !Number.isInteger(options.probeLeaseTtlMs) ||
+      options.probeLeaseTtlMs < 1
+    )
+      throw new RangeError("probeLeaseTtlMs must be a positive integer")
+  }
+
+  if (
+    options.onCoordinatorError !== undefined &&
+    options.onCoordinatorError !== "fail-open" &&
+    options.onCoordinatorError !== "fail-closed"
+  )
+    throw new TypeError(
+      'onCoordinatorError must be "fail-open" or "fail-closed"',
+    )
 
   const name = options.name
   const coordinator = options.coordinator
   const resolveScope = options.scope
-  const minimumThroughput =
-    options.minimumThroughput ?? DEFAULT_DIST_MINIMUM_THROUGHPUT
-  const failureThreshold =
-    options.failureThreshold ?? DEFAULT_DIST_FAILURE_THRESHOLD
-  const failureThresholdNumerator =
-    resolveFailureThresholdNumerator(failureThreshold)
-  const windowSize = options.windowSize ?? DEFAULT_DIST_WINDOW_SIZE
-  const openMs = options.openMs ?? DEFAULT_DIST_OPEN_MS
   const windowTtlMs = options.windowTtlMs ?? Math.max(openMs * 3, 60_000)
-  const halfOpenProbes = options.halfOpenProbes ?? DEFAULT_DIST_HALF_OPEN_PROBES
-  const halfOpenSuccesses =
-    options.halfOpenSuccesses ?? DEFAULT_DIST_HALF_OPEN_SUCCESSES
   const probeLeaseTtlMs = options.probeLeaseTtlMs ?? openMs * 2
   const onCoordinatorError =
     options.onCoordinatorError ?? DEFAULT_DIST_ON_COORDINATOR_ERROR

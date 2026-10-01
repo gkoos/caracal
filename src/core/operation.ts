@@ -4,7 +4,7 @@ import {
   admissionSignal,
   createClassifier,
   createExecutionContext,
-  emitToSink,
+  emitToSinks,
   setDisposer,
   type EventWithoutRuntimeFields,
 } from "./runtime.js"
@@ -18,7 +18,6 @@ import type {
   Next,
   Operation,
   OperationCapabilities,
-  OperationEvent,
   OperationExecuteOptions,
   OperationOptions,
   Outcome,
@@ -55,23 +54,17 @@ function normalizeSinks(events: EventSinks | undefined): readonly EventSink[] {
 }
 
 /**
- * Delivers one event, building it only when a sink will actually receive it.
- *
- * An operation with no sinks therefore does no per-event work at all: no event
- * object, no clock read, no iteration. `test/unit/no-sink-fast-path.test.ts`
- * pins that, and `scripts/bench-gate.mjs` measures the allocations it avoids.
+ * Delivers one event through the shared runtime emitter. `sinks` is resolved
+ * once per operation (see `normalizeSinks`), so this avoids the per-event
+ * context lookup `emitRuntimeEvent` performs. The no-sink fast path lives in
+ * `emitToSinks`.
  */
 function emit(
   sinks: readonly EventSink[],
   context: ExecutionContext,
   event: EventWithoutRuntimeFields,
 ): void {
-  if (sinks.length === 0) return
-
-  const fullEvent = { ...event, at: Date.now(), context } as OperationEvent
-  for (const sink of sinks) {
-    emitToSink(sink, fullEvent)
-  }
+  emitToSinks(sinks, context, event)
 }
 
 function validateName(name: string, kind: "operation" | "policy"): void {
