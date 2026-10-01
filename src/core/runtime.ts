@@ -1,4 +1,5 @@
 import type {
+  Adapter,
   Classification,
   EventSink,
   ExecutionContext,
@@ -204,14 +205,29 @@ export function emitRuntimeEvent(
   }
 }
 
-export function createClassifier<Result>(
+/**
+ * Wraps an adapter's `classify` for the runtime.
+ *
+ * `classify` is declared on the adapter, so it is invoked *on* the adapter: a
+ * method that reads the adapter through `this` (state on a class instance, or a
+ * sibling method on an object literal) would otherwise throw a `TypeError` out
+ * of the classification path. That throw replaces the attempt's own outcome and
+ * escapes the policy that asked for the verdict, so `retry` would classify the
+ * classifier's failure instead, and the breaker - which only ever sees
+ * classified outcomes - would record nothing at all.
+ *
+ * The receiver is bound once here, per execution, rather than per attempt: the
+ * returned classifier runs on the attempt's hot path.
+ */
+export function createClassifier<Args, Result>(
   classify: ((outcome: Outcome<Result>) => Classification) | undefined,
+  adapter: Adapter<Args, Result>,
 ): OutcomeClassifier {
-  return (outcome) => {
-    if (classify === undefined) {
-      return outcome.status === "success" ? "success" : "failure"
-    }
-
-    return classify(outcome as Outcome<Result>)
+  if (classify === undefined) {
+    return (outcome) => (outcome.status === "success" ? "success" : "failure")
   }
+
+  const classifyOn = classify.bind(adapter)
+
+  return (outcome) => classifyOn(outcome as Outcome<Result>)
 }

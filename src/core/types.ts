@@ -25,6 +25,16 @@ export type Classification = "success" | "failure" | "retryable" | "ignored"
 
 export type OutcomeClassifier = (outcome: Outcome<unknown>) => Classification
 
+/**
+ * The terminal work of an operation: how to call it, what it can do, and how to
+ * read its outcome.
+ *
+ * Every method is invoked *on the adapter*, so a method may reach the adapter's
+ * own state through `this` - a class instance, or an object literal reading a
+ * sibling method. That includes `classify` and `dispose`, which the runtime
+ * calls from `retry`, the circuit breaker and the abandoning policy rather than
+ * from code holding a reference to the adapter.
+ */
 export interface Adapter<Args, Result> {
   execute(args: Args, context: ExecutionContext): Promise<Result>
   capabilities(args: Args): OperationCapabilities

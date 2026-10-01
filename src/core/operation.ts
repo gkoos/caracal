@@ -153,7 +153,8 @@ export function operation<Args, Result>(
       args: Args,
       executeOptions: OperationExecuteOptions = {},
     ): Promise<Result> {
-      const capabilities = options.adapter.capabilities(args)
+      const adapter = options.adapter
+      const capabilities = adapter.capabilities(args)
       const context = createExecutionContext(
         {
           operationName: options.name,
@@ -161,21 +162,26 @@ export function operation<Args, Result>(
           signal: executeOptions.signal,
           metadata: immutableMetadata(executeOptions.metadata),
           capabilities: immutableCapabilities(capabilities),
-          classify: createClassifier(options.adapter.classify),
+          classify: createClassifier(adapter.classify, adapter),
         },
         sinks,
       )
-      if (options.adapter.dispose !== undefined) {
-        const dispose = options.adapter.dispose
+      if (adapter.dispose !== undefined) {
+        // Bound here, once per execution: the disposer is called long after this
+        // line, from a context the adapter has no other connection to, and a
+        // detached `dispose` that reads the adapter through `this` would throw
+        // into the isolation that swallows a *user's* dispose error - so the
+        // release would be skipped in silence.
+        const dispose = adapter.dispose.bind(adapter)
         setDisposer(context, (outcome, ctx) =>
           dispose(outcome as Outcome<Result>, ctx),
         )
       }
-      const adapter = createPipeline(
+      const attemptChain = createPipeline(
         attemptPolicies,
-        invokeAdapter(options.adapter, args, sinks),
+        invokeAdapter(adapter, args, sinks),
       )
-      const pipeline = createPipeline(outerPolicies, adapter)
+      const pipeline = createPipeline(outerPolicies, attemptChain)
 
       emit(sinks, context, { type: "execution.started" })
       try {
