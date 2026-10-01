@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import type { Adapter, EventSink, OperationEvent } from "../../src/index.js"
+import type {
+  Adapter,
+  EventSink,
+  OperationEvent,
+  Outcome,
+} from "../../src/index.js"
 import { operation, retry } from "../../src/index.js"
 
 describe("retry", () => {
@@ -132,6 +137,161 @@ describe("retry delay bounds", () => {
 
   it("accepts a delay at the bound", () => {
     expect(() => retry({ maxAttempts: 2, delay: 2_147_483_647 })).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A throwing delay
+// ---------------------------------------------------------------------------
+
+describe("retry delay failure", () => {
+  it("disposes the attempt a throwing delay abandons", async () => {
+    const attempts: string[] = []
+    const disposed: Array<Outcome<unknown>> = []
+    const events: OperationEvent[] = []
+    let delays = 0
+    const subject = operation({
+      name: "delay-throws",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async () => {
+          const attempt = `attempt-${attempts.length + 1}`
+          attempts.push(attempt)
+          return attempt
+        },
+        // Every thrown error is retryable, as a transport adapter classifies
+        // them: without this, retry has nothing to pace and never calls delay.
+        classify: (outcome) =>
+          outcome.status === "failure" || outcome.value === "attempt-1"
+            ? "retryable"
+            : "success",
+        dispose: (outcome) => {
+          disposed.push(outcome)
+        },
+      },
+      policies: [
+        retry({
+          maxAttempts: 3,
+          delay: () => {
+            delays += 1
+            if (delays === 1) {
+              throw new Error("delay boom")
+            }
+            return 0
+          },
+        }),
+      ],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    // The delay's failure is retry's own, not an outcome about the dependency:
+    // it reaches the caller instead of being classified. Read as the attempt's
+    // outcome it was classified retryable, paced a second attempt and was
+    // swallowed - the call resolved with the next attempt's value - and the
+    // attempt the delay was pacing was never released.
+    await expect(subject.execute(undefined)).rejects.toThrow("delay boom")
+    expect(attempts).toEqual(["attempt-1"])
+    // The attempt the delay was pacing is abandoned - the caller receives
+    // neither its value nor its error - so it is released like any other
+    // abandoned outcome.
+    expect(disposed).toEqual([{ status: "success", value: "attempt-1" }])
+    expect(events.map((event) => event.type)).toEqual([
+      "execution.started",
+      "attempt.started",
+      "attempt.settled",
+      "execution.settled",
+    ])
+  })
+
+  it("does not classify or retry the delay's own failure", async () => {
+    const adapterError = new Error("adapter boom")
+    const delayError = new Error("delay boom")
+    const classified: string[] = []
+    const disposed: Array<Outcome<unknown>> = []
+    let attempts = 0
+    const subject = operation({
+      name: "delay-throws-after-failure",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async () => {
+          attempts += 1
+          throw adapterError
+        },
+        // Records every outcome the policy reads, so a delay's own failure
+        // shows up here if anything classifies it.
+        classify: (outcome) => {
+          classified.push(outcome.status)
+          return "retryable"
+        },
+        dispose: (outcome) => {
+          disposed.push(outcome)
+        },
+      },
+      policies: [
+        retry({
+          maxAttempts: 3,
+          delay: () => {
+            throw delayError
+          },
+        }),
+      ],
+    })
+
+    await expect(subject.execute(undefined)).rejects.toBe(delayError)
+    // No sink is configured, so the operation adds no classification of its
+    // own: the one entry is retry reading the adapter's failure. The delay's
+    // own failure is never handed to the classifier - it is not an outcome
+    // about the dependency.
+    expect(classified).toEqual(["failure"])
+    expect(attempts).toBe(1)
+    // Abandoned all the same: the caller receives the delay's failure, not the
+    // adapter's, so the failed attempt is released like any other abandoned
+    // outcome. It used to be skipped - the throw above happened before disposal
+    // was reached - leaking whatever an errored attempt holds.
+    expect(disposed).toEqual([{ status: "failure", error: adapterError }])
+  })
+
+  it("reports a cancellation that lands while the retry wait is pending", async () => {
+    const controller = new AbortController()
+    const cancellation = new Error("caller cancelled")
+    const attempts: number[] = []
+    const subject = operation({
+      name: "cancelled-during-delay",
+      adapter: {
+        capabilities: () => ({
+          abort: "unsupported" as const,
+          replay: "safe" as const,
+        }),
+        execute: async (_args, context) => {
+          attempts.push(context.attempt)
+          return "first"
+        },
+        classify: () => "retryable" as const,
+      },
+      policies: [
+        retry({
+          maxAttempts: 3,
+          delay: () => {
+            // The caller cancels while the paced wait is pending. The wait is
+            // retry's own bookkeeping, so an abort during it ends the sequence
+            // with the caller's own reason rather than with a new attempt.
+            controller.abort(cancellation)
+            return 5
+          },
+        }),
+      ],
+    })
+
+    await expect(
+      subject.execute(undefined, { signal: controller.signal }),
+    ).rejects.toBe(cancellation)
+    expect(attempts).toEqual([1])
   })
 })
 
