@@ -80,6 +80,8 @@ retry({
 
 `retryAfterMs` is the GCRA catch-up time, always a positive whole number of milliseconds on rejection. It also appears on the `ratelimit.rejected` event.
 
+A refusal is not evidence about the dependency, so an enclosing [circuit breaker](circuit-breaker.md#ignored-results) does not record a `RateLimitExceededError` as a failure; `countAdmissionRejections` on the breaker records it anyway. A coordinator failure is not this case: the policy rethrows the coordinator's own error, which a breaker counts.
+
 ## Failure guarantees
 
 - Failed or uncertain admission **fails closed**. No adapter call is started and no local fallback occurs. With the Redis coordinator the rejection is a `CoordinatorUnavailableError` (exported from `@gkoos/caracal/redis`, not the root); the policy rethrows whatever its coordinator threw, so a custom coordinator's own error type is what you see. There is no `onCoordinatorError` knob: rate-limit admission has no safe "fail-open", because allowing traffic when the limiter cannot be read removes the protection it exists to provide.

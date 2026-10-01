@@ -35,13 +35,13 @@ const refusal = (
 
 type Overrides = {
   readonly classify?: BreakerClassifier
-  readonly countBulkheadRejections?: boolean
+  readonly countAdmissionRejections?: boolean
 }
 
 describe.each(["local", "distributed"] as const)(
   "%s breaker and bulkhead refusals",
   (coordination) => {
-    function breaker({ classify, countBulkheadRejections }: Overrides = {}) {
+    function breaker({ classify, countAdmissionRejections }: Overrides = {}) {
       const options = {
         name: "test",
         minimumThroughput: 1,
@@ -49,7 +49,7 @@ describe.each(["local", "distributed"] as const)(
         openMs: 10,
         halfOpenSuccesses: 1,
         classify,
-        countBulkheadRejections,
+        countAdmissionRejections,
       }
       return coordination === "local"
         ? circuitBreaker.local(options)
@@ -203,7 +203,7 @@ describe.each(["local", "distributed"] as const)(
       )
     })
 
-    it("counts a refusal when countBulkheadRejections is on", async () => {
+    it("counts a refusal when countAdmissionRejections is on", async () => {
       const events: OperationEvent[] = []
       const op = operation({
         name: "work",
@@ -213,7 +213,7 @@ describe.each(["local", "distributed"] as const)(
             throw refusal("capacity")
           },
         },
-        policies: [breaker({ countBulkheadRejections: true })],
+        policies: [breaker({ countAdmissionRejections: true })],
         events: { emit: (event) => events.push(event) },
       })
 
