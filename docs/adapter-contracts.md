@@ -68,6 +68,39 @@ If a settled result holds a body or handle - a response stream, a pooled connect
 
 `dispose` follows the same isolation discipline as event sinks: it is fire-and-forget, it is never awaited on the caller path, and a synchronous throw or a rejected promise never changes what the caller sees. Return nothing (or `undefined`) when the outcome has nothing to release - an error outcome for an adapter that only disposes values is the common case.
 
+### Methods and `this`
+
+Caracal calls every adapter method **on the adapter**, so a method can reach the adapter's own state through `this`. This holds for `classify` and `dispose` too, even though you never call them yourself - the runtime calls `classify` from `retry` and from the circuit breaker, and `dispose` from whichever policy abandons the result:
+
+```ts
+class PooledAdapter implements Adapter<Query, Row[]> {
+  #pool: Pool
+
+  constructor(pool: Pool) {
+    this.#pool = pool
+  }
+
+  capabilities() {
+    return { abort: "unsupported", replay: "safe" } as const
+  }
+
+  execute(query: Query) {
+    return this.#pool.query(query)
+  }
+
+  classify(outcome) {
+    // `this.#pool` is available here: the classifier is not detached.
+    return this.#pool.isTransient(outcome) ? "retryable" : "failure"
+  }
+
+  dispose(outcome) {
+    if (outcome.status === "success") this.#pool.release(outcome.value)
+  }
+}
+```
+
+An object literal works the same way, so a method may read a sibling method through `this`. Nothing else about the contract changes: `classify` still has to be pure, and `dispose` still cannot report a failure.
+
 ### ExecutionContext
 
 The `context` object passed to `execute` contains:
