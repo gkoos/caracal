@@ -192,23 +192,28 @@ export function retry(options: RetryOptions): Policy {
         const outcome = await attemptOutcome(context, next)
         const outcomeClassification = classification(context, outcome)
 
-        if (outcome.status === "failure" && admissionSignal(context)?.aborted) {
-          // The caller's own cancellation is not an outcome about the
-          // dependency: it is reported as itself, on every admission exit.
-          throw outcome.error
-        }
+        // The caller's own cancellation is not an outcome about the dependency:
+        // it is reported as itself, on every admission exit, and must neither
+        // emit a decline event nor be mistaken for a retryable failure.
+        const cancelled =
+          outcome.status === "failure" && admissionSignal(context)?.aborted
 
-        if (
-          outcomeClassification !== "retryable" ||
-          context.capabilities.replay !== "safe"
-        ) {
-          // Declining to retry is observable: without this, a call that was
-          // never retried looks identical to one with no retry policy. A
-          // success is not eligible for a retry in the first place, so it
-          // emits nothing - a counter over this event must not track
-          // successes. A classifier that calls a thrown error a success is
-          // saying there was nothing to retry, not that a retry was declined.
-          if (outcomeClassification !== "success") {
+        // Declining to retry is observable: without this, a call that was
+        // never retried looks identical to one with no retry policy. A success
+        // is not eligible for a retry in the first place, so it emits nothing -
+        // a counter over this event must not track successes. A classifier that
+        // calls a thrown error a success is saying there was nothing to retry,
+        // not that a retry was declined.
+        const declined =
+          !cancelled &&
+          (outcomeClassification !== "retryable" ||
+            context.capabilities.replay !== "safe")
+
+        const exhausted =
+          !cancelled && !declined && context.attempt >= options.maxAttempts
+
+        if (cancelled || declined || exhausted) {
+          if (declined && outcomeClassification !== "success") {
             emitRuntimeEvent(context, {
               type: "retry.declined",
               outcome: summarized(outcome),
@@ -218,16 +223,13 @@ export function retry(options: RetryOptions): Policy {
                   ? "replay-unsafe"
                   : "not-retryable",
             })
+          } else if (exhausted) {
+            emitRuntimeEvent(context, {
+              type: "retry.exhausted",
+              outcome: summarized(outcome),
+              classification: outcomeClassification,
+            })
           }
-          return settle(outcome)
-        }
-
-        if (context.attempt >= options.maxAttempts) {
-          emitRuntimeEvent(context, {
-            type: "retry.exhausted",
-            outcome: summarized(outcome),
-            classification: outcomeClassification,
-          })
           return settle(outcome)
         }
 

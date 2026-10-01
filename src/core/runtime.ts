@@ -187,22 +187,33 @@ export function emitToSink(sink: EventSink, event: OperationEvent): void {
   }
 }
 
+/**
+ * Delivers one event to a set of sinks, building it only when a sink will
+ * actually receive it.
+ *
+ * A sink-free operation therefore does no per-event work at all: no event
+ * object, no clock read, no iteration. This is the common case for an operation
+ * with observability turned off; scripts/bench-gate.mjs measures the
+ * allocations it avoids.
+ */
+export function emitToSinks(
+  sinks: readonly EventSink[],
+  context: ExecutionContext,
+  event: EventWithoutRuntimeFields,
+): void {
+  if (sinks.length === 0) return
+
+  const fullEvent = { ...event, at: Date.now(), context } as OperationEvent
+  for (const sink of sinks) {
+    emitToSink(sink, fullEvent)
+  }
+}
+
 export function emitRuntimeEvent(
   context: ExecutionContext,
   event: EventWithoutRuntimeFields,
 ): void {
-  const sinks = runtimeContext(context)[eventSinks] ?? []
-  // No sinks configured: skip building the event at all. This is the common case
-  // for an operation with observability turned off, and building it would
-  // allocate per event and call `Date.now()` on the hot path for nobody. The
-  // gate in scripts/bench-gate.mjs measures allocations per attempt.
-  if (sinks.length === 0) return
-
-  const fullEvent = { ...event, at: Date.now(), context } as OperationEvent
-
-  for (const sink of sinks) {
-    emitToSink(sink, fullEvent)
-  }
+  emitToSinks(runtimeContext(context)[eventSinks] ?? [], context, event)
 }
 
 /**
