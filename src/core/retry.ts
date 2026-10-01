@@ -122,6 +122,34 @@ function summarized<Result>(outcome: Outcome<Result>): EventOutcome {
   return { status: outcome.status }
 }
 
+/** The attempt's own settlement, as the caller receives it. */
+function settle<Result>(outcome: Outcome<Result>): Result {
+  if (outcome.status === "success") {
+    return outcome.value
+  }
+
+  throw outcome.error
+}
+
+/**
+ * The wrapped attempt, as an outcome.
+ *
+ * This is the only await inside a try: a failure in retry's own bookkeeping - a
+ * classifier, a `delay`, the inter-attempt wait - is not an outcome about the
+ * dependency, so it has to escape instead of being classified, retried, or
+ * reported as one.
+ */
+async function attemptOutcome<Result>(
+  context: ExecutionContext,
+  next: Next<Result>,
+): Promise<Outcome<Result>> {
+  try {
+    return { status: "success", value: await next(context) }
+  } catch (error) {
+    return { status: "failure", error }
+  }
+}
+
 function classification<Result>(
   context: ExecutionContext,
   outcome: Outcome<Result>,
@@ -156,103 +184,69 @@ export function retry(options: RetryOptions): Policy {
       for (;;) {
         throwIfAborted(admissionSignal(context))
 
-        try {
-          const value = await next(context)
-          const outcome: Outcome<Result> = { status: "success", value }
-          const outcomeClassification = classification(context, outcome)
-          if (
-            outcomeClassification !== "retryable" ||
-            context.capabilities.replay !== "safe"
-          ) {
-            // Declining to retry is observable: without this, a call that was
-            // never retried looks identical to one with no retry policy. A
-            // success is not eligible for a retry in the first place, so it
-            // emits nothing - a counter over this event must not track
-            // successes.
-            if (outcomeClassification !== "success") {
-              emitRuntimeEvent(context, {
-                type: "retry.declined",
-                outcome: summarized(outcome),
-                classification: outcomeClassification,
-                reason:
-                  context.capabilities.replay !== "safe"
-                    ? "replay-unsafe"
-                    : "not-retryable",
-              })
-            }
-            return value
-          }
+        // The wrapped execution is the only thing here that is an outcome about
+        // the dependency; everything below is retry's own bookkeeping. Read as
+        // an outcome, a throwing `delay` was classified - and, on a result
+        // classified retryable, classified retryable in turn, which swallowed
+        // the delay's own error and paced another attempt.
+        const outcome = await attemptOutcome(context, next)
+        const outcomeClassification = classification(context, outcome)
 
-          if (context.attempt >= options.maxAttempts) {
-            emitRuntimeEvent(context, {
-              type: "retry.exhausted",
-              outcome: summarized(outcome),
-              classification: outcomeClassification,
-            })
-            return value
-          }
-
-          const delayMs = delayFor(options, context, context.attempt, outcome)
-          emitRuntimeEvent(context, {
-            type: "retry.scheduled",
-            nextAttempt: context.attempt + 1,
-            delayMs,
-            outcome: summarized(outcome),
-            classification: outcomeClassification,
-          })
-          disposeAbandoned(context, outcome)
-          await wait(delayMs, admissionSignal(context))
-          context = nextAttempt(context)
-        } catch (error) {
-          const outcome: Outcome<Result> = { status: "failure", error }
-          const outcomeClassification = classification(context, outcome)
-
-          if (admissionSignal(context)?.aborted) {
-            throw error
-          }
-          if (
-            context.capabilities.replay !== "safe" ||
-            outcomeClassification !== "retryable"
-          ) {
-            // Same event as the value path: the caller can tell a declined
-            // retry from a missing retry policy. The success filter is the same
-            // one - a classifier that calls a thrown error a success is saying
-            // there was nothing to retry, not that a retry was declined.
-            if (outcomeClassification !== "success") {
-              emitRuntimeEvent(context, {
-                type: "retry.declined",
-                outcome: summarized(outcome),
-                classification: outcomeClassification,
-                reason:
-                  context.capabilities.replay !== "safe"
-                    ? "replay-unsafe"
-                    : "not-retryable",
-              })
-            }
-            throw error
-          }
-
-          if (context.attempt >= options.maxAttempts) {
-            emitRuntimeEvent(context, {
-              type: "retry.exhausted",
-              outcome: summarized(outcome),
-              classification: outcomeClassification,
-            })
-            throw error
-          }
-
-          const delayMs = delayFor(options, context, context.attempt, outcome)
-          emitRuntimeEvent(context, {
-            type: "retry.scheduled",
-            nextAttempt: context.attempt + 1,
-            delayMs,
-            outcome: summarized(outcome),
-            classification: outcomeClassification,
-          })
-          disposeAbandoned(context, outcome)
-          await wait(delayMs, admissionSignal(context))
-          context = nextAttempt(context)
+        if (outcome.status === "failure" && admissionSignal(context)?.aborted) {
+          // The caller's own cancellation is not an outcome about the
+          // dependency: it is reported as itself, on every admission exit.
+          throw outcome.error
         }
+
+        if (
+          outcomeClassification !== "retryable" ||
+          context.capabilities.replay !== "safe"
+        ) {
+          // Declining to retry is observable: without this, a call that was
+          // never retried looks identical to one with no retry policy. A
+          // success is not eligible for a retry in the first place, so it
+          // emits nothing - a counter over this event must not track
+          // successes. A classifier that calls a thrown error a success is
+          // saying there was nothing to retry, not that a retry was declined.
+          if (outcomeClassification !== "success") {
+            emitRuntimeEvent(context, {
+              type: "retry.declined",
+              outcome: summarized(outcome),
+              classification: outcomeClassification,
+              reason:
+                context.capabilities.replay !== "safe"
+                  ? "replay-unsafe"
+                  : "not-retryable",
+            })
+          }
+          return settle(outcome)
+        }
+
+        if (context.attempt >= options.maxAttempts) {
+          emitRuntimeEvent(context, {
+            type: "retry.exhausted",
+            outcome: summarized(outcome),
+            classification: outcomeClassification,
+          })
+          return settle(outcome)
+        }
+
+        // The attempt is abandoned from here: the caller receives neither its
+        // value nor its error, whether the retry is paced below or the delay
+        // refuses to pace it. Released before the delay runs, so a delay that
+        // throws cannot strand the settlement it was pacing.
+        disposeAbandoned(context, outcome)
+
+        const delayMs = delayFor(options, context, context.attempt, outcome)
+        emitRuntimeEvent(context, {
+          type: "retry.scheduled",
+          nextAttempt: context.attempt + 1,
+          delayMs,
+          outcome: summarized(outcome),
+          classification: outcomeClassification,
+        })
+        await wait(delayMs, admissionSignal(context))
+        context = nextAttempt(context)
       }
     },
   })

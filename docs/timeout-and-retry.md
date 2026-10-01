@@ -43,9 +43,9 @@ The core never interprets `result` or `error`, so a protocol-specific helper can
 
 Retry uses the adapter's `classify` result for both thrown errors and returned values. Only `retryable` outcomes trigger another attempt, and only when `replay: "safe"`. A `failure` classification is visible to the circuit breaker but does not trigger retry. Once `maxAttempts` is reached, the final value or error is returned or rethrown unchanged, Caracal does not wrap it.
 
-Retry stops before starting a new attempt if the caller's signal has been aborted (e.g. timeout expired).
+Retry stops before starting a new attempt if the caller's signal has been aborted (e.g. timeout expired), including while it is waiting out the inter-attempt delay.
 
-A `delay` function that throws replaces the in-flight error instead of pacing the retry: it runs while the next attempt is being scheduled and nothing catches it. Return a value rather than raising from one - a server-provided `Retry-After` that cannot be scheduled is clamped to the platform's largest timer instead, which is what `createRetryAfterDelay` does. `retry.declined` and `retry.exhausted` are emitted from the same scheduling decision if you need to observe it.
+A `delay` function that throws replaces the in-flight outcome instead of pacing the retry: the throw reaches the caller unchanged and starts no attempt. The attempt the delay was pacing is abandoned - the caller receives neither its value nor its error - so it is released through the adapter's `dispose`, like any other abandoned outcome; retry's own scheduling is not an outcome about the dependency, so the throw is never classified and cannot be classified `retryable` itself. Return a value rather than raising from one - a server-provided `Retry-After` that cannot be scheduled is clamped to the platform's largest timer instead, which is what `createRetryAfterDelay` does. `retry.declined` and `retry.exhausted` are emitted from the same scheduling decision if you need to observe it.
 
 ## Composition
 
