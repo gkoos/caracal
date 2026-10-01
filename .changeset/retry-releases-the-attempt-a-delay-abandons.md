@@ -1,5 +1,0 @@
----
-"@gkoos/caracal": patch
----
-
-`retry` no longer reads its own scheduling as an outcome about the dependency. A `delay` that threw was caught by the same handler as a failed attempt: on a result classified `retryable`, the delay's error was classified too, classified `retryable` in turn, and paced another attempt - so the call resolved with the next attempt's value while the delay's error was swallowed silently - and the attempt the delay had been pacing was skipped by disposal, leaking the body or handle it had settled. The delay's error now reaches the caller unchanged, no attempt follows it, and the attempt it was pacing is released through the adapter's `dispose` like any other abandoned outcome, on the thrown path as well as the returned-value path. A classifier is no longer called with an outcome the dependency never produced, and an abort during the inter-attempt wait - retry's bookkeeping too - ends the sequence with the caller's own reason.
