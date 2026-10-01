@@ -184,19 +184,34 @@ const DEFAULT_WINDOW_SIZE = 100
  */
 const MAX_WINDOW_SIZE = 10_000
 
-// The distributed coordinator compares the failure threshold as an integer
-// numerator of thousandths (`wFail * 1000 >= numerator * wTotal`).  A threshold
-// that rounds to 0 makes that comparison unconditionally true, so the breaker
-// opens on a success-only window and re-opens after every recovery; a threshold
-// that rounds to the full scale requires every observation to fail, so the
-// breaker effectively never opens.  Both are rejected instead of silently
-// reinterpreted, and the local breaker enforces the same bounds so one policy
-// config works with either coordination.
+// The failure threshold is compared as an integer numerator of thousandths
+// (`wFail * 1000 >= numerator * wTotal`).  A threshold that rounds to 0 makes
+// that comparison unconditionally true, so the breaker opens on a success-only
+// window and re-opens after every recovery; a threshold that rounds to the full
+// scale requires every observation to fail, so the breaker effectively never
+// opens.  Both are rejected instead of silently reinterpreted, and both the
+// local and the distributed breaker express and compare the threshold in this
+// resolution, so one policy config behaves the same under either coordination.
 const FAILURE_THRESHOLD_SCALE = 1000
 
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
+
+/**
+ * Resolves a failureThreshold to the integer numerator of thousandths that
+ * every comparison uses.
+ *
+ * The threshold is resolved once, here, and both coordinations compare the
+ * numerator rather than the ratio: the distributed coordinator does it in Lua
+ * (`wFail * 1000 >= numerator * wTotal`) and the local breaker does it in
+ * process.  A threshold that is not a multiple of `0.001` therefore means its
+ * nearest thousandth - `0.5004` and `0.5` are the same policy - so one config
+ * cannot open under one coordination and stay closed under the other.
+ */
+function resolveFailureThresholdNumerator(failureThreshold: number): number {
+  return Math.round(failureThreshold * FAILURE_THRESHOLD_SCALE)
+}
 
 /**
  * Rejects a failureThreshold the thousandths comparison cannot represent.
@@ -206,7 +221,7 @@ const FAILURE_THRESHOLD_SCALE = 1000
  * rather than how precisely it is expressed.
  */
 function assertResolvableThreshold(failureThreshold: number): void {
-  const numerator = Math.round(failureThreshold * FAILURE_THRESHOLD_SCALE)
+  const numerator = resolveFailureThresholdNumerator(failureThreshold)
   if (numerator < 1 || numerator >= FAILURE_THRESHOLD_SCALE)
     throw new RangeError(
       `failureThreshold must be at least 0.0005 and below 0.9995 (thresholds are resolved to thousandths); got ${failureThreshold}`,
@@ -326,7 +341,9 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
   const name = options.name
   const minimumThroughput =
     options.minimumThroughput ?? DEFAULT_MINIMUM_THROUGHPUT
-  const failureThreshold = options.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD
+  const failureThresholdNumerator = resolveFailureThresholdNumerator(
+    options.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD,
+  )
   const openMs = options.openMs ?? DEFAULT_OPEN_MS
   const halfOpenSuccessTarget =
     options.halfOpenSuccesses ?? DEFAULT_HALF_OPEN_SUCCESSES
@@ -545,9 +562,14 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
     // admission.kind === "closed"
     window.record(failure)
 
+    // Compared in the same resolution the coordinator uses - the integer
+    // numerator of thousandths, not the raw float ratio - so a threshold that is
+    // not a multiple of 0.001 opens on the same window under either
+    // coordination instead of only under the distributed one.
     if (
       window.count >= minimumThroughput &&
-      window.failures / window.count >= failureThreshold
+      window.failures * FAILURE_THRESHOLD_SCALE >=
+        failureThresholdNumerator * window.count
     ) {
       transitionToOpen(context, "closed")
     }
@@ -912,9 +934,8 @@ function distributed(
     options.minimumThroughput ?? DEFAULT_DIST_MINIMUM_THROUGHPUT
   const failureThreshold =
     options.failureThreshold ?? DEFAULT_DIST_FAILURE_THRESHOLD
-  const failureThresholdNumerator = Math.round(
-    failureThreshold * FAILURE_THRESHOLD_SCALE,
-  )
+  const failureThresholdNumerator =
+    resolveFailureThresholdNumerator(failureThreshold)
   const windowSize = options.windowSize ?? DEFAULT_DIST_WINDOW_SIZE
   const openMs = options.openMs ?? DEFAULT_DIST_OPEN_MS
   const windowTtlMs = options.windowTtlMs ?? Math.max(openMs * 3, 60_000)
