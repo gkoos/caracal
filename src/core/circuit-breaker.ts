@@ -974,6 +974,19 @@ function distributed(
 
       // ---- ADMISSION ----
 
+      // A cancellation that lands while a round trip below is in flight means
+      // the same as one that arrives before admission: the call never reached
+      // the dependency, so it is not a rejection and says nothing about it.
+      // Every exit from admission that would otherwise report
+      // `CircuitOpenError` calls this first, so the caller's own reason always
+      // wins - the rule the check at the top of this method applies to a call
+      // that was already cancelled.  The coordinator-error diagnostic is
+      // emitted above it, because a failing coordinator is true whether or not
+      // the caller is still there; `breaker.degraded` and `breaker.rejected`
+      // describe this call's admission instead, so they are skipped.
+      const throwIfAdmissionCancelled = () =>
+        admissionSignal(context)?.throwIfAborted()
+
       let stateData: { state: BreakerState; generation: number } | null = null
 
       try {
@@ -996,6 +1009,11 @@ function distributed(
           operation: "admit",
           error: readError,
         })
+
+        // The read failed, but the call may have been cancelled while it was in
+        // flight.  Then there is no degradation to report and no rejection to
+        // emit: the caller is gone, and the call never reached anything.
+        throwIfAdmissionCancelled()
 
         // If the last successfully-read state for this scope was OPEN or
         // HALF_OPEN, we know the breaker was non-closed before the outage.
@@ -1060,6 +1078,11 @@ function distributed(
             operation: "admit",
             error: admitError,
           })
+
+          // Cancelled while that round trip was in flight: the probe was not
+          // claimed, so there is nothing to release either.
+          throwIfAdmissionCancelled()
+
           emitRuntimeEvent(context, {
             type: "breaker.degraded",
             coordination: "distributed",
@@ -1084,6 +1107,11 @@ function distributed(
             lastKnownState.forget(identity.operation, scope)
             admission = { kind: "closed", generation: probeResult.generation }
           } else {
+            // The refusal may have been decided while a cancellation was in
+            // flight.  A refused admission claims no probe, so there is nothing
+            // to release - only the verdict to hand back to the caller.
+            throwIfAdmissionCancelled()
+
             // "open"        → openMs not yet elapsed; still OPEN
             // "probe-limit" → admitProbe atomically transitioned (or was) HALF_OPEN
             const rejState =
@@ -1133,11 +1161,13 @@ function distributed(
 
       // Admission is asynchronous here, so a caller can cancel after the check
       // at the top of this method while a coordinator round trip is still in
-      // flight.  The adapter boundary rejects such a call before the adapter
-      // runs, so recording it would open - or, in HALF_OPEN, re-open - the
-      // breaker on a call the dependency never saw.  The local breaker checks
-      // once and needs no second check: its admission is synchronous, so nothing
-      // can interleave between that check and `next`.
+      // flight.  The exits above that reject the call check for that before
+      // they emit; this is the exit that admitted it, so a probe it may hold is
+      // the only thing left to give back.  The adapter boundary rejects such a
+      // call before the adapter runs, so recording it would open - or, in
+      // HALF_OPEN, re-open - the breaker on a call the dependency never saw.
+      // The local breaker checks once and needs no second check: its admission
+      // is synchronous, so nothing can interleave between that check and `next`.
       const admissionAbort = admissionSignal(context)
       if (admissionAbort?.aborted) {
         if (admission.kind === "probe") {

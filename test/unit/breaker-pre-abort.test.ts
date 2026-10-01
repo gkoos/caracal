@@ -378,5 +378,223 @@ describe.each(["local", "distributed"] as const)(
         expect(stateChanges(events)).toEqual(["open", "half-open", "closed"])
       },
     )
+
+    it.skipIf(coordination === "local")(
+      "reports the caller's cancellation when the state read fails",
+      async () => {
+        // Admission can reject the call outright - here, fail-closed on a
+        // coordinator outage.  A cancellation that landed while that read was
+        // in flight must still win: the caller hears its own reason, not a
+        // verdict about a dependency the call never reached.
+        const entered = new Deferred<void>()
+        const gate = new Deferred<void>()
+        const base = memoryBreakerCoordinator()
+        const coordinator: BreakerCoordinator = {
+          ...base,
+          async readState() {
+            entered.resolve()
+            await gate.promise
+            throw new Error("coordinator unavailable")
+          },
+        }
+        const events: OperationEvent[] = []
+        let calls = 0
+        const op = operation({
+          name: "work",
+          adapter: {
+            capabilities,
+            execute: async () => {
+              calls++
+              return "ok"
+            },
+          },
+          policies: [
+            circuitBreaker.distributed({
+              name: "test",
+              minimumThroughput: 1,
+              failureThreshold: 0.5,
+              openMs: 10,
+              onCoordinatorError: "fail-closed",
+              coordinator,
+              scope: () => "shared",
+            }),
+          ],
+          events: { emit: (event) => events.push(event) },
+        })
+
+        const controller = new AbortController()
+        const reason = new Error("caller cancelled")
+        const pending = op.execute(undefined, { signal: controller.signal })
+        await entered.promise
+        controller.abort(reason)
+        gate.resolve()
+
+        await expect(pending).rejects.toBe(reason)
+        expect(calls).toBe(0)
+        expect(observed(events)).toEqual([])
+        const reported = events.map((event) => event.type)
+        // The coordinator failure is still reported: it is a fact about the
+        // coordinator, true whether or not the caller is still waiting.
+        expect(reported).toContain("breaker.coordinator-error")
+        // But nothing claims this call was degraded or shed.
+        expect(reported).not.toContain("breaker.degraded")
+        expect(reported).not.toContain("breaker.rejected")
+
+        // The protection is intact: a live call still fails closed.
+        await expect(op.execute(undefined)).rejects.toBeInstanceOf(
+          CircuitOpenError,
+        )
+        expect(calls).toBe(0)
+      },
+    )
+
+    it.skipIf(coordination === "local")(
+      "reports the caller's cancellation when probe admission is refused",
+      async () => {
+        // An open breaker refuses the probe with `CircuitOpenError`.  A call
+        // cancelled while that refusal was still being decided reports its own
+        // cancellation instead, and leaves no trace: no rejection event, no
+        // observation, and the breaker stays open with its probe slot untouched.
+        const entered = new Deferred<void>()
+        const gate = new Deferred<void>()
+        const base = memoryBreakerCoordinator()
+        let gated = false
+        const coordinator: BreakerCoordinator = {
+          ...base,
+          async admitProbe(identity, params) {
+            if (!gated) {
+              gated = true
+              entered.resolve()
+              await gate.promise
+            }
+            return base.admitProbe(identity, params)
+          },
+        }
+        const events: OperationEvent[] = []
+        let calls = 0
+        const op = operation({
+          name: "work",
+          adapter: {
+            capabilities,
+            execute: async () => {
+              calls++
+              throw new Error("dependency failed")
+            },
+          },
+          policies: [
+            circuitBreaker.distributed({
+              name: "test",
+              minimumThroughput: 1,
+              failureThreshold: 0.5,
+              // Long enough that admission still refuses while we abort.
+              openMs: 10_000,
+              coordinator,
+              scope: () => "shared",
+            }),
+          ],
+          events: { emit: (event) => events.push(event) },
+        })
+
+        // One real failure opens the breaker, so the next call is the probe
+        // attempt - the one cancelled while the coordinator decides.
+        await expect(op.execute(undefined)).rejects.toThrow("dependency failed")
+        expect(stateChanges(events)).toEqual(["open"])
+
+        const controller = new AbortController()
+        const reason = new Error("caller cancelled")
+        const pending = op.execute(undefined, { signal: controller.signal })
+        await entered.promise
+        controller.abort(reason)
+        gate.resolve()
+
+        await expect(pending).rejects.toBe(reason)
+        expect(calls).toBe(1)
+        expect(observed(events)).toEqual(["failure"])
+        expect(stateChanges(events)).toEqual(["open"])
+        expect(events.map((event) => event.type)).not.toContain(
+          "breaker.rejected",
+        )
+
+        // The breaker really is open: a live call is still shed.
+        await expect(op.execute(undefined)).rejects.toBeInstanceOf(
+          CircuitOpenError,
+        )
+        expect(calls).toBe(1)
+      },
+    )
+
+    it.skipIf(coordination === "local")(
+      "reports the caller's cancellation when probe admission fails",
+      async () => {
+        // An outage during probe admission always fails closed.  A cancellation
+        // that landed during that round trip replaces the verdict, and the call
+        // claims no probe - `admitProbe` never granted one, so there is nothing
+        // to release either.
+        const entered = new Deferred<void>()
+        const gate = new Deferred<void>()
+        const base = memoryBreakerCoordinator()
+        let gated = false
+        const coordinator: BreakerCoordinator = {
+          ...base,
+          async admitProbe(identity, params) {
+            if (!gated) {
+              gated = true
+              entered.resolve()
+              await gate.promise
+              throw new Error("coordinator unavailable")
+            }
+            return base.admitProbe(identity, params)
+          },
+        }
+        const events: OperationEvent[] = []
+        let calls = 0
+        const op = operation({
+          name: "work",
+          adapter: {
+            capabilities,
+            execute: async () => {
+              calls++
+              throw new Error("dependency failed")
+            },
+          },
+          policies: [
+            circuitBreaker.distributed({
+              name: "test",
+              minimumThroughput: 1,
+              failureThreshold: 0.5,
+              openMs: 10_000,
+              coordinator,
+              scope: () => "shared",
+            }),
+          ],
+          events: { emit: (event) => events.push(event) },
+        })
+
+        await expect(op.execute(undefined)).rejects.toThrow("dependency failed")
+        expect(stateChanges(events)).toEqual(["open"])
+
+        const controller = new AbortController()
+        const reason = new Error("caller cancelled")
+        const pending = op.execute(undefined, { signal: controller.signal })
+        await entered.promise
+        controller.abort(reason)
+        gate.resolve()
+
+        await expect(pending).rejects.toBe(reason)
+        expect(calls).toBe(1)
+        expect(observed(events)).toEqual(["failure"])
+        expect(stateChanges(events)).toEqual(["open"])
+        const reported = events.map((event) => event.type)
+        expect(reported).toContain("breaker.coordinator-error")
+        expect(reported).not.toContain("breaker.degraded")
+        expect(reported).not.toContain("breaker.rejected")
+
+        // Fail-closed is untouched for a live call.
+        await expect(op.execute(undefined)).rejects.toBeInstanceOf(
+          CircuitOpenError,
+        )
+        expect(calls).toBe(1)
+      },
+    )
   },
 )
