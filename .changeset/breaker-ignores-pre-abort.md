@@ -1,0 +1,5 @@
+---
+"@gkoos/caracal": patch
+---
+
+An outer circuit breaker no longer admits a call whose admission signal is already aborted. Such a call was rejected at the adapter boundary and recorded by the breaker's `finally` as a dependency failure, so a caller cancelling before the call started - or an outer `timeout` whose section had already expired - could open a healthy breaker and shed the rest of the run under `breaker-open`, without the adapter ever running. Cancellation is now checked before admission in both the local and the distributed breaker, so the call records no observation, takes no probe slot, spends no coordinator round trip on the distributed variant, and fails with the caller's own abort reason rather than `CircuitOpenError`. The distributed breaker checks the signal a second time once admission returns, because admission itself awaits the coordinator: a cancellation that lands while `readState` (or, in half-open, `admitProbe`) is in flight releases any probe it claimed and records nothing, instead of re-opening a recovering breaker. A call cancelled after that point still counts: the adapter had started.

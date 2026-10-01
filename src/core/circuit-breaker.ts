@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { BulkheadRejectedError } from "./bulkhead.js"
 import { RateLimitExceededError } from "./rate-limit.js"
-import { MAX_TIMER_MS, emitRuntimeEvent } from "./runtime.js"
+import { MAX_TIMER_MS, admissionSignal, emitRuntimeEvent } from "./runtime.js"
 import { createScopeStateCache } from "./scope-state-cache.js"
 import type {
   BulkheadRejectedReason,
@@ -577,6 +577,14 @@ function local(options: LocalBreakerOptions): LocalBreakerPolicy {
       context: ExecutionContext,
       next: Next<Result>,
     ): Promise<Result> {
+      // A call the caller already cancelled - or one whose timed section has
+      // already expired - must not be admitted: the adapter boundary would
+      // reject it and the breaker would record a failure for work that never
+      // started, opening on a shed that says nothing about the dependency.
+      // `bulkhead`, `retry` and the adapter boundary already check the
+      // admission signal before doing any work; the breaker had been missed.
+      admissionSignal(context)?.throwIfAborted()
+
       const admission = admit(context)
       const admittedGeneration = generation
 
@@ -945,6 +953,13 @@ function distributed(
       context: ExecutionContext,
       next: Next<Result>,
     ): Promise<Result> {
+      // A call the caller already cancelled - or one whose timed section has
+      // already expired - must not be admitted: it would spend a coordinator
+      // round trip and, rejected at the adapter boundary, be recorded as a
+      // failure for work that never started.  Checked before admission, like
+      // the distributed bulkhead checks it before resolving its scope.
+      admissionSignal(context)?.throwIfAborted()
+
       const scope = resolveScope(context)
       if (typeof scope !== "string" || !scope.trim())
         throw new TypeError(
@@ -1112,6 +1127,46 @@ function distributed(
             generation: probeResult.generation,
           }
         }
+      }
+
+      // ---- CANCELLATION RACE ----
+
+      // Admission is asynchronous here, so a caller can cancel after the check
+      // at the top of this method while a coordinator round trip is still in
+      // flight.  The adapter boundary rejects such a call before the adapter
+      // runs, so recording it would open - or, in HALF_OPEN, re-open - the
+      // breaker on a call the dependency never saw.  The local breaker checks
+      // once and needs no second check: its admission is synchronous, so nothing
+      // can interleave between that check and `next`.
+      const admissionAbort = admissionSignal(context)
+      if (admissionAbort?.aborted) {
+        if (admission.kind === "probe") {
+          // Release only: the probe holds a slot that recovery needs, and the
+          // caller is not going to settle it.  Waiting for the lease to expire
+          // instead would stall the half-open window behind a cancelled call.
+          try {
+            await coordinator.settleProbe(identity, {
+              probeToken: admission.probeToken,
+              outcome: "ignored",
+              generation: admission.generation,
+              halfOpenSuccesses,
+              openMs,
+              windowTtlMs,
+            })
+          } catch (settleError) {
+            // The token expires by lease TTL, so a failed release costs the
+            // recovery window, not correctness.
+            emitRuntimeEvent(context, {
+              type: "breaker.coordinator-error",
+              coordination: "distributed",
+              policyName: name,
+              scope,
+              operation: "settle-probe",
+              error: settleError,
+            })
+          }
+        }
+        admissionAbort.throwIfAborted()
       }
 
       // ---- EXECUTION ----
