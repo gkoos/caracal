@@ -6,13 +6,19 @@ import type {
   ObserveResult,
   SettleProbeResult,
 } from "../../core/circuit-breaker.js"
+import {
+  ConfigurationError,
+  decodeConfigurationRecord,
+} from "../../core/configuration.js"
 import { CoordinatorUnavailableError } from "./client.js"
 import { evalScript } from "./eval-script.js"
 import { coordinationKey } from "./keys.js"
 import type { RedisScriptClient } from "./leases.js"
+import { createRevisionCache } from "./revisions.js"
 import {
   breakerAdmitProbeV1,
   breakerObserveV1,
+  breakerReadStateV1,
   breakerSettleProbeV1,
 } from "./scripts.js"
 
@@ -53,17 +59,74 @@ function breakerKeys(
 // Reply validation helpers
 // ---------------------------------------------------------------------------
 
-function assertArray(reply: unknown, minLen: number, label: string): unknown[] {
+function breakerConfigurationKey(
+  namespace: string,
+  identity: BreakerIdentity,
+): string {
+  return coordinationKey(
+    namespace,
+    `breaker:${identity.name}`,
+    identity.operation,
+    identity.scope,
+    "configuration",
+  )
+}
+
+interface Envelope {
+  readonly revision: number
+  readonly changedAt: number
+  readonly values: number[]
+  readonly body: string | undefined
+}
+
+function decodeEnvelope(
+  reply: unknown,
+  payloadLength: number,
+  label: string,
+): Envelope {
+  const expected = 3 + payloadLength
   if (
     !Array.isArray(reply) ||
-    reply.length < minLen ||
-    reply.some((v) => typeof v !== "number" || !Number.isSafeInteger(v))
-  ) {
-    throw new Error(
-      `Invalid ${label} reply from Redis: ${JSON.stringify(reply)}`,
-    )
+    (reply.length !== expected && reply.length !== expected + 1)
+  )
+    throw new Error(`Invalid ${label} reply from Redis`)
+  const values = reply as unknown[]
+  if (
+    values[0] !== 1 ||
+    !Number.isSafeInteger(values[1]) ||
+    !Number.isSafeInteger(values[2]) ||
+    values
+      .slice(3, expected)
+      .some((v) => typeof v !== "number" || !Number.isSafeInteger(v))
+  )
+    throw new Error(`Invalid ${label} reply from Redis`)
+  const body = values[expected]
+  if (body !== undefined && typeof body !== "string")
+    throw new Error(`Invalid ${label} reply from Redis`)
+  return {
+    revision: values[1] as number,
+    changedAt: values[2] as number,
+    values: values.slice(3, expected) as number[],
+    body: body === "" ? undefined : (body as string | undefined),
   }
-  return reply as unknown[]
+}
+
+function assertBody(body: string | undefined): void {
+  if (body === undefined) return
+  const snapshot = decodeConfigurationRecord(body)
+  if (snapshot.settings.policy !== "circuitBreaker")
+    throw new ConfigurationError(
+      "corrupt-record",
+      "configuration record policy does not match the identity",
+    )
+}
+
+function toCoordinatorError(error: unknown): Error {
+  if (error instanceof ConfigurationError) return error
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes("unsupported configuration record"))
+    return new ConfigurationError("unsupported-schema", message)
+  return new CoordinatorUnavailableError(error)
 }
 
 const STATE_CODES: BreakerState[] = ["closed", "open", "half-open"]
@@ -98,26 +161,42 @@ export function redisCircuitBreakerCoordinator(
     "validate",
     "breaker",
   )
+  const revisions = createRevisionCache()
 
   const coordinator: BreakerCoordinator = {
     async readState(identity) {
       const [hashKey] = breakerKeys(namespace, identity)
+      const configurationKey = breakerConfigurationKey(namespace, identity)
       try {
-        const fields = await client.hmget(hashKey, "state", "generation")
-        const rawState = fields[0]
-        if (!rawState) return null
-        const state = rawState as BreakerState
-        if (!STATE_CODES.includes(state))
-          throw new Error(`Unknown breaker state: ${rawState}`)
-        const generation = parseInt(fields[1] ?? "0", 10)
-        return { state, generation }
+        const reply = await evalScript(
+          client,
+          breakerReadStateV1,
+          2,
+          hashKey,
+          configurationKey,
+          revisions.get(configurationKey),
+        )
+        const envelope = decodeEnvelope(reply, 4, "breakerReadStateV1")
+        if (envelope.revision > 0)
+          revisions.set(configurationKey, envelope.revision)
+        assertBody(envelope.body)
+        const [present, stateCode, generation, openedAt] = envelope.values
+        if (present === 0) return null
+        return {
+          state: decodeState(stateCode),
+          generation,
+          openedAt,
+          revision: envelope.revision,
+          changedAt: envelope.changedAt,
+        }
       } catch (error) {
-        throw new CoordinatorUnavailableError(error)
+        throw toCoordinatorError(error)
       }
     },
 
     async observe(identity, params) {
       const [hashKey, obsKey] = breakerKeys(namespace, identity)
+      const configurationKey = breakerConfigurationKey(namespace, identity)
       const {
         generation,
         outcome,
@@ -127,25 +206,31 @@ export function redisCircuitBreakerCoordinator(
         failureThresholdNumerator,
         windowSize,
         openMs,
+        closedCleanupMs,
       } = params
       try {
         const reply = await evalScript(
           client,
           breakerObserveV1,
-          2,
+          3,
           hashKey,
           obsKey,
+          configurationKey,
           outcome,
           generation,
           windowTtlMs,
           minimumThroughput,
           failureThresholdNumerator,
           windowSize,
-          openMs,
+          closedCleanupMs ?? Math.max(openMs * 2, windowTtlMs),
           uuid,
+          revisions.get(configurationKey),
         )
-        const r = assertArray(reply, 5, "breakerObserveV1") as number[]
-        const [status, , newGen, windowTotal, windowFailures] = r
+        const envelope = decodeEnvelope(reply, 5, "breakerObserveV1")
+        if (envelope.revision > 0)
+          revisions.set(configurationKey, envelope.revision)
+        assertBody(envelope.body)
+        const [status, , newGen, windowTotal, windowFailures] = envelope.values
         if (status === 0) {
           return {
             type: "stale",
@@ -167,27 +252,34 @@ export function redisCircuitBreakerCoordinator(
           windowFailures,
         } satisfies ObserveResult
       } catch (error) {
-        throw new CoordinatorUnavailableError(error)
+        throw toCoordinatorError(error)
       }
     },
 
     async admitProbe(identity, params) {
       const [hashKey, , probeKey] = breakerKeys(namespace, identity)
+      const configurationKey = breakerConfigurationKey(namespace, identity)
       const { probeToken, openMs, halfOpenProbes, probeLeaseTtlMs } = params
       try {
         const reply = await evalScript(
           client,
           breakerAdmitProbeV1,
-          2,
+          3,
           hashKey,
           probeKey,
+          configurationKey,
           probeToken,
           openMs,
           halfOpenProbes,
           probeLeaseTtlMs,
+          revisions.get(configurationKey),
         )
-        const r = assertArray(reply, 5, "breakerAdmitProbeV1") as number[]
-        const [status, stateCode, gen, probeCount, transitioned] = r
+        const envelope = decodeEnvelope(reply, 5, "breakerAdmitProbeV1")
+        if (envelope.revision > 0)
+          revisions.set(configurationKey, envelope.revision)
+        assertBody(envelope.body)
+        const [status, stateCode, gen, probeCount, transitioned] =
+          envelope.values
         if (status === 0) {
           const reason =
             stateCode === 0
@@ -208,38 +300,45 @@ export function redisCircuitBreakerCoordinator(
           stateChanged: transitioned === 1,
         } satisfies AdmitProbeResult
       } catch (error) {
-        throw new CoordinatorUnavailableError(error)
+        throw toCoordinatorError(error)
       }
     },
 
     async settleProbe(identity, params) {
       const [hashKey, , probeKey] = breakerKeys(namespace, identity)
+      const configurationKey = breakerConfigurationKey(namespace, identity)
       const {
         probeToken,
         outcome,
         generation,
         halfOpenSuccesses,
         openMs,
+        closedCleanupMs,
         windowTtlMs,
       } = params
+      const cleanup =
+        closedCleanupMs ?? Math.max(openMs * 2, windowTtlMs ?? openMs * 2)
       try {
         const reply = await evalScript(
           client,
           breakerSettleProbeV1,
-          2,
+          3,
           hashKey,
           probeKey,
+          configurationKey,
           probeToken,
           outcome,
           generation,
           halfOpenSuccesses,
-          openMs,
-          // Floor for the CLOSED cleanup TTL; older callers that do not pass it
-          // keep the historical openMs x 2 behaviour.
-          windowTtlMs ?? openMs * 2,
+          cleanup,
+          windowTtlMs ?? cleanup,
+          revisions.get(configurationKey),
         )
-        const r = assertArray(reply, 3, "breakerSettleProbeV1") as number[]
-        const [status, stateCode, newGen] = r
+        const envelope = decodeEnvelope(reply, 3, "breakerSettleProbeV1")
+        if (envelope.revision > 0)
+          revisions.set(configurationKey, envelope.revision)
+        assertBody(envelope.body)
+        const [status, stateCode, newGen] = envelope.values
         if (status === 0) {
           return {
             type: "stale",
@@ -261,7 +360,7 @@ export function redisCircuitBreakerCoordinator(
           generation: newGen,
         } satisfies SettleProbeResult
       } catch (error) {
-        throw new CoordinatorUnavailableError(error)
+        throw toCoordinatorError(error)
       }
     },
   }

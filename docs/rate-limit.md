@@ -58,6 +58,8 @@ redis.disconnect()
 
 The GCRA state lives in Redis under the scope's coordination key, so one scope's budget is enforced across the whole fleet. Unlike the local policy, the distributed policy has no `snapshot()`: the state lives in Redis.
 
+`rate` and `burst` are the constructor baseline. A stored configuration record for the identity replaces both, so the rate can change without a redeploy; see [shared configuration](redis.md#shared-configuration). The GCRA theoretical arrival time is preserved across the change, so outstanding debt is not reset and a rate increase is not felt until that debt clears.
+
 ## Division across processes
 
 The same asymmetry as the bulkhead and circuit breaker applies: **one local instance shared by several operations *merges* their arrivals into a single in-process budget, whereas the distributed policy keys by `(namespace, policy name, operation name, scope)` and keeps them separate.** Local state is per instance, not per name; two instances with the same name are independent, and each process enforces `rate` on its own - so forty replicas each configured with `rate: 100` admit up to 4000/s in aggregate. The distributed policy shares a single GCRA cell, so the fleet as a whole admits at most `rate` per second per scope.

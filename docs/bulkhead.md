@@ -73,6 +73,8 @@ Two operations sharing the same `capacity` instance have **separate** budgets be
 
 Distributed admission is **immediate-reject only**, there is no distributed queue. All configuration (`limit`, `leaseMs`) must be consistent across all processes using the same identity. Use stable, non-secret names and scopes, they are observable in the Redis keyspace. Empty values and components over 1024 UTF-8 bytes are rejected.
 
+`limit` is the constructor baseline. A stored configuration record for the identity replaces it, so the ceiling can change without a redeploy; see [shared configuration](redis.md#shared-configuration). The acquire script reads the record, so the change applies to the next acquisition and never cancels permits already held.
+
 ### Scope
 
 The `scope` function maps each execution context to a string key. Everything sharing a key shares the same budget:

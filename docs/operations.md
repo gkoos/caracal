@@ -25,6 +25,17 @@ Leases, observation windows and probe tokens clean themselves up. The state hash
 
 Scopes that are one-shot by construction (a per-request key, a tenant that never comes back, a test run) are what accumulate. Deleting a state hash is a manual override: a missing hash reads as CLOSED, and the next observation mints a new epoch, so surviving window members are ignored rather than resurrected.
 
+## Configuration records
+
+A configuration record is addressed by `(policy, name, operation, scope)` and stored beside the runtime keys of the same identity, in the same hash tag. Three consequences follow from that and from there being no TTL:
+
+- **Revision 0 cannot be reached again.** Constructor settings are revision 0 only while no record exists. Once an override is written, restoring normal behaviour is another update carrying the baseline values, not a delete.
+- **Records are permanent and per scope.** There is no wildcard update and no listing, so a fleet-wide change is one update per identity. A renamed or typo'd scope string leaves its record behind, dormant, and it becomes active again if that scope appears.
+- **Eviction is a data-loss event.** Records carry no TTL, so `volatile-*` maxmemory policies cannot evict them while `allkeys-lru` and `allkeys-random` can. Use `noeviction` or a `volatile-*` policy where overrides must survive, and treat a missing record as a loss diagnostic rather than a return to defaults.
+- **Baselines must agree.** Replicas that disagree on constructor settings for the same identity disagree only until the first override; afterwards the record masks the mutable fields, so changing those fields in the environment has no effect until the record is updated.
+
+Rolling back to a release without the configuration protocol leaves the records in place and the fleet on its constructor settings; upgrading again reactivates them.
+
 ## Namespace lifetime
 
 The namespace is part of every identity, and breaker state outlives the processes that wrote it. A deployment that reuses a namespace starts by reading the previous deployment's state: a scope left OPEN rejects traffic until a probe succeeds, and the events show `breaker.rejected` with `state: "open"` while this process emitted no `breaker.state-changed` of its own. That reads as a broken dashboard rather than as inherited state. A rejection caused by a coordinator outage reports the same `state: "open"`, so check for a `breaker.coordinator-error` or `breaker.degraded` alongside it before concluding the state was inherited.

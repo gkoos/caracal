@@ -55,8 +55,12 @@ export interface DistributedBulkheadOptions {
   readonly scope: (context: ExecutionContext) => string
   readonly leaseMs?: number
 }
+export function isBulkheadLimit(limit: number): boolean {
+  return Number.isSafeInteger(limit) && limit >= 1
+}
+
 function validate(name: string, limit: number) {
-  if (!name.trim() || !Number.isSafeInteger(limit) || limit < 1)
+  if (!name.trim() || !isBulkheadLimit(limit))
     throw new RangeError("Bulkhead needs a name and positive integer limit")
 }
 /**

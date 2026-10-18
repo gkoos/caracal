@@ -14,6 +14,21 @@ export type {
 export { CircuitOpenError, circuitBreaker } from "./circuit-breaker.js"
 export { operation } from "./operation.js"
 export type { RetryContext, RetryDelay, RetryOptions } from "./retry.js"
+export type {
+  BulkheadEffective,
+  BulkheadSettings,
+  CircuitBreakerEffective,
+  CircuitBreakerSettings,
+  ConfigurationEffective,
+  ConfigurationIdentity,
+  ConfigurationPolicy,
+  ConfigurationSettings,
+  ConfigurationSnapshot,
+  ConfigurationUpdateResult,
+  RateLimitEffective,
+  RateLimitSettings,
+} from "./configuration.js"
+export { ConfigurationError } from "./configuration.js"
 export { retry } from "./retry.js"
 export type { TimeoutOptions } from "./timeout.js"
 export { TimeoutError, timeout } from "./timeout.js"

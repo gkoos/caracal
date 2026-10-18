@@ -17,6 +17,7 @@ import { redisRateLimitCoordinator } from "../../src/coordination/redis/rate-lim
 import {
   breakerAdmitProbeV1,
   breakerObserveV1,
+  breakerReadStateV1,
   breakerSettleProbeV1,
   bulkheadLeaseV1,
 } from "../../src/coordination/redis/scripts.js"
@@ -524,6 +525,7 @@ describe.skipIf(!redisUrl)("distributed soak and chaos", () => {
       expect([
         scriptSha(breakerObserveV1),
         scriptSha(breakerAdmitProbeV1),
+        scriptSha(breakerReadStateV1),
         scriptSha(breakerSettleProbeV1),
       ]).toContain(script)
     }

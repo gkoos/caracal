@@ -21,6 +21,8 @@ const GRANTED_COMMANDS = [
   "EVAL",
   "EVALSHA",
   "TIME",
+  "GET",
+  "SET",
   "HMGET",
   "HSET",
   "ZADD",

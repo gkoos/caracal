@@ -63,7 +63,7 @@ interface Knobs {
   readonly burstDelayMs: number
 }
 
-function knobs(rate: number, burst: number): Knobs {
+export function resolveRateLimitKnobs(rate: number, burst: number): Knobs {
   if (!Number.isFinite(rate) || rate <= 0 || rate > 1000)
     throw new RangeError(
       "rate must be a finite number in (0, 1000] requests per second",
@@ -110,7 +110,10 @@ function local(options: LocalRateLimitOptions): LocalRateLimitPolicy {
   const burst = options.burst ?? 1
   if (typeof name !== "string" || !name.trim())
     throw new RangeError("Rate limit needs a name")
-  const { emissionIntervalMs, burstDelayMs } = knobs(rate, burst)
+  const { emissionIntervalMs, burstDelayMs } = resolveRateLimitKnobs(
+    rate,
+    burst,
+  )
   let tat = 0
 
   return Object.freeze({
@@ -163,7 +166,10 @@ function distributed(
     throw new TypeError("coordinator is required")
   if (typeof resolveScope !== "function")
     throw new TypeError("scope must be a function")
-  const { emissionIntervalMs, burstDelayMs } = knobs(rate, burst)
+  const { emissionIntervalMs, burstDelayMs } = resolveRateLimitKnobs(
+    rate,
+    burst,
+  )
 
   return Object.freeze({
     name,

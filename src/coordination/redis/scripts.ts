@@ -27,8 +27,50 @@ redis.call('PEXPIREAT', KEYS[1], math.ceil(tonumber(latest[2])))
 return 1
 `
 
-/** Returns the decision and occupancy from the same atomic transition. */
-export const bulkheadLeaseV1 = `local function transition()\n${leaseV1}\nend\nlocal allowed = transition()\nreturn {allowed, redis.call('ZCARD', KEYS[1])}`
+/**
+ * Returns the decision and occupancy from the same atomic transition.
+ *
+ * KEYS[2] is the configuration record. When it exists, its effective limit is
+ * authoritative; the constructor limit in ARGV[4] is only the baseline. The
+ * reply is {envelopeVersion, allowed, occupancy, revision, changedAt, body?},
+ * where body is the record JSON only when the caller knows an older revision.
+ */
+export const bulkheadLeaseV1 = `
+local knownRevision = tonumber(ARGV[5])
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[2])
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1 then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  local effective = decoded['effective']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number'
+     or type(effective) ~= 'table' or effective['policy'] ~= 'bulkhead' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  local override = tonumber(effective['limit'])
+  if not override or override < 1 or override ~= math.floor(override) then
+    return redis.error_reply('unsupported configuration record')
+  end
+  -- leaseV1 reads the limit from ARGV[4]; the record wins over the baseline.
+  ARGV[4] = tostring(override)
+  if knownRevision ~= revision then body = record end
+end
+local function transition()
+${leaseV1}
+end
+local allowed = transition()
+local occupancy = redis.call('ZCARD', KEYS[1])
+if body == '' then
+  return {1, allowed, occupancy, revision, changedAt}
+end
+return {1, allowed, occupancy, revision, changedAt, body}
+`
 
 // ---------------------------------------------------------------------------
 // Rate-limit script
@@ -40,29 +82,68 @@ export const bulkheadLeaseV1 = `local function transition()\n${leaseV1}\nend\nlo
 // its value stops influencing future admissions.
 //
 // KEYS[1] = rate state key  (:rate)
+// KEYS[2] = configuration record
 // ARGV[1] = emissionIntervalMs  min time between cells at the sustained rate
 // ARGV[2] = burstDelayMs        how far ahead of schedule an arrival may be
+// ARGV[3] = knownRevision       the configuration revision this caller holds
 //
-// Returns: {allowed, retryAfterMs}
+// Returns: {envelopeVersion, allowed, retryAfterMs, revision, changedAt, body?}
 //   allowed 1 = admitted; the TAT advanced and was stored
 //   allowed 0 = rejected; retryAfterMs is when the next arrival would be
 //               admissible (always > 0 on rejection)
+//   body is the configuration record, only when ARGV[3] differs from it
 // ---------------------------------------------------------------------------
 
 export const rateLimitV1 = `
 local emission = tonumber(ARGV[1])
 local burstDelay = tonumber(ARGV[2])
+local knownRevision = tonumber(ARGV[3])
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[2])
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1 then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  local effective = decoded['effective']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number'
+     or type(effective) ~= 'table' or effective['policy'] ~= 'rateLimit' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  local overrideEmission = tonumber(effective['emissionIntervalMs'])
+  local overrideBurst = tonumber(effective['burstDelayMs'])
+  if not overrideEmission or overrideEmission < 1
+     or overrideEmission ~= math.floor(overrideEmission)
+     or not overrideBurst or overrideBurst < 0
+     or overrideBurst ~= math.floor(overrideBurst) then
+    return redis.error_reply('unsupported configuration record')
+  end
+  emission = overrideEmission
+  burstDelay = overrideBurst
+  if knownRevision ~= revision then body = record end
+end
 local t = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local tat = tonumber(redis.call('GET', KEYS[1]) or '0')
 local anchored = math.max(tat, now)
+local allowed = 0
+local retryAfterMs = 0
 if anchored - now > burstDelay then
-  return {0, anchored - burstDelay - now}
+  retryAfterMs = anchored - burstDelay - now
+else
+  local nextTat = anchored + emission
+  redis.call('SET', KEYS[1], nextTat)
+  redis.call('PEXPIREAT', KEYS[1], nextTat)
+  allowed = 1
 end
-local nextTat = anchored + emission
-redis.call('SET', KEYS[1], nextTat)
-redis.call('PEXPIREAT', KEYS[1], nextTat)
-return {1, 0}
+if body == '' then
+  return {1, allowed, retryAfterMs, revision, changedAt}
+end
+return {1, allowed, retryAfterMs, revision, changedAt, body}
 `
 
 // ---------------------------------------------------------------------------
@@ -122,6 +203,46 @@ return {1, 0}
  *   pre-loss generation can never pass the staleness check.  A scope that has
  *   never been observed keeps generation 0.
  */
+/**
+ * Shared configuration read for the breaker scripts.
+ *
+ * KEYS[3] is the configuration record. `config` is nil when no record exists;
+ * `override` returns nil for a value the script cannot use, so each call site
+ * turns that into an error reply.
+ */
+export const breakerConfigurationV1 = `
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[3])
+local config = nil
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1
+     or type(decoded['effective']) ~= 'table'
+     or decoded['effective']['policy'] ~= 'circuitBreaker' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  config = decoded['effective']
+  if knownRevision ~= revision then body = record end
+end
+local function override(name, minimum, maximum)
+  local value = tonumber(config[name])
+  if not value or value ~= math.floor(value) or value < minimum then
+    return nil
+  end
+  if maximum and value > maximum then
+    return nil
+  end
+  return value
+end
+`
+
 export const breakerObserveV1 = `
 local outcome    = ARGV[1]
 local expectGen  = tonumber(ARGV[2])
@@ -129,8 +250,22 @@ local windowTtl  = tonumber(ARGV[3])
 local minTP      = tonumber(ARGV[4])
 local threshNum  = tonumber(ARGV[5])
 local windowSize = tonumber(ARGV[6])
-local openMs     = tonumber(ARGV[7])
+local closedCleanup = tonumber(ARGV[7])
 local uuid       = ARGV[8]
+local knownRevision = tonumber(ARGV[9])
+${breakerConfigurationV1}
+if config then
+  local value = override('minimumThroughput', 1)
+  if not value then return redis.error_reply('unsupported configuration record') end
+  minTP = value
+  value = override('failureThresholdNumerator', 1, 999)
+  if not value then return redis.error_reply('unsupported configuration record') end
+  threshNum = value
+  value = override('windowSize', 1, 10000)
+  if not value then return redis.error_reply('unsupported configuration record') end
+  windowSize = value
+end
+local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local f   = redis.call('HMGET', KEYS[1], 'state', 'generation')
@@ -198,9 +333,15 @@ end
 if redis.call('EXISTS', KEYS[1]) == 1 then
   -- Still CLOSED.  The cleanup TTL must not expire the state before the window
   -- it governs, otherwise retained members would survive their epoch.
-  redis.call('PEXPIRE', KEYS[1], math.max(openMs * 2, windowTtl))
+  redis.call('PEXPIRE', KEYS[1], math.max(closedCleanup, windowTtl))
 end
 return {1, 0, gen, wTotal, wFail}
+end
+local result = decide()
+local out = {1, revision, changedAt}
+for i = 1, #result do out[#out+1] = result[i] end
+if body ~= '' then out[#out+1] = body end
+return out
 `
 
 /**
@@ -229,6 +370,17 @@ local probeToken    = ARGV[1]
 local openMs        = tonumber(ARGV[2])
 local maxProbes     = tonumber(ARGV[3])
 local probeLeaseTtl = tonumber(ARGV[4])
+local knownRevision = tonumber(ARGV[5])
+${breakerConfigurationV1}
+if config then
+  local value = override('openMs', 1)
+  if not value then return redis.error_reply('unsupported configuration record') end
+  openMs = value
+  value = override('halfOpenProbes', 1)
+  if not value then return redis.error_reply('unsupported configuration record') end
+  maxProbes = value
+end
+local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'openedAt',
@@ -267,6 +419,12 @@ redis.call('PERSIST', KEYS[1])
 -- Probes sorted set expires naturally once the last lease elapses.
 redis.call('PEXPIREAT', KEYS[2], now + probeLeaseTtl + 1000)
 return {1, 2, gen, activeProbes, transitioned}
+end
+local result = decide()
+local out = {1, revision, changedAt}
+for i = 1, #result do out[#out+1] = result[i] end
+if body ~= '' then out[#out+1] = body end
+return out
 `
 
 /**
@@ -305,8 +463,16 @@ local probeToken  = ARGV[1]
 local outcome     = ARGV[2]
 local expectGen   = tonumber(ARGV[3])
 local halfOpenSucc = tonumber(ARGV[4])
-local openMs      = tonumber(ARGV[5])
+local closedCleanup = tonumber(ARGV[5])
 local windowTtl   = tonumber(ARGV[6])
+local knownRevision = tonumber(ARGV[7])
+${breakerConfigurationV1}
+if config then
+  local value = override('halfOpenSuccesses', 1)
+  if not value then return redis.error_reply('unsupported configuration record') end
+  halfOpenSucc = value
+end
+local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'probeSuccesses', 'probeCount')
@@ -364,7 +530,7 @@ if probeSucc >= halfOpenSucc then
   redis.call('HSET', KEYS[1], 'state', 'closed', 'generation', gen,
              'probeCount', 0, 'probeSuccesses', 0)
   -- Newly CLOSED: expire for cleanup, but never before the window it governs.
-  redis.call('PEXPIRE', KEYS[1], math.max(openMs * 2, windowTtl))
+  redis.call('PEXPIRE', KEYS[1], math.max(closedCleanup, windowTtl))
   redis.call('DEL', KEYS[2])
   return {2, 0, gen}
 end
@@ -372,4 +538,105 @@ redis.call('HSET', KEYS[1], 'probeSuccesses', probeSucc, 'probeCount', probeCnt)
 -- Still HALF_OPEN: must not expire while recovery is in progress.
 redis.call('PERSIST', KEYS[1])
 return {1, 2, gen}
+end
+local result = decide()
+local out = {1, revision, changedAt}
+for i = 1, #result do out[#out+1] = result[i] end
+if body ~= '' then out[#out+1] = body end
+return out
+`
+
+/**
+ * Read breaker state and configuration metadata in one command.
+ *
+ * KEYS[1] = breaker state hash
+ * KEYS[2] = configuration record
+ * ARGV[1] = knownRevision
+ *
+ * Returns {envelope, revision, changedAt, present, stateCode, generation, openedAt, body?}.
+ * `present` is 0 when the state hash does not exist, so a missing runtime hash
+ * still reports configuration metadata instead of a bare null.
+ */
+export const breakerReadStateV1 = `
+local knownRevision = tonumber(ARGV[1])
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[2])
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1
+     or type(decoded['effective']) ~= 'table'
+     or decoded['effective']['policy'] ~= 'circuitBreaker' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  if knownRevision ~= revision then body = record end
+end
+local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'openedAt')
+local state = f[1]
+if not state then
+  return {1, revision, changedAt, 0, 0, 0, 0}
+end
+local code = (state == 'open' and 1) or (state == 'half-open' and 2) or 0
+local out = {1, revision, changedAt, 1, code, tonumber(f[2]) or 0, tonumber(f[3]) or 0}
+if body ~= '' then out[#out+1] = body end
+return out
+`
+
+/**
+ * Read the configuration record for one identity.
+ * KEYS[1] = configuration record
+ * Returns the stored JSON string, or false when absent.
+ */
+export const configurationReadV1 = `
+return redis.call('GET', KEYS[1])
+`
+
+/**
+ * Apply one configuration update.
+ * KEYS[1] = configuration record
+ * ARGV[1] = expected revision (0 when the caller believes no record exists)
+ * ARGV[2] = record template with revision 0 and changedAt 0
+ * ARGV[3] = fingerprint of the normalized settings
+ * Returns {status, revision, changedAt, body}: 0 unchanged, 1 conflict, 2 applied.
+ */
+export const configurationUpdateV1 = `
+local expected = tonumber(ARGV[1])
+local template = ARGV[2]
+local fingerprint = ARGV[3]
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+local current = redis.call('GET', KEYS[1])
+if current then
+  local record = cjson.decode(current)
+  if type(record) ~= 'table' or record['schemaVersion'] ~= 1 then
+    return redis.error_reply('unsupported configuration record')
+  end
+  if record['fingerprint'] == fingerprint then
+    return {0, record['revision'], record['changedAt'], current}
+  end
+  if expected ~= record['revision'] then
+    return {1, record['revision'], record['changedAt'], current}
+  end
+  local nextRecord = cjson.decode(template)
+  nextRecord['revision'] = record['revision'] + 1
+  nextRecord['changedAt'] = now
+  local body = cjson.encode(nextRecord)
+  redis.call('SET', KEYS[1], body)
+  return {2, nextRecord['revision'], now, body}
+end
+if expected ~= 0 then
+  return {1, 0, 0, ''}
+end
+local nextRecord = cjson.decode(template)
+nextRecord['revision'] = 1
+nextRecord['changedAt'] = now
+local body = cjson.encode(nextRecord)
+redis.call('SET', KEYS[1], body)
+return {2, 1, now, body}
 `
