@@ -47,6 +47,8 @@ Capabilities are declared per invocation, before any policy runs, and may vary b
 
 Declare these accurately, **Caracal never infers them**. An adapter that ignores `context.signal` but declares `abort: "supported"` will cause timeouts to appear to work while the underlying work continues silently.
 
+Likewise, `replay: "safe"` reports an existing guarantee; it does not make an unsafe side effect idempotent. A request key is sufficient only when the downstream enforces it for the invocation being repeated. See [who provides idempotency](timeout-and-retry.md#who-provides-idempotency) and the fetch and PostgreSQL examples linked there.
+
 ### Classification
 
 The `classify` method maps each settled outcome to one of four values:

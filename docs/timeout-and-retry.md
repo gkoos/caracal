@@ -84,6 +84,22 @@ The outer timer rejects the caller with `TimeoutError` at its deadline even when
 
 Retry will not issue a second attempt unless the adapter declares `replay: "safe"` for that invocation. An adapter that cannot guarantee idempotency should return `"unsafe"` or `"unknown"`. These are declared per-invocation, so an adapter can vary them per request. For example, the fetch adapter returns `"safe"` for GET and `"unsafe"` for POST.
 
+### Who provides idempotency?
+
+**Caracal consumes replay-safety guarantees; it does not create them.** Setting `replay: "safe"` declares that repeating this invocation is safe. It does not add deduplication, make a write atomic, or guarantee exactly-once execution.
+
+The application defines the identity of a logical request. The system performing the side effect must enforce that identity, for example through an HTTP API's idempotency contract or a database uniqueness constraint. The adapter declares the resulting replay capability, and Caracal uses it together with outcome classification to decide whether to retry.
+
+For writes protected by a request key:
+
+- Create and persist the key before executing the operation. Reuse the same key and payload across Caracal attempts, caller-initiated retries, and process restarts. A different logical request needs a different key.
+- Check the downstream's rules for concurrent duplicates, payload mismatches, retention, and recovering the outcome. Retry only while its guarantee still applies; expiry or deletion of a deduplication record can allow the side effect again.
+- Treat a timeout or a lost response as an unknown outcome. The side effect may have completed even though the caller received an error; cancellation does not undo it.
+
+A separate Redis admission record cannot atomically commit an arbitrary downstream side effect. A crash between the downstream commit and recording its outcome leaves that outcome unresolved. Neither `executionId` nor metadata is automatically sent as an idempotency key or enforced by the downstream; supply protocol arguments explicitly.
+
+See [HTTP writes with idempotency keys](fetch.md#http-writes-with-idempotency-keys) and [writes protected by a unique request-id](postgres.md#writes-protected-by-a-unique-request-id) for examples using the existing adapters.
+
 ## Events
 
 See [events and observability](events-and-observability.md) for the full event reference. Relevant events: `timeout.triggered`, `retry.scheduled`, `retry.exhausted`, `retry.declined`.

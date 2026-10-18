@@ -86,7 +86,56 @@ The adapter infers replay safety from the HTTP method unless an adapter-wide `re
 
 Set `replay` as a fixed value to override globally, or as a function `(args) => replay` to vary it per request, for example to mark a specific idempotent `POST` as `"safe"`.
 
-Semantic idempotency and a re-sendable body are two separate requirements, and Caracal only checks the first. Prefer `{ url, options }` args: a string, `Blob`, `ArrayBuffer` or `URLSearchParams` body is re-sent on each attempt. A `Request` object is single-use, so a retried `Request` fails on its second attempt with a `TypeError` from `fetch` ("Cannot construct a Request with a Request object that has already been used"), and a `ReadableStream` body cannot be replayed at all. Body-bearing retries are covered by the fetch integration suite.
+Semantic idempotency and a re-sendable body are two separate requirements. Caracal checks the replay declaration; it does not verify either requirement. Prefer `{ url, options }` args: a string, `Blob`, `ArrayBuffer` or `URLSearchParams` body is re-sent on each attempt. A `Request` object is single-use, so a retried `Request` fails on its second attempt with a `TypeError` from `fetch` ("Cannot construct a Request with a Request object that has already been used"), and a `ReadableStream` body cannot be replayed at all. Body-bearing retries are covered by the fetch integration suite.
+
+### HTTP writes with idempotency keys
+
+Use this pattern only for an endpoint whose documented contract guarantees that repeated requests with the same key and payload do not repeat the side effect, including concurrent requests. Sending an `Idempotency-Key` header alone provides no such guarantee. Header names, retention windows, and duplicate-response behaviour are API-specific; for a concrete example, see [Stripe's idempotent request contract](https://docs.stripe.com/api/idempotent_requests).
+
+This example assumes the supplier's order endpoint provides that contract. Keep this adapter dedicated to that endpoint: its callback replaces the default method inference and returns `"unknown"` for every nonmatching request, including GETs. The example uses a string URL plus `options`; `URL` and `Request` objects do not match its URL check, and body-bearing `Request` objects cannot be replayed as described above.
+
+```ts
+import { operation, retry, timeout } from "@gkoos/caracal"
+import { fetchAdapter } from "@gkoos/caracal/fetch"
+
+const endpoint = "https://api.supplier.example/orders"
+const createOrder = operation({
+  name: "supplier-create-order",
+  adapter: fetchAdapter({
+    replay: (args) =>
+      args.url === endpoint &&
+      args.options?.method?.toUpperCase() === "POST" &&
+      new Headers(args.options.headers).get("Idempotency-Key")
+        ? "safe"
+        : "unknown",
+  }),
+  policies: [timeout({ ms: 5_000 }), retry({ maxAttempts: 3, delay: 100 })],
+})
+
+export async function submitOrder(request: {
+  requestId: string
+  sku: string
+  quantity: number
+}) {
+  // requestId belongs to the application's persisted order intent.
+  // Reuse it and the same payload if the caller submits this intent again.
+  return createOrder.execute({
+    url: endpoint,
+    options: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": request.requestId,
+      },
+      body: JSON.stringify({ sku: request.sku, quantity: request.quantity }),
+    },
+  })
+}
+```
+
+The serialized body and header are supplied once to `execute` and reused across its attempts. The application supplies the same values on subsequent calls; generating a new key for every attempt or every caller retry would defeat deduplication. The callback above checks request shape, not server behaviour: the replay declaration still depends on the supplier's guarantee and its retention window.
+
+The returned response follows the adapter's normal classification and retry rules. Exhausting retries or receiving `TimeoutError` does not prove the order was not created. Recover the existing outcome using the supplier's documented duplicate-request or lookup mechanism. See [who provides idempotency](timeout-and-retry.md#who-provides-idempotency).
 
 ## Classification
 

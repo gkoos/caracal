@@ -5,7 +5,7 @@ Start with the [project README](../README.md) for installation and a first opera
 | Page | What it covers |
 |---|---|
 | [Core API](core-api.md) | `operation`, the `Adapter` contract, policy composition, options and errors |
-| [Timeouts and retries](timeout-and-retry.md) | what a deadline does and does not cover, retry pacing, declined retries |
+| [Timeouts and retries](timeout-and-retry.md) | what a deadline does and does not cover, retry pacing, declined retries, idempotency responsibilities |
 | [Circuit breaker](circuit-breaker.md) | state machine, sliding window, threshold resolution, probes |
 | [Bulkheads](bulkhead.md) | local queueing, distributed leases, admission expiry |
 | [Rate limiting](rate-limit.md) | GCRA, burst vs sustained rate, retry-after composition |

@@ -1,11 +1,22 @@
+import { runInNewContext } from "node:vm"
 import { describe, expect, it, vi } from "vitest"
-import { createRetryAfterDelay } from "../../src/fetch.js"
-import { bulkhead, circuitBreaker, rateLimit } from "../../src/index.js"
+import {
+  createRetryAfterDelay,
+  type FetchOperationArgs,
+  fetchAdapter,
+} from "../../src/fetch.js"
 import type {
   BreakerCoordinator,
   BulkheadCoordinator,
   RateLimitCoordinator,
   RetryContext,
+} from "../../src/index.js"
+import {
+  bulkhead,
+  circuitBreaker,
+  operation,
+  rateLimit,
+  retry,
 } from "../../src/index.js"
 import {
   buildEntries,
@@ -78,6 +89,87 @@ describe("documentation claims", () => {
       `docs/fetch.md must state the ${longest} ms (${longest / 1000} s) worst case`,
     ).toBe(true)
   })
+
+  it.each([
+    ["POST", "order-42", 2],
+    ["post", "order-42", 2],
+    ["POST", undefined, 1],
+    ["POST", "", 1],
+    ["GET", "order-42", 1],
+  ] as const)(
+    "documented keyed-write callback: %s with key %j makes %i attempt(s)",
+    async (method, key, attempts) => {
+      // Execute the callback from the docs so changes to the recipe itself
+      // are covered, rather than testing a separately maintained copy.
+      const section = readSource("docs/fetch.md").split(
+        "### HTTP writes with idempotency keys",
+      )[1]
+      const example = section?.match(/```ts\r?\n([\s\S]*?)```/)?.[1]
+      const endpoint = example?.match(/const endpoint = "([^"]+)"/)?.[1]
+      const callback = example?.match(
+        /replay: (\(args\) =>[\s\S]*?),\r?\n\s*\}\)/,
+      )?.[1]
+      if (endpoint === undefined || callback === undefined) {
+        throw new Error("Could not find the documented idempotency callback")
+      }
+      const replay = runInNewContext(`(${callback})`, {
+        endpoint,
+        Headers,
+      }) as (args: FetchOperationArgs) => "safe" | "unknown"
+
+      const body = JSON.stringify({ sku: "widget", quantity: 2 })
+      const observed: { key: string | null; body: unknown }[] = []
+      const failure = new TypeError("Response lost after the request was sent")
+      const adapter = fetchAdapter({
+        replay,
+        fetch: async (_url, init) => {
+          observed.push({
+            key: new Headers(init?.headers).get("Idempotency-Key"),
+            body: init?.body,
+          })
+          if (observed.length === 1) throw failure
+          return new Response(null, { status: 201 })
+        },
+      })
+      // This adapter deliberately does not preserve default GET inference or
+      // accept alternate URL representations for the dedicated endpoint.
+      expect(
+        adapter.capabilities({
+          url: `${endpoint}/other`,
+          options: { method, headers: { "Idempotency-Key": "order-42" } },
+        }).replay,
+      ).toBe("unknown")
+      for (const url of [new URL(endpoint), new Request(endpoint)]) {
+        expect(
+          adapter.capabilities({
+            url,
+            options: { method, headers: { "Idempotency-Key": "order-42" } },
+          }).replay,
+        ).toBe("unknown")
+      }
+      const subject = operation({
+        name: "documented-keyed-write",
+        adapter,
+        policies: [retry({ maxAttempts: 2 })],
+      })
+      const result = subject.execute({
+        url: endpoint,
+        options: {
+          method,
+          headers: key === undefined ? {} : { "Idempotency-Key": key },
+          body,
+        },
+      })
+      if (attempts === 2) {
+        await expect(result).resolves.toHaveProperty("status", 201)
+      } else {
+        await expect(result).rejects.toBe(failure)
+      }
+      expect(observed).toEqual(
+        Array.from({ length: attempts }, () => ({ key: key ?? null, body })),
+      )
+    },
+  )
 
   it("keeps node:check on the same floor as engines", () => {
     const pkg = JSON.parse(readSource("package.json")) as {
