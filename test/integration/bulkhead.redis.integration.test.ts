@@ -160,11 +160,15 @@ describe.skipIf(!url)("distributed bulkhead public API", () => {
     try {
       await worker.ready()
       await expect(
-        worker.command("execute-timeout", dependency.url, namespace, 600),
+        worker.command("execute-timeout", dependency.url, namespace, 2_000),
       ).rejects.toThrow("timed out")
       expect(dependency.active).toBe(1)
-      await new Promise((resolve) => setTimeout(resolve, 900))
-      expect(await client.zcard(key)).toBe(1)
+      // Renewal runs at leaseMs / 3, so a wait longer than the original lease
+      // only holds if a renewal landed. A 600 ms lease with a 900 ms wait left
+      // no margin: on a loaded runner one late renewal expired the permit and
+      // this read 0. The longer lease keeps the same proof with headroom.
+      await new Promise((resolve) => setTimeout(resolve, 2_600))
+      await expect.poll(() => client.zcard(key), { timeout: 1_000 }).toBe(1)
       await expect(
         worker.command("execute", dependency.url, namespace, 600),
       ).rejects.toThrow("capacity")

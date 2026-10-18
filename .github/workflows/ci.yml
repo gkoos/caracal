@@ -93,7 +93,7 @@ jobs:
         run: npm ci
 
       - name: Redis integration tests
-        run: npm run test:integration -- --reporter=verbose test/integration/redis.integration.test.ts test/integration/bulkhead.redis.integration.test.ts test/integration/circuit-breaker.redis.integration.test.ts test/integration/rate-limit.redis.integration.test.ts test/integration/coordinator-conformance.integration.test.ts test/integration/redis-acl.integration.test.ts test/integration/coordinator-round-trips.integration.test.ts
+        run: npm run test:integration:redis
         env:
           CARACAL_REDIS_URL: redis://127.0.0.1:6379
 
@@ -138,7 +138,7 @@ jobs:
         run: npm ci
 
       - name: PostgreSQL integration tests
-        run: npm run test:integration -- --reporter=verbose test/integration/postgres.integration.test.ts test/integration/fetch.integration.test.ts
+        run: npm run test:integration:postgres
         env:
           CARACAL_POSTGRES_URL: postgresql://caracal:caracal@127.0.0.1:5432/caracal_test
           CARACAL_REDIS_URL: redis://127.0.0.1:6379

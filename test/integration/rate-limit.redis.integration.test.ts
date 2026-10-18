@@ -38,7 +38,7 @@ describe.skipIf(!url)("distributed rate limit public API", () => {
     const key = identity(namespace)
     const policy = rateLimit.distributed({
       name: "pool",
-      rate: 100, // 10 ms emission interval, no burst
+      rate: 20, // 50 ms emission interval: wide enough for a loaded runner
       scope: () => "shared",
       coordinator: redisRateLimitCoordinator(client, { namespace }),
     })
@@ -59,7 +59,7 @@ describe.skipIf(!url)("distributed rate limit public API", () => {
 
     // Once the emission interval elapses the next call is admissible and the
     // GCRA key self-cleans, so the scope leaves no state behind.
-    await new Promise((resolve) => setTimeout(resolve, 15))
+    await new Promise((resolve) => setTimeout(resolve, 60))
     await expect(op.execute(undefined)).resolves.toBe("ok")
     await expect.poll(() => client.exists(key)).toBe(0)
   })
