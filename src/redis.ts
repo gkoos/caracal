@@ -1,6 +1,10 @@
 export { redisCoordinator } from "./coordination/redis/bulkhead.js"
 export { redisCircuitBreakerCoordinator } from "./coordination/redis/circuit-breaker.js"
 export { redisRateLimitCoordinator } from "./coordination/redis/rate-limit.js"
+export {
+  redisConfigurationManager,
+  type ConfigurationManager,
+} from "./coordination/redis/configuration.js"
 export type { ClusterNode } from "./coordination/redis/client.js"
 export {
   CoordinatorUnavailableError,

@@ -56,6 +56,10 @@ function isAdmissionRefusal(outcome: Outcome<unknown>): boolean {
   if (outcome.status !== "failure") return false
   const { error } = outcome
   if (error instanceof RateLimitExceededError) return true
+  // A configuration record the server cannot use says nothing about the
+  // dependency. Checked by name because the configuration module imports this
+  // one, and a value import back would close the cycle.
+  if (error instanceof Error && error.name === "ConfigurationError") return true
   return (
     error instanceof BulkheadRejectedError &&
     ADMISSION_REFUSAL_REASONS.has(error.reason)
@@ -211,7 +215,7 @@ const DISTRIBUTED_BREAKER_DEFAULTS: BreakerNumberDefaults = {
  * lower bound alone allowed a window size that turns each observation into a
  * hundred-thousand-iteration Lua loop.
  */
-const MAX_WINDOW_SIZE = 10_000
+export const MAX_WINDOW_SIZE = 10_000
 
 // The failure threshold is compared as an integer numerator of thousandths
 // (`wFail * 1000 >= numerator * wTotal`).  A threshold that rounds to 0 makes
@@ -238,7 +242,9 @@ const FAILURE_THRESHOLD_SCALE = 1000
  * nearest thousandth - `0.5004` and `0.5` are the same policy - so one config
  * cannot open under one coordination and stay closed under the other.
  */
-function resolveFailureThresholdNumerator(failureThreshold: number): number {
+export function resolveFailureThresholdNumerator(
+  failureThreshold: number,
+): number {
   return Math.round(failureThreshold * FAILURE_THRESHOLD_SCALE)
 }
 
@@ -249,7 +255,7 @@ function resolveFailureThresholdNumerator(failureThreshold: number): number {
  * numerator of 0 or of the full scale, which changes what the threshold means
  * rather than how precisely it is expressed.
  */
-function assertResolvableThreshold(failureThreshold: number): void {
+export function assertResolvableThreshold(failureThreshold: number): void {
   const numerator = resolveFailureThresholdNumerator(failureThreshold)
   if (numerator < 1 || numerator >= FAILURE_THRESHOLD_SCALE)
     throw new RangeError(
@@ -746,9 +752,15 @@ export type SettleProbeResult =
  * lives in `test/support/memory-coordinator` and must not be a production export.
  */
 export interface BreakerCoordinator {
-  readState(
-    identity: BreakerIdentity,
-  ): Promise<{ state: BreakerState; generation: number } | null>
+  readState(identity: BreakerIdentity): Promise<{
+    state: BreakerState
+    generation: number
+    /** Configuration revision this read observed, when the coordinator reports one. */
+    readonly revision?: number
+    readonly changedAt?: number
+    /** Server-clock time the breaker last opened. */
+    readonly openedAt?: number
+  } | null>
 
   observe(
     identity: BreakerIdentity,
@@ -761,6 +773,8 @@ export interface BreakerCoordinator {
       readonly failureThresholdNumerator: number
       readonly windowSize: number
       readonly openMs: number
+      /** Immutable cleanup retention, resolved at construction. */
+      readonly closedCleanupMs?: number
     },
   ): Promise<ObserveResult>
 
@@ -787,6 +801,8 @@ export interface BreakerCoordinator {
       readonly generation: number
       readonly halfOpenSuccesses: number
       readonly openMs: number
+      /** Immutable cleanup retention, resolved at construction. */
+      readonly closedCleanupMs?: number
       /**
        * Observation retention period, used as a floor for the CLOSED cleanup
        * TTL: the state hash must not expire before the window it governs, or
@@ -952,6 +968,9 @@ function distributed(
   const resolveScope = options.scope
   const windowTtlMs = options.windowTtlMs ?? Math.max(openMs * 3, 60_000)
   const probeLeaseTtlMs = options.probeLeaseTtlMs ?? openMs * 2
+  // Retention is resolved once, from the constructor openMs: a mutable openMs
+  // would otherwise move the cleanup TTL with it.
+  const closedCleanupMs = Math.max(openMs * 2, windowTtlMs)
   const onCoordinatorError =
     options.onCoordinatorError ?? DEFAULT_DIST_ON_COORDINATOR_ERROR
   const classifier = options.classify
@@ -1211,6 +1230,7 @@ function distributed(
               generation: admission.generation,
               halfOpenSuccesses,
               openMs,
+              closedCleanupMs,
               windowTtlMs,
             })
           } catch (settleError) {
@@ -1276,6 +1296,7 @@ function distributed(
                 failureThresholdNumerator,
                 windowSize,
                 openMs,
+                closedCleanupMs,
               })
               if (result.type === "stale") {
                 emitRuntimeEvent(context, {
@@ -1340,6 +1361,7 @@ function distributed(
                 generation: admission.generation,
                 halfOpenSuccesses,
                 openMs,
+                closedCleanupMs,
                 windowTtlMs,
               })
               // A release reports nothing: it is not an observation, so there is

@@ -6,6 +6,7 @@ import { CircuitOpenError, circuitBreaker, operation } from "../../src/index.js"
 import {
   createCoordinationClient,
   redisCircuitBreakerCoordinator,
+  redisConfigurationManager,
 } from "../../src/redis.js"
 import { redisProxy } from "../support/redis-proxy.js"
 import { BreakerWorker } from "../support/worker-process/harness.js"
@@ -77,6 +78,54 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
   }
 
   beforeAll(() => client.connect())
+
+  it("applies a stored configuration threshold to real observations", async () => {
+    const namespace = `test-${randomUUID()}`
+    track(namespace)
+    cleanupKeys.push(
+      coordinationKey(
+        namespace,
+        "breaker:breaker",
+        "work",
+        "shared",
+        "configuration",
+      ),
+    )
+    const manager = redisConfigurationManager(client, { namespace })
+    await manager.update(
+      {
+        policy: "circuitBreaker",
+        name: "breaker",
+        operation: "work",
+        scope: "shared",
+      },
+      0,
+      {
+        policy: "circuitBreaker",
+        failureThreshold: 0.5,
+        minimumThroughput: 1,
+        windowSize: 20,
+        openMs: 10_000,
+        halfOpenProbes: 2,
+        halfOpenSuccesses: 1,
+      },
+    )
+    // The constructor baseline is minimumThroughput 5, so one failure would not
+    // open it. The stored record lowers the floor to a single observation.
+    const op = operation({
+      name: "work",
+      adapter: {
+        capabilities: traits,
+        classify: () => "failure",
+        execute: async () => {
+          throw new Error("down")
+        },
+      },
+      policies: [makePolicy(namespace)],
+    })
+    await expect(op.execute(undefined)).rejects.toThrow("down")
+    await expect(op.execute(undefined)).rejects.toBeInstanceOf(CircuitOpenError)
+  })
 
   afterAll(async () => {
     try {

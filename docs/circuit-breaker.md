@@ -190,6 +190,8 @@ Retention is per `(operation, scope)` and covers **only non-closed states**. A C
 - Any probe failure takes priority: it re-opens the breaker and increments the generation.
 - These dials interlock with the window counters (`minimumThroughput`, `failureThreshold`, `windowSize`, `windowTtlMs`); [Redis coordination](redis.md#keeping-the-breaker-knobs-consistent) lists the constraints and the symptoms of getting them wrong.
 
+All six mutable settings - `failureThreshold`, `minimumThroughput`, `windowSize`, `openMs`, `halfOpenProbes` and `halfOpenSuccesses` - can be replaced by a stored configuration record for the identity. The script that makes the decision reads the record, so an update applies to the next observation or probe admission; generations, retained observations and probe leases are untouched. Retention periods (`windowTtlMs`, `probeLeaseTtlMs` and the CLOSED cleanup window) are resolved at construction and do not move when `openMs` changes. See [shared configuration](redis.md#shared-configuration).
+
 ## Events
 
 See [events and observability](events-and-observability.md) for the full event reference. Relevant events: `breaker.state-changed`, `breaker.rejected`, `breaker.observation`, `breaker.probe-started`, `breaker.probe-expired`, `breaker.observation-stale`, `breaker.coordinator-error`, `breaker.degraded`.

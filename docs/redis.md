@@ -101,8 +101,8 @@ The saving is worth having because the bodies are not small. Measured with `npm 
 
 | Script | Lua body | Request bytes | Server cost |
 |--------|----------|---------------|-------------|
-| `breakerObserveV1` | 1 937 B | 2 272 B with `EVAL` → 376 B with `EVALSHA` (-83 %) | 30.6 µs → 29.2 µs |
-| `bulkheadLeaseV1` | 868 B | 1 040 B with `EVAL` → 214 B with `EVALSHA` (-79 %) | 18.2 µs → 17.5 µs |
+| `breakerObserveV1` | 4 956 B | 5 396 B with `EVAL` → 481 B with `EVALSHA` (-91 %) | 54.1 µs → 47.6 µs |
+| `bulkheadLeaseV1` | 2 037 B | 2 316 B with `EVAL` → 320 B with `EVALSHA` (-86 %) | 22.6 µs → 20.7 µs |
 
 `breakerAdmitProbeV1` (~1.7 kB) and `breakerSettleProbeV1` (~1.8 kB) sit between those two. Client latency is unchanged on a same-host connection - the win is bandwidth (a breaker doing 20 000 observations/s per client drops from roughly 42 MB/s to 8 MB/s of request traffic) plus the server CPU spent hashing and copying the body on every `EVAL`. Server cost above includes the script's own work, so the transport share is small but non-zero. Run `node scripts/bench.mjs` with a local Valkey to reproduce, or to check a different deployment.
 
@@ -119,6 +119,34 @@ Script transport is only half the cost: the coordinator calls themselves are seq
 | Both policies on one operation | four, two of them before the wrapped work starts |
 
 `readState` is not cached, deliberately: the point of reading it is to see state another process may have changed since the last attempt. [Timeouts and retries](timeout-and-retry.md) works through what the sequence does to a caller's deadline, and [lease tuning](#lease-tuning) covers the renewal load.
+
+## Shared configuration
+
+`redisConfigurationManager(client, { namespace })` reads and updates the shared configuration record for one policy identity. The record sits beside the runtime keys of the same identity and shares their hash tag, so a record and the state it governs are always in the same cluster slot. Its key is the identity digest plus the `configuration` suffix, hashed from the same `policy:name`, operation and scope the coordinator uses.
+
+`	s
+import { redisConfigurationManager } from "@gkoos/caracal/redis"
+
+const manager = redisConfigurationManager(redis, { namespace: "svc:prod" })
+const identity = {
+  policy: "bulkhead",
+  name: "partner-api",
+  operation: "submit",
+  scope: "eu-west-2",
+}
+
+const result = await manager.update(identity, 0, {
+  policy: "bulkhead",
+  limit: 40,
+})
+// result.status is "applied", "unchanged" or "conflict"
+```
+
+`ConfigurationManager.read()` returns the stored record or `null`. A record carries a schema version and a revision; constructor settings are revision 0 until the first explicit update. `update()` replaces the complete settings snapshot and checks the expected revision, so a stale proposal comes back as `conflict` instead of overwriting a newer one. A conflict carries the stored snapshot, or `null` when the record is gone.
+
+Every setting is stored as a decimal string, with the requested values beside the normalized ones. A record that cannot be decoded or validated raises `ConfigurationError`; a transport failure raises `CoordinatorUnavailableError`, the same as the coordinators.
+
+Records carry no TTL. Under an `allkeys-*` maxmemory policy they are eligible for eviction like any other key; under `volatile-*` they are not. Choose the policy accordingly and treat a missing record as a loss diagnostic; [operations](operations.md#configuration-records) covers revision 0, dormant records and rollback.
 
 ## Security guidance
 
@@ -158,7 +186,7 @@ The full set of commands required by the coordination scripts is:
 | `PERSIST` | breaker scripts | removes TTL from OPEN/HALF_OPEN state hash so it is never silently expired |
 | `EXISTS` | breaker `breakerObserveV1` | checks whether the state hash and observation set exist |
 | `DEL` | breaker `breakerAdmitProbeV1` / `breakerSettleProbeV1` | clears the probe set when a recovery window ends |
-| `GET` | rate limit `rateLimitV1` | reads the GCRA theoretical arrival time |
+| `GET` | rate limit `rateLimitV1`; bulkhead `bulkheadLeaseV1` | reads the GCRA theoretical arrival time; reads the configuration record |
 | `SET` | rate limit `rateLimitV1` | writes the advanced GCRA theoretical arrival time |
 | `PING` | client health checks only | `client.ping()`; not used by the coordinators themselves |
 

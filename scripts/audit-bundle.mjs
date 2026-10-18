@@ -33,11 +33,14 @@ const { default: _d, ...root } = await import("../dist/index.js").catch(
 const rootKeys = Object.keys(root).sort()
 const expectedRoot = [
   "BulkheadRejectedError",
+  "ConfigurationError",
   "CircuitOpenError",
+  "RateLimitExceededError",
   "TimeoutError",
   "bulkhead",
   "circuitBreaker",
   "operation",
+  "rateLimit",
   "retry",
   "timeout",
 ].sort()
@@ -73,6 +76,8 @@ const expectedRedis = [
   "createCoordinationClient",
   "createCoordinationClusterClient",
   "redisCircuitBreakerCoordinator",
+  "redisConfigurationManager",
+  "redisRateLimitCoordinator",
   "redisCoordinator",
 ].sort()
 

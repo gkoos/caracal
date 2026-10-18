@@ -13,6 +13,21 @@ export type {
 } from "./core/rate-limit.js"
 export { RateLimitExceededError, rateLimit } from "./core/rate-limit.js"
 export type {
+  BulkheadEffective,
+  BulkheadSettings,
+  CircuitBreakerEffective,
+  CircuitBreakerSettings,
+  ConfigurationEffective,
+  ConfigurationIdentity,
+  ConfigurationPolicy,
+  ConfigurationSettings,
+  ConfigurationSnapshot,
+  ConfigurationUpdateResult,
+  RateLimitEffective,
+  RateLimitSettings,
+} from "./core/configuration.js"
+export { ConfigurationError } from "./core/configuration.js"
+export type {
   AdmitProbeResult,
   BreakerClassifier,
   BreakerCoordinator,

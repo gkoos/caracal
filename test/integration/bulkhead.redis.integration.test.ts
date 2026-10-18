@@ -4,7 +4,11 @@ import { coordinationKey } from "../../src/coordination/redis/keys.js"
 import { fetchAdapter } from "../../src/fetch.js"
 import type { OperationEvent } from "../../src/index.js"
 import { bulkhead, operation, timeout } from "../../src/index.js"
-import { createCoordinationClient, redisCoordinator } from "../../src/redis.js"
+import {
+  createCoordinationClient,
+  redisConfigurationManager,
+  redisCoordinator,
+} from "../../src/redis.js"
 import { Deferred } from "../support/deferred.js"
 import { dependencyServer } from "../support/dependency-server.js"
 import { redisProxy } from "../support/redis-proxy.js"
@@ -42,6 +46,66 @@ describe.skipIf(!url)("distributed bulkhead public API", () => {
       await dependency.close()
     }
   })
+  it("applies a stored configuration limit to real acquisitions", async () => {
+    const namespace = `test-${randomUUID()}`
+    const manager = redisConfigurationManager(client, { namespace })
+    const configurationIdentity = {
+      policy: "bulkhead" as const,
+      name: "pool",
+      operation: "work",
+      scope: "shared",
+    }
+    keys.push(
+      coordinationKey(
+        namespace,
+        "bulkhead:pool",
+        "work",
+        "shared",
+        "configuration",
+      ),
+    )
+    await manager.update(configurationIdentity, 0, {
+      policy: "bulkhead",
+      limit: 1,
+    })
+
+    const gate = new Deferred<void>()
+    const started = new Deferred<void>()
+    const adapter = {
+      capabilities: () => ({
+        abort: "unsupported" as const,
+        replay: "safe" as const,
+      }),
+      execute: () => {
+        started.resolve(undefined)
+        return gate.promise
+      },
+    }
+    const op = operation({
+      name: "work",
+      adapter,
+      policies: [
+        bulkhead.distributed({
+          name: "pool",
+          limit: 5,
+          coordinator: redisCoordinator(client, { namespace }),
+          scope: () => "shared",
+        }),
+      ],
+    })
+    const first = op.execute(undefined)
+    try {
+      await started.promise
+      // The stored limit is 1 even though the constructor baseline is 5.
+      await expect(op.execute(undefined)).rejects.toMatchObject({
+        name: "BulkheadRejectedError",
+      })
+    } finally {
+      gate.resolve(undefined)
+      await first.catch(() => {})
+    }
+  })
+
   const client = createCoordinationClient(url ?? "redis://127.0.0.1:6379")
   const keys: string[] = []
   function identity(namespace: string, operation = "work", scope = "shared") {

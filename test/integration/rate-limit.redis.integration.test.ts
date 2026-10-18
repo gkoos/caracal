@@ -4,6 +4,7 @@ import { coordinationKey } from "../../src/coordination/redis/keys.js"
 import { operation, rateLimit } from "../../src/index.js"
 import {
   createCoordinationClient,
+  redisConfigurationManager,
   redisRateLimitCoordinator,
 } from "../../src/redis.js"
 import { redisProxy } from "../support/redis-proxy.js"
@@ -61,6 +62,51 @@ describe.skipIf(!url)("distributed rate limit public API", () => {
     await new Promise((resolve) => setTimeout(resolve, 15))
     await expect(op.execute(undefined)).resolves.toBe("ok")
     await expect.poll(() => client.exists(key)).toBe(0)
+  })
+
+  it("applies a stored configuration rate to real admissions", async () => {
+    const namespace = `test-${randomUUID()}`
+    identity(namespace)
+    keys.push(
+      coordinationKey(
+        namespace,
+        "ratelimit:pool",
+        "work",
+        "shared",
+        "configuration",
+      ),
+    )
+    const manager = redisConfigurationManager(client, { namespace })
+    await manager.update(
+      {
+        policy: "rateLimit",
+        name: "pool",
+        operation: "work",
+        scope: "shared",
+      },
+      0,
+      { policy: "rateLimit", rate: 1, burst: 1 },
+    )
+    const policy = rateLimit.distributed({
+      name: "pool",
+      rate: 1000, // baseline admits immediately; only the stored rate rejects
+      scope: () => "shared",
+      coordinator: redisRateLimitCoordinator(client, { namespace }),
+    })
+    const op = operation({
+      name: "work",
+      adapter: {
+        capabilities: () => ({ abort: "unsupported", replay: "safe" }),
+        execute: async () => "ok",
+      },
+      policies: [policy],
+    })
+
+    await expect(op.execute(undefined)).resolves.toBe("ok")
+    await expect(op.execute(undefined)).rejects.toMatchObject({
+      name: "RateLimitExceededError",
+      retryAfterMs: expect.any(Number),
+    })
   })
 
   it("fails closed on disconnect", async () => {
