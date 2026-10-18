@@ -16,12 +16,16 @@ await run(
   [
     "node_modules/vitest/vitest.mjs",
     "run",
+    // One file at a time: the ACL suite flushes the script cache on purpose, and a
+    // parallel round-trip test would count that fallback as an extra coordinator call.
+    "--no-file-parallelism",
     "test/integration/redis.integration.test.ts",
     "test/integration/bulkhead.redis.integration.test.ts",
     "test/integration/circuit-breaker.redis.integration.test.ts",
     "test/integration/rate-limit.redis.integration.test.ts",
     "test/integration/coordinator-conformance.integration.test.ts",
     "test/integration/redis-acl.integration.test.ts",
+    "test/integration/coordinator-round-trips.integration.test.ts",
   ],
   {
     ...process.env,
