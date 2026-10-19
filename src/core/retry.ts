@@ -41,14 +41,25 @@ export interface RetryOptions {
   readonly delay?: RetryDelay
 }
 
+/**
+ * The reason a cancellation is reported with: the caller's own, including an
+ * explicit `null`. Only a signal that leaves `reason` undefined falls back to
+ * the platform default, so retry matches `AbortSignal.throwIfAborted()` and
+ * every other cancellation path.
+ */
+function abortReason(signal: AbortSignal | undefined): unknown {
+  if (signal === undefined || signal.reason === undefined) {
+    return new DOMException("The operation was aborted", "AbortError")
+  }
+  return signal.reason
+}
+
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) {
     return
   }
 
-  throw (
-    signal.reason ?? new DOMException("The operation was aborted", "AbortError")
-  )
+  throw abortReason(signal)
 }
 
 function retryContext(
@@ -103,10 +114,7 @@ function wait(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
 
     function aborted(): void {
       clearTimeout(timer)
-      reject(
-        signal?.reason ??
-          new DOMException("The operation was aborted", "AbortError"),
-      )
+      reject(abortReason(signal))
     }
 
     if (signal?.aborted) {
