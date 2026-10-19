@@ -72,6 +72,44 @@ describe("retry", () => {
     expect(adapter.calls).toHaveLength(0)
   })
 
+  it("preserves an explicit null abort reason when the call is already cancelled", async () => {
+    const controller = new AbortController()
+    controller.abort(null)
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities: { abort: "unsupported", replay: "safe" },
+      outcomes: [{ status: "success", value: "unexpected" }],
+    })
+    const subject = operation({
+      name: "cancelled-retry-null",
+      adapter,
+      policies: [retry({ maxAttempts: 2 })],
+    })
+
+    await expect(
+      subject.execute(undefined, { signal: controller.signal }),
+    ).rejects.toBeNull()
+    expect(adapter.calls).toHaveLength(0)
+  })
+
+  it("reports the platform AbortError when the caller aborts without a reason", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities: { abort: "unsupported", replay: "safe" },
+      outcomes: [{ status: "success", value: "unexpected" }],
+    })
+    const subject = operation({
+      name: "cancelled-retry-default-reason",
+      adapter,
+      policies: [retry({ maxAttempts: 2 })],
+    })
+
+    await expect(
+      subject.execute(undefined, { signal: controller.signal }),
+    ).rejects.toBe(controller.signal.reason)
+    expect(adapter.calls).toHaveLength(0)
+  })
+
   it("returns the final classified result after the attempt bound is exhausted", async () => {
     const events: OperationEvent[] = []
     const adapter = createScriptedAdapter<undefined, number>({
@@ -285,6 +323,33 @@ describe("retry delay failure", () => {
       subject.execute(undefined, { signal: controller.signal }),
     ).rejects.toBe(cancellation)
     expect(attempts).toEqual([1])
+  })
+
+  it("preserves an explicit null abort reason that lands while the retry wait is pending", async () => {
+    const controller = new AbortController()
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities: { abort: "unsupported", replay: "safe" },
+      classify: () => "retryable",
+      outcomes: [{ status: "success", value: "first" }],
+    })
+    const subject = operation({
+      name: "cancelled-during-delay-null",
+      adapter,
+      policies: [
+        retry({
+          maxAttempts: 2,
+          delay: () => {
+            controller.abort(null)
+            return 5
+          },
+        }),
+      ],
+    })
+
+    await expect(
+      subject.execute(undefined, { signal: controller.signal }),
+    ).rejects.toBeNull()
+    expect(adapter.calls).toHaveLength(1)
   })
 })
 
