@@ -40,7 +40,7 @@ awsSdkAdapter({
 | Option | Required | Purpose |
 |---|---|---|
 | `client` | yes | The SDK client. Only `send()` is used. |
-| `command` | yes | Builds the command for an attempt. Called once per attempt. |
+| `command` | yes | Builds the command. Called during capability resolution when `replay` is not fixed, and again per attempt; keep it pure and cheap. |
 | `replay` | no | Fixed value or `(args) => replay`; overrides the command table. |
 | `classifyError` | no | Returns a classification for a thrown error, overriding the shared classifier. |
 | `dispose` | no | Runs after the built-in `Body`/`Payload` stream cleanup for an abandoned result. |
@@ -49,7 +49,7 @@ The options are typed as `AwsSdkAdapterOptions<Args, Command>`. The client is an
 
 ## Commands
 
-`command(args)` is called for every attempt, so a retry sends a fresh command built from the same `args`. Put idempotency tokens in `args`, not in the factory:
+`command(args)` is called once for every attempt, and once more during capability resolution when `replay` is not a fixed value. A single-attempt execution therefore constructs two commands, and a policy that rejects admission can construct one without sending it. Keep the factory pure and cheap: no side effects, no one-shot state, and no idempotency token generation. Put idempotency tokens in `args`, not in the factory:
 
 ```ts
 const token = randomUUID()
@@ -117,8 +117,8 @@ The shared classifier reads structured error data, never message text:
 
 | Signal | Classification |
 |---|---|
-| `$retryable.throttling === true`, `$retryable.timeout === true`, or `$retryable.errorType` is `"throttling"` / `"transient"` | `retryable` |
-| `ThrottlingException`, `ThrottledException`, `ProvisionedThroughputExceededException`, `RequestLimitExceeded`, `TooManyRequestsException`, `SlowDown` | `retryable` |
+| `$retryable` present on a modeled error, including an empty `{}` | `retryable` |
+| `ThrottlingException`, `ThrottledException`, `Throttling`, `RequestThrottled`, `RequestThrottledException`, `ProvisionedThroughputExceededException`, `RequestLimitExceeded`, `TooManyRequestsException`, `SlowDown` | `retryable` |
 | `RequestTimeout`, `RequestTimeoutException`, `TimeoutError`, `InternalServerError`, `InternalFailure`, `ServiceUnavailable` | `retryable` |
 | HTTP `408`, `429`, or any `5xx` fallback | `retryable` |
 | `ConditionalCheckFailedException`, `ValidationException`, `AccessDeniedException`, `UnauthorizedOperation`, `ResourceNotFoundException`, `NoSuchKey`, `NoSuchBucket`, `EntityAlreadyExistsException`, `InvalidParameterValue`, `SerializationException` | `failure` |

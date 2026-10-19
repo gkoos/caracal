@@ -46,7 +46,10 @@ export interface AwsSdkAdapterOptions<Args, Command> {
     NoInferValue<Command>,
     AwsSdkCommandOutput<Command>
   >
-  /** Builds the command for one attempt. Called per attempt; keep it pure. */
+  /**
+   * Builds a command. Called during capability resolution when `replay` is not
+   * fixed, and again for each attempt in `execute()`; keep it pure and cheap.
+   */
   readonly command: (args: Args) => Command
   /** Overrides the per-command default. */
   readonly replay?: AwsSdkReplay<Args>
@@ -98,12 +101,15 @@ const RETRYABLE_NAMES = new Set([
   "InternalServerError",
   "ProvisionedThroughputExceededException",
   "RequestLimitExceeded",
+  "RequestThrottled",
+  "RequestThrottledException",
   "RequestTimeout",
   "RequestTimeoutException",
   "ServiceUnavailable",
   "ServiceUnavailableException",
   "SlowDown",
   "ThrottledException",
+  "Throttling",
   "ThrottlingException",
   "TimeoutError",
   "TooManyRequestsException",
@@ -152,11 +158,7 @@ function errorName(error: unknown): string | undefined {
 }
 
 function hasRetryableMarker(error: unknown): boolean {
-  if (!isRecord(error)) return false
-  const marker = error.$retryable
-  if (!isRecord(marker)) return false
-  if (marker.throttling === true || marker.timeout === true) return true
-  return marker.errorType === "throttling" || marker.errorType === "transient"
+  return isRecord(error) && isRecord(error.$retryable)
 }
 
 function httpStatusCode(error: unknown): number | undefined {
