@@ -9,18 +9,19 @@ npm run test:fuzz           # fuzz suite (test/fuzz) - seeded random event-histo
 npm run test:generated      # both generated suites in one run: one depth, a seed per suite
 npm run test:generated:deep # the same suites at a deeper case count (CARACAL_TEST_RUNS)
 npm run test:integration    # integration suite (test/integration) - requires services and CARACAL_* URLs
+npm run test:integration:aws # AWS SDK suite against Floci (Docker, test/test credentials)
 npm run test:all            # check, then the generated and integration suites
 ```
 
 `npm test` runs `test/unit` only; the other suites are selected explicitly by the commands above.
 
-**Unit** tests cover the core operation runtime, all policies, and both adapters without any external dependencies. They run in under 3 seconds.
+**Unit** tests cover the core operation runtime, all policies, and all built-in adapters without any external dependencies. They run in under 3 seconds.
 
 **Property** tests use fast-check to verify invariants across generated histories: the circuit breaker state machine, the local GCRA rate limiter (admission arithmetic, burst envelope, the exact `retryAfterMs`, and `snapshot()`), local bulkhead permit accounting (occupancy, queue timeouts, lease reclaim, FIFO handoff), and the scripted adapter's queue accounting (one entry consumed per execution, in invocation order, with no repeated final entry). They derive from a random seed by default and honour `CARACAL_TEST_SEED` for replay.
 
 **Fuzz** tests run a seeded random event-history generator against the circuit breaker to confirm no invalid state transitions occur under adversarial sequences. Both generated suites are built with `test/support/seed.ts`, which owns the seed, the depth multiplier, and the replay instruction every failure prints.
 
-**Integration** tests run against real Valkey and PostgreSQL instances and exercise multi-process coordination scenarios that cannot be verified in-process. Each file skips itself unless its environment variable is set: `CARACAL_REDIS_URL` for Redis, `CARACAL_REDIS_CLUSTER_URLS` for cluster, and `CARACAL_POSTGRES_URL` for PostgreSQL. Starting the containers alone does not set them - see [Local development](development.md).
+**Integration** tests run against real Valkey, PostgreSQL and AWS-emulator instances and exercise multi-process coordination scenarios that cannot be verified in-process. Each file skips itself unless its environment variable is set: `CARACAL_REDIS_URL` for Redis, `CARACAL_REDIS_CLUSTER_URLS` for cluster, `CARACAL_POSTGRES_URL` for PostgreSQL, and `CARACAL_AWS_ENDPOINT` for the AWS SDK suite. Starting the containers alone does not set them - see [Local development](development.md). `npm run test:integration:aws` starts Floci and sets the endpoint for you.
 
 ## Reproducible generated tests
 

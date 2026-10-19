@@ -36,6 +36,8 @@ npm install ioredis
 npm install pg
 ```
 
+The AWS SDK adapter has no peer dependency; install the SDK service clients you use (`@aws-sdk/client-sqs`, `@aws-sdk/client-dynamodb`, …).
+
 Reads one order from a supplier's HTTP API. The breaker window and the concurrency limit are per region and shared by every replica in it, the timeout and the retry stay local to the process.
 
 ```ts
@@ -104,7 +106,7 @@ const response = await getOrder.execute(
 redis.disconnect()
 ```
 
-Any adapter works: `@gkoos/caracal/fetch` wraps `fetch`, `@gkoos/caracal/postgres` wraps a `pg` pool or client, and [your own](docs/adapter-contracts.md) needs only the `Adapter` interface.
+Any adapter works: `@gkoos/caracal/fetch` wraps `fetch`, `@gkoos/caracal/postgres` wraps a `pg` pool or client, `@gkoos/caracal/aws-sdk` wraps any AWS SDK v3 client, and [your own](docs/adapter-contracts.md) needs only the `Adapter` interface.
 
 Distributed policies coordinate by `(namespace, policy name, operation name, scope)`. Two operations with different names get independent budgets and breaker windows even when they reuse the same policy instances. To share a budget or breaker deliberately, give the operations the same name - see [bulkheads](docs/bulkhead.md) and the [Redis key scheme](docs/redis.md).
 
@@ -313,6 +315,7 @@ See [Testing](docs/testing.md) and [Local development](docs/development.md) for 
 
 - [Fetch adapter](docs/fetch.md) - Cancellation, replay safety, response classification, streaming
 - [PostgreSQL adapter](docs/postgres.md) - Cancellation, replay safety, SQLSTATE classification
+- [AWS SDK v3 adapter](docs/aws-sdk.md) - Per-command replay, cancellation, structured error classification
 
 ### Operations
 

@@ -9,6 +9,7 @@
  * 4. dist/testing/index.js exports the harness without runtime policy code.
  * 5. dist/fetch.js exports the fetch adapter and Retry-After helpers only.
  * 6. dist/postgres.js exports the postgres adapter only.
+ * 7. dist/aws-sdk.js exports the AWS adapter without an SDK dependency.
  *
  * Run after `npm run build`:
  *   node scripts/audit-bundle.mjs
@@ -169,6 +170,37 @@ const postgresSource = readFileSync("dist/postgres.js", "utf8")
 check(
   "Postgres bundle does not reference ioredis",
   !postgresSource.includes("ioredis"),
+)
+
+// ---------------------------------------------------------------------------
+// 7. AWS SDK subpath exports
+// ---------------------------------------------------------------------------
+
+const awsSdk = await import("../dist/aws-sdk.js").catch(() => ({}))
+const awsSdkKeys = Object.keys(awsSdk)
+  .filter((key) => key !== "default")
+  .sort()
+
+console.log("\n== AWS SDK subpath (dist/aws-sdk.js) ==")
+check(
+  "Exports include awsSdkAdapter, awsSdkErrorClassification",
+  ["awsSdkAdapter", "awsSdkErrorClassification"].every((key) =>
+    awsSdkKeys.includes(key),
+  ),
+)
+
+const awsSdkSource = readFileSync("dist/aws-sdk.js", "utf8")
+check(
+  "AWS SDK bundle does not import an AWS SDK package",
+  !awsSdkSource.includes("@aws-sdk/"),
+)
+check(
+  "AWS SDK bundle does not reference ioredis",
+  !awsSdkSource.includes("ioredis"),
+)
+check(
+  "AWS SDK bundle does not reference 'pg'",
+  !awsSdkSource.includes("from 'pg'"),
 )
 
 // ---------------------------------------------------------------------------
