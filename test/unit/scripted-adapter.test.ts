@@ -255,6 +255,52 @@ describe("createScriptedAdapter", () => {
     )
   })
 
+  it("preserves an explicit null abort reason for a pre-aborted signal", async () => {
+    const controller = new AbortController()
+    controller.abort(null)
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities,
+      outcomes: [{ status: "success", value: "never" }],
+    })
+
+    await expect(
+      adapter.execute(undefined, context({ signal: controller.signal })),
+    ).rejects.toBeNull()
+    expect(adapter.calls).toHaveLength(1)
+  })
+
+  it("preserves an explicit null abort reason when a hang is cancelled", async () => {
+    const controller = new AbortController()
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities,
+      outcomes: [{ status: "hang" }],
+    })
+
+    const pending = adapter.execute(
+      undefined,
+      context({ signal: controller.signal }),
+    )
+    const rejected = expect(pending).rejects.toBeNull()
+    controller.abort(null)
+    await rejected
+  })
+
+  it("preserves an explicit null abort reason when a delay is cancelled", async () => {
+    const controller = new AbortController()
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities,
+      outcomes: [{ status: "success", value: "late", delayMs: 20 }],
+    })
+
+    const pending = adapter.execute(
+      undefined,
+      context({ signal: controller.signal }),
+    )
+    const rejected = expect(pending).rejects.toBeNull()
+    controller.abort(null)
+    await rejected
+  })
+
   it("does not invoke the adapter when the operation is cancelled before the attempt", async () => {
     const controller = new AbortController()
     const reason = new Error("caller cancelled")

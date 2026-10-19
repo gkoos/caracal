@@ -136,10 +136,13 @@ function copyCapabilities(
 }
 
 function abortReason(signal: AbortSignal | undefined): unknown {
-  return (
-    signal?.reason ??
-    new DOMException("The operation was aborted", "AbortError")
-  )
+  // Preserve the caller's reason exactly, including an explicit `null`.
+  // `AbortSignal.throwIfAborted()` does the same; only a signal that leaves
+  // `reason` undefined falls back to the platform default.
+  if (signal === undefined || signal.reason === undefined) {
+    return new DOMException("The operation was aborted", "AbortError")
+  }
+  return signal.reason
 }
 
 function runHang<Result>(

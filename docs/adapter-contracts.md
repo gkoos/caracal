@@ -226,22 +226,22 @@ A cancelled entry remains consumed. A cancellation that prevents the runtime fro
 
 ### Capability mismatches and the contract harness
 
-The scripted adapter is also the negative control for the contract harness. `defineAdapterContractSuite` runs its checks against one adapter instance in a fixed order, so its queue is shared:
+The scripted adapter is also the negative control for the contract harness. `defineAdapterContractSuite` runs its checks against one adapter instance in a fixed order, so its queue is shared. Consumption is per execution that reaches the adapter, not per check:
 
-1. `capabilities` checks (no `execute()`),
-2. the successful lifecycle (one entry),
-3. `classifications` checks (no `execute()`),
-4. the `abort` check (one entry, when configured),
-5. the abandoned-result disposal check (two entries, when the adapter defines `dispose`).
+1. `capabilities` checks call no `execute()`, so they consume nothing.
+2. The successful lifecycle calls `execute()` once, so it consumes one entry.
+3. `classifications` checks call `classify` only, so they consume nothing.
+4. The `abort` check consumes as many entries as the consumer's `verify` causes to reach the adapter: one if it calls `execute()` before aborting, none if it aborts first. The harness only hands `verify` an `execute` closure; it never calls it itself.
+5. The abandoned-result disposal check consumes two entries when the adapter defines `dispose`, because its wrapper classifies every outcome `retryable` and retries once. Both attempts have to reach and settle, so a `hang` left here stalls the check.
 
-Budget the script accordingly. A test that asserts cancellation fails when the adapter ignores it, which is how the harness is shown to catch a mis-declared adapter:
+Budget the script in that order, and remember that a check consuming fewer entries than expected shifts every check after it. A test that asserts cancellation fails when the adapter ignores it, which is how the harness is shown to catch a mis-declared adapter:
 
 ```ts
 const adapter = createScriptedAdapter<void, string>({
   capabilities: { abort: "supported", replay: "safe" },
   outcomes: [
-    { status: "success", value: "ok" },       // lifecycle check
-    { status: "hang", abort: "ignore" },      // abort check
+    { status: "success", value: "ok" },       // lifecycle: its one execute()
+    { status: "hang", abort: "ignore" },      // abort: consumed only if verify executes first
   ],
 })
 ```
