@@ -16,7 +16,7 @@ npm run test:all            # check, then the generated and integration suites
 
 **Unit** tests cover the core operation runtime, all policies, and both adapters without any external dependencies. They run in under 3 seconds.
 
-**Property** tests use fast-check to verify invariants across generated histories: the circuit breaker state machine, the local GCRA rate limiter (admission arithmetic, burst envelope, the exact `retryAfterMs`, and `snapshot()`), and local bulkhead permit accounting (occupancy, queue timeouts, lease reclaim, FIFO handoff). They derive from a random seed by default and honour `CARACAL_TEST_SEED` for replay.
+**Property** tests use fast-check to verify invariants across generated histories: the circuit breaker state machine, the local GCRA rate limiter (admission arithmetic, burst envelope, the exact `retryAfterMs`, and `snapshot()`), local bulkhead permit accounting (occupancy, queue timeouts, lease reclaim, FIFO handoff), and the scripted adapter's queue accounting (one entry consumed per execution, in invocation order, with no repeated final entry). They derive from a random seed by default and honour `CARACAL_TEST_SEED` for replay.
 
 **Fuzz** tests run a seeded random event-history generator against the circuit breaker to confirm no invalid state transitions occur under adversarial sequences. Both generated suites are built with `test/support/seed.ts`, which owns the seed, the depth multiplier, and the replay instruction every failure prints.
 

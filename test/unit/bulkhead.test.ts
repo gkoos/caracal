@@ -13,6 +13,7 @@ import {
   TimeoutError,
   timeout,
 } from "../../src/index.js"
+import { createScriptedAdapter } from "../harness/index.js"
 import { Deferred } from "../support/deferred.js"
 
 const traits = () => ({
@@ -68,6 +69,52 @@ describe("local bulkhead", () => {
           expect(policy.snapshot().occupancy).toBe(0)
         }
       }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it("keeps a permit while scripted work ignores cancellation past the caller's timeout", async () => {
+    vi.useFakeTimers()
+    try {
+      const capacity = bulkhead.local({ name: "ignored-abort", limit: 1 })
+      const adapter = createScriptedAdapter<undefined, string>({
+        capabilities: { abort: "supported", replay: "safe" },
+        outcomes: [
+          { status: "success", value: "late", delayMs: 40, abort: "ignore" },
+        ],
+      })
+      const events: OperationEvent[] = []
+      const op = operation({
+        name: "ignored-abort",
+        adapter,
+        policies: [timeout({ ms: 10 }), capacity],
+        events: { emit: (event) => events.push(event) },
+      })
+
+      const call = expect(op.execute(undefined)).rejects.toBeInstanceOf(
+        TimeoutError,
+      )
+      await vi.advanceTimersByTimeAsync(10)
+      await call
+
+      // The timeout requested cancellation; the adapter ignored it, so the
+      // permit is still held by work the caller has already abandoned.
+      expect(events.find((e) => e.type === "timeout.triggered")).toMatchObject({
+        abortRequested: true,
+      })
+      expect(capacity.snapshot().occupancy).toBe(1)
+      await expect(op.execute(undefined)).rejects.toBeInstanceOf(
+        BulkheadRejectedError,
+      )
+      // The refused call never reached the adapter, so it consumed no entry.
+      expect(adapter.calls).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(30)
+      expect(capacity.snapshot().occupancy).toBe(0)
+      expect(adapter.calls).toHaveLength(1)
+      // The abandoned work still settled, after the caller was gone.
+      expect(events.filter((e) => e.type === "attempt.settled")).toHaveLength(1)
+      expect(vi.getTimerCount()).toBe(0)
     } finally {
       vi.useRealTimers()
     }

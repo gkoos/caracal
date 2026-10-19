@@ -13,6 +13,7 @@ import {
   TimeoutError,
   timeout,
 } from "../../src/index.js"
+import { createScriptedAdapter } from "../harness/index.js"
 import { Deferred } from "../support/deferred.js"
 
 // ---------------------------------------------------------------------------
@@ -607,23 +608,24 @@ describe("circuitBreaker.local — composition with retry", () => {
       minimumThroughput: 1,
       failureThreshold: 0.5,
     })
-    let attempts = 0
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities: { abort: "unsupported", replay: "safe" },
+      classify: () => "retryable",
+      // Five entries model the retry bound; only the first should be reached.
+      outcomes: Array.from({ length: 5 }, () => ({
+        status: "failure" as const,
+        error: new Error("fail"),
+      })),
+    })
     const op = operation({
       name: "work",
-      adapter: {
-        capabilities: () => ({ abort: "unsupported", replay: "safe" }),
-        classify: () => "retryable",
-        execute: async () => {
-          attempts++
-          throw new Error("fail")
-        },
-      },
+      adapter,
       policies: [retry({ maxAttempts: 5 }), policy],
       events: { emit: (e) => events.push(e) },
     })
     await op.execute(undefined).catch(() => {})
     // First attempt opens the breaker; subsequent retries are rejected by it.
-    expect(attempts).toBe(1)
+    expect(adapter.calls).toHaveLength(1)
     expect(events.some((e) => e.type === "breaker.rejected")).toBe(true)
   })
 
@@ -633,18 +635,19 @@ describe("circuitBreaker.local — composition with retry", () => {
       name: "p",
       minimumThroughput: 10,
     })
-    let attempts = 0
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities: { abort: "unsupported", replay: "safe" },
+      classify: (outcome) =>
+        outcome.status === "failure" ? "retryable" : "success",
+      outcomes: [
+        { status: "failure", error: new Error("retryable") },
+        { status: "failure", error: new Error("retryable") },
+        { status: "success", value: "ok" },
+      ],
+    })
     const op = operation({
       name: "work",
-      adapter: {
-        capabilities: () => ({ abort: "unsupported", replay: "safe" }),
-        classify: (o) =>
-          o.status === "failure" && attempts < 3 ? "retryable" : "success",
-        execute: async () => {
-          if (++attempts < 3) throw new Error("retryable")
-          return "ok"
-        },
-      },
+      adapter,
       policies: [policy, retry({ maxAttempts: 3 })],
       events: { emit: (e) => events.push(e) },
     })
@@ -653,7 +656,7 @@ describe("circuitBreaker.local — composition with retry", () => {
     expect(events.filter((e) => e.type === "breaker.observation")).toHaveLength(
       1,
     )
-    expect(attempts).toBe(3)
+    expect(adapter.calls).toHaveLength(3)
   })
 })
 
