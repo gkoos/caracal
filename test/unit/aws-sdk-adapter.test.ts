@@ -134,6 +134,27 @@ describe("awsSdkAdapter execution", () => {
     expect(client.sent).toHaveLength(1)
   })
 
+  it("constructs a command for capability resolution and again for execution", async () => {
+    let built = 0
+    const client = fakeClient([() => "ok"])
+    const adapter = awsSdkAdapter({
+      client,
+      command: () => {
+        built += 1
+        return new GetItemCommand()
+      },
+    })
+
+    expect(adapter.capabilities({}).replay).toBe("safe")
+    expect(built).toBe(1)
+
+    built = 0
+    const subject = operation({ name: "aws-factory-calls", adapter })
+    await subject.execute({})
+    expect(built).toBeGreaterThanOrEqual(2)
+    expect(client.sent).toHaveLength(1)
+  })
+
   it("builds a fresh command for every attempt", async () => {
     const client = fakeClient([
       () => {
@@ -257,6 +278,25 @@ describe("awsSdkError classification", () => {
     [
       "SlowDown",
       { name: "SlowDown", $metadata: { httpStatusCode: 503 } },
+      "retryable",
+    ],
+    [
+      "RequestThrottled",
+      { name: "RequestThrottled", $metadata: { httpStatusCode: 400 } },
+      "retryable",
+    ],
+    [
+      "Throttling",
+      { name: "Throttling", $metadata: { httpStatusCode: 400 } },
+      "retryable",
+    ],
+    [
+      "an empty $retryable marker",
+      {
+        name: "SomeModeledError",
+        $retryable: {},
+        $metadata: { httpStatusCode: 400 },
+      },
       "retryable",
     ],
     [

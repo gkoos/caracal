@@ -35,6 +35,16 @@ function clientConfig(target: string) {
   }
 }
 
+function sqsConfig(target: string) {
+  return {
+    ...clientConfig(target),
+    // The explicit endpoint already wins in the SDK's queue-url middleware, but
+    // disable the QueueUrl override explicitly so a future change cannot make
+    // these tests bypass the fault proxy.
+    useQueueUrlAsEndpoint: false,
+  }
+}
+
 async function waitFor(
   condition: () => boolean,
   timeoutMs: number,
@@ -68,7 +78,7 @@ describeAws("AWS SDK adapter integration", () => {
   const tableName = `caracal-${suffix}`
   let queueUrl = ""
 
-  const sqs = new SQSClient(clientConfig(target))
+  const sqs = new SQSClient(sqsConfig(target))
   const dynamo = new DynamoDBClient(clientConfig(target))
 
   beforeAll(async () => {
@@ -154,7 +164,7 @@ describeAws("AWS SDK adapter integration", () => {
       upstream: target,
       mode: { kind: "hang" },
     })
-    const client = new SQSClient(clientConfig(proxy.url))
+    const client = new SQSClient(sqsConfig(proxy.url))
     try {
       const subject = operation({
         name: "aws-abort",
@@ -213,7 +223,7 @@ describeAws("AWS SDK adapter integration", () => {
       upstream: target,
       mode: { kind: "fail-after-upstream", requests: 1 },
     })
-    const client = new SQSClient(clientConfig(proxy.url))
+    const client = new SQSClient(sqsConfig(proxy.url))
     const events: OperationEvent[] = []
     try {
       const subject = operation({
