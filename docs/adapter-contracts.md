@@ -47,6 +47,8 @@ Capabilities are declared per invocation, before any policy runs, and may vary b
 
 Declare these accurately, **Caracal never infers them**. An adapter that ignores `context.signal` but declares `abort: "supported"` will cause timeouts to appear to work while the underlying work continues silently.
 
+The AWS SDK v3 adapter is the clearest case for per-invocation capabilities: `GetItem` is replay-safe, `SendMessage` is not, so a single blanket declaration would be wrong in one direction or the other. It derives `replay` from the command and lets the caller override it; see [AWS SDK v3 adapter](aws-sdk.md).
+
 Likewise, `replay: "safe"` reports an existing guarantee; it does not make an unsafe side effect idempotent. A request key is sufficient only when the downstream enforces it for the invocation being repeated. See [who provides idempotency](timeout-and-retry.md#who-provides-idempotency) and the fetch and PostgreSQL examples linked there.
 
 ### Classification

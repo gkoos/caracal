@@ -143,6 +143,43 @@ jobs:
           CARACAL_POSTGRES_URL: postgresql://caracal:caracal@127.0.0.1:5432/caracal_test
           CARACAL_REDIS_URL: redis://127.0.0.1:6379
 
+  integration-aws:
+    name: AWS SDK integration tests (Floci)
+    runs-on: ubuntu-latest
+    services:
+      floci:
+        image: floci/floci:latest
+        ports:
+          - 4566:4566
+        env:
+          FLOCI_STORAGE_MODE: memory
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for Floci
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4566/_localstack/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Floci did not become ready" >&2
+          exit 1
+
+      - name: AWS SDK integration tests
+        run: npm run test:integration:aws
+        env:
+          CARACAL_AWS_ENDPOINT: http://127.0.0.1:4566
+
   soak:
     name: Soak and chaos (Valkey)
     runs-on: ubuntu-latest

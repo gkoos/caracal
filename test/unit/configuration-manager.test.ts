@@ -5,7 +5,6 @@ import {
   encodeConfigurationRecord,
   resolveConfiguration,
 } from "../../src/core/configuration.js"
-import type { ConfigurationSettings } from "../../src/core/configuration.js"
 import { coordinationKey } from "../../src/coordination/redis/keys.js"
 import {
   CoordinatorUnavailableError,

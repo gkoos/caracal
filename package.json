@@ -50,6 +50,10 @@
       "types": "./dist/postgres.d.ts",
       "import": "./dist/postgres.js"
     },
+    "./aws-sdk": {
+      "types": "./dist/aws-sdk.d.ts",
+      "import": "./dist/aws-sdk.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
@@ -92,6 +96,9 @@
     "postgres:up": "docker compose up -d --wait postgres",
     "postgres:down": "docker compose down",
     "test:integration:postgres": "node scripts/test-postgres.mjs",
+    "floci:up": "docker compose --profile aws up -d floci",
+    "floci:down": "docker compose --profile aws down",
+    "test:integration:aws": "node scripts/test-aws.mjs",
     "redis:cluster:up": "docker compose -f compose.cluster.yaml up -d --wait",
     "redis:cluster:logs": "docker compose -f compose.cluster.yaml logs -f valkey-cluster",
     "redis:cluster:down": "docker compose -f compose.cluster.yaml down",
@@ -105,6 +112,8 @@
     "version": "changeset version && node scripts/sync-security-versions.mjs"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1153.0",
+    "@aws-sdk/client-sqs": "^3.1153.0",
     "@biomejs/biome": "^2.5.12",
     "@changesets/cli": "^3.0.2",
     "@types/node": "^22.0.0",

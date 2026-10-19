@@ -12,6 +12,7 @@ Start with the [project README](../README.md) for installation and a first opera
 | [Events and observability](events-and-observability.md) | every event, its fields and its `reason` values |
 | [Fetch adapter](fetch.md) | capability declaration, response classification, `Retry-After` |
 | [Postgres adapter](postgres.md) | statement execution as an operation |
+| [AWS SDK v3 adapter](aws-sdk.md) | per-command replay, cancellation, structured error classification |
 | [Redis coordination](redis.md) | scripts, topology, ACL grants, knob consistency |
 | [Operations](operations.md) | what one scope costs, retention, namespace lifetime, per-group coordinators |
 | [Writing your own adapter](adapter-contracts.md) | the contract harness and what it checks |

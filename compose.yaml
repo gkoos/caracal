@@ -26,3 +26,14 @@ services:
       retries: 15
     tmpfs:
       - /var/lib/postgresql/data
+
+  # The AWS dependency for the AWS SDK adapter integration suite. Floci accepts
+  # any non-empty credentials; the suite uses `test`/`test`, so no real account
+  # or credential is involved. The `aws` profile keeps it out of the default up.
+  floci:
+    image: floci/floci:latest
+    profiles: ["aws"]
+    ports:
+      - "4566:4566"
+    environment:
+      FLOCI_STORAGE_MODE: memory

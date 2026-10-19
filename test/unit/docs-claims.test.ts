@@ -43,6 +43,7 @@ const ENTRY_DOCS: Record<string, readonly string[]> = {
   "src/redis.ts": ["docs/redis.md"],
   "src/fetch.ts": ["docs/fetch.md"],
   "src/postgres.ts": ["docs/postgres.md"],
+  "src/aws-sdk.ts": ["docs/aws-sdk.md"],
   "test/harness/index.ts": ["docs/adapter-contracts.md"],
 }
 

@@ -6,6 +6,7 @@ export default defineConfig({
     redis: "src/redis.ts",
     fetch: "src/fetch.ts",
     postgres: "src/postgres.ts",
+    "aws-sdk": "src/aws-sdk.ts",
     "testing/index": "test/harness/index.ts",
   },
   format: ["esm"],

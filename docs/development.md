@@ -126,6 +126,17 @@ npm run postgres:down
 
 `CARACAL_POSTGRES_URL` overrides the connection string, but the helper still starts the local Compose service. To run against an existing instance without Compose, export the URL and use `npm run test:integration` directly.
 
+## AWS SDK integration environment
+
+```sh
+npm run test:integration:aws
+npm run floci:down
+```
+
+`npm run test:integration:aws` starts [Floci](https://github.com/floci-io/floci) from `compose.yaml`, sets `CARACAL_AWS_ENDPOINT` (default `http://127.0.0.1:4566`), and runs the SQS/DynamoDB integration suite against it. Floci accepts any non-empty credentials; the suite uses `test`/`test`, so no real AWS account is involved. The helper leaves the service running for inspection.
+
+`CARACAL_AWS_ENDPOINT` overrides the endpoint and skips Compose, so an existing Floci or LocalStack instance can be used.
+
 ## Redis Cluster integration environment
 
 The cluster suite needs a real cluster, so it is a local gate rather than a CI job:
