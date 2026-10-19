@@ -105,11 +105,19 @@ check(
   `Exports include runAdapterContractSuite`,
   testingKeys.includes("runAdapterContractSuite"),
 )
+check(
+  `Exports include createScriptedAdapter`,
+  testingKeys.includes("createScriptedAdapter"),
+)
 
 const testingSource = readFileSync("dist/testing/index.js", "utf8")
 check(
   "Testing harness does not reference ioredis",
   !testingSource.includes("ioredis"),
+)
+check(
+  "Testing harness does not reference a test runner",
+  !testingSource.includes("vitest"),
 )
 
 // ---------------------------------------------------------------------------

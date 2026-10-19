@@ -1,27 +1,21 @@
 import { describe, expect, it } from "vitest"
-import type {
-  Adapter,
-  EventSink,
-  OperationEvent,
-  Outcome,
-} from "../../src/index.js"
+import type { EventSink, OperationEvent, Outcome } from "../../src/index.js"
 import { operation, retry } from "../../src/index.js"
+import { createScriptedAdapter } from "../harness/index.js"
 
 describe("retry", () => {
   it("retries thrown, adapter-classified failures up to the configured bound", async () => {
-    const attempts: number[] = []
     const events: OperationEvent[] = []
-    const adapter: Adapter<void, string> = {
-      capabilities: () => ({ abort: "unsupported", replay: "safe" }),
-      execute: async (_args, context) => {
-        attempts.push(context.attempt)
-        if (context.attempt < 3) {
-          throw new Error(`failure-${context.attempt}`)
-        }
-        return "recovered"
-      },
-      classify: () => "retryable",
-    }
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities: { abort: "unsupported", replay: "safe" },
+      classify: (outcome) =>
+        outcome.status === "failure" ? "retryable" : "success",
+      outcomes: [
+        { status: "failure", error: new Error("failure-1") },
+        { status: "failure", error: new Error("failure-2") },
+        { status: "success", value: "recovered" },
+      ],
+    })
     const subject = operation({
       name: "retry-errors",
       adapter,
@@ -30,25 +24,24 @@ describe("retry", () => {
     })
 
     await expect(subject.execute(undefined)).resolves.toBe("recovered")
-    expect(attempts).toEqual([1, 2, 3])
+    expect(adapter.calls.map((call) => call.context.attempt)).toEqual([1, 2, 3])
     expect(
       events.filter((event) => event.type === "retry.scheduled"),
     ).toHaveLength(2)
   })
 
   it("retries returned results that the adapter classifies as failures", async () => {
-    const attempts: number[] = []
-    const adapter: Adapter<void, number> = {
-      capabilities: () => ({ abort: "unsupported", replay: "safe" }),
-      execute: async (_args, context) => {
-        attempts.push(context.attempt)
-        return context.attempt === 1 ? 503 : 200
-      },
+    const adapter = createScriptedAdapter<undefined, number>({
+      capabilities: { abort: "unsupported", replay: "safe" },
       classify: (outcome) =>
         outcome.status === "success" && outcome.value === 503
           ? "retryable"
           : "success",
-    }
+      outcomes: [
+        { status: "success", value: 503 },
+        { status: "success", value: 200 },
+      ],
+    })
     const subject = operation({
       name: "retry-results",
       adapter,
@@ -56,39 +49,39 @@ describe("retry", () => {
     })
 
     await expect(subject.execute(undefined)).resolves.toBe(200)
-    expect(attempts).toEqual([1, 2])
+    expect(adapter.calls.map((call) => call.context.attempt)).toEqual([1, 2])
   })
 
   it("does not start an attempt after caller cancellation", async () => {
     const controller = new AbortController()
     const cancellation = new Error("caller cancelled")
     controller.abort(cancellation)
-    let calls = 0
+    const adapter = createScriptedAdapter<undefined, string>({
+      capabilities: { abort: "unsupported", replay: "safe" },
+      outcomes: [{ status: "success", value: "unexpected" }],
+    })
     const subject = operation({
       name: "cancelled-retry",
-      adapter: {
-        capabilities: () => ({ abort: "unsupported", replay: "safe" }),
-        execute: async () => {
-          calls += 1
-          return "unexpected"
-        },
-      },
+      adapter,
       policies: [retry({ maxAttempts: 2 })],
     })
 
     await expect(
       subject.execute(undefined, { signal: controller.signal }),
     ).rejects.toBe(cancellation)
-    expect(calls).toBe(0)
+    expect(adapter.calls).toHaveLength(0)
   })
 
   it("returns the final classified result after the attempt bound is exhausted", async () => {
     const events: OperationEvent[] = []
-    const adapter: Adapter<void, number> = {
-      capabilities: () => ({ abort: "unsupported", replay: "safe" }),
-      execute: async () => 503,
+    const adapter = createScriptedAdapter<undefined, number>({
+      capabilities: { abort: "unsupported", replay: "safe" },
       classify: () => "retryable",
-    }
+      outcomes: [
+        { status: "success", value: 503 },
+        { status: "success", value: 503 },
+      ],
+    })
     const subject = operation({
       name: "exhausted-retry",
       adapter,

@@ -13,3 +13,10 @@ export {
   defineAdapterContractSuite,
   runAdapterContractSuite,
 } from "./adapter-contract.js"
+export type {
+  ScriptedAdapter,
+  ScriptedAdapterOptions,
+  ScriptedCall,
+  ScriptedStep,
+} from "./scripted-adapter.js"
+export { createScriptedAdapter } from "./scripted-adapter.js"
