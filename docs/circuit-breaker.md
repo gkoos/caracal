@@ -181,6 +181,21 @@ Retention is per `(operation, scope)` and covers **only non-closed states**. A C
 
 [Operations](operations.md) covers the consequences of that retention across many scopes, the namespace lifetime rule that goes with it, and per-group coordinators.
 
+### Delegated verdicts
+
+`circuitBreaker.distributed` accepts any `BreakerCoordinator`, so a coordinator may serve the
+admission decision from locally held authority instead of reading Redis per admission. Serval's
+cached-verdict breaker is exactly that (`docs/serval.md`, Phase 2): a warm, valid cached CLOSED
+verdict admits with no round trip, a cached OPEN rejects locally until its cooldown elapses, and the
+strict coordinator stays authoritative for every transition, probe and settlement.
+
+Two reply fields exist for that: an observation that opens the breaker reports the server's
+`openedAt`, and a probe settlement that re-opens it reports the same. Both are optional, so a custom
+coordinator keeps compiling and an existing one keeps behaving identically; the policy ignores them.
+`openedAt` is a server-clock reading, which a client cannot turn into a local deadline without the
+server's clock - see the cooldown note in `docs/serval.md`, decision 2, for how the delegated
+coordinator stays conservative without it.
+
 ### Half-open probe arbitration
 
 - At most `halfOpenProbes` concurrent probes are admitted globally per scope. Enforced at the Redis level, not just per-process.

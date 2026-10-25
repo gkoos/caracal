@@ -153,6 +153,14 @@ reply never resets the deadline", "clock jumps do not lengthen a grant".
 - Once `now >= cooldownEligibleAt`, one eligible request per identity attempts authoritative
   `admitProbe()` even while the cached verdict still says OPEN. Concurrent local attempts are
   coalesced into that single in-flight probe.
+- The cooldown's **origin** is the instant this process adopted the OPEN verdict, and its length is
+  the policy's `openMs`. The strict protocol reports the server's open time but not the server's
+  clock, so a client cannot convert that timestamp into a local deadline; anchoring to the adoption
+  instant instead is conservative, because a verdict is adopted at or after the moment the breaker
+  opened. A probe that still arrives early - a shortened cooldown, or a client clock that leads the
+  server's - is refused by the authority, and the refusal re-anchors the local cooldown so one skewed
+  replica cannot probe on every request. The open time is retained for diagnostics and for a later
+  phase that can measure the clock offset.
 - A read alone never performs OPEN to HALF_OPEN. HALF_OPEN exists only as an authoritative
   reservation. If Redis is unavailable, the process rejects rather than fabricating a probe.
 - A cached CLOSED admits only within its configured freshness allowance; after that the explicit
@@ -549,6 +557,7 @@ Phases 0 and 1 are implemented; nothing after them is.
 |---|---|
 | 0 | These two pages, and the executable reference model with one acceptance group per mandatory decision |
 | 1 | The shared session under `src/coordination/serval/`: `authority.ts` (vocabulary, versioning, conservative expiry, incarnation tracking), `cache.ts` (the bounded pinned registry), `metrics.ts`, `scheduler.ts`, `notifications.ts` (versioned invalidations and the Redis pub/sub transport), `reconciliation.ts` and `session.ts`; plus the deterministic test infrastructure and the generated histories |
+| 2 | `breaker.ts`: the cached-verdict breaker. It is a `BreakerCoordinator`, so `circuitBreaker.distributed({ coordinator })` opts in with no change to the policy or to the strict coordinator. The strict observe/settle replies now carry the server's open time and the configuration revision, so a replica that saw a transition refreshes without a read |
 
 The session is deliberately **not** reachable from a package entry point yet: the public opt-in API
 arrives with the policy coordinators (Phases 2 to 4) and is finalised in Phase 6, so no configuration
@@ -577,6 +586,16 @@ Phase 1's session has its own deterministic infrastructure and cases:
 | `test/unit/serval-session.test.ts` | Identity, the scope registry, lifecycle, authority application, reconciliation and diagnostics |
 | `test/unit/serval-notifications.test.ts` | The invalidation codec, the Redis transport and the channel |
 | `test/unit/serval-reconciliation.test.ts` | The reconciler on its own: coalescing, malformed snapshots, rollback and a clean stop |
+
+Phase 2 adds the breaker's own cases:
+
+| Artefact | Role |
+|---|---|
+| `test/support/serval/fake-breaker-authority.ts` | A scriptable strict coordinator: a small state machine that counts every call, can fail the next ones, and can hold a probe open so an in-flight attempt is observable |
+| `test/support/serval/breaker-history.ts` | The generated breaker history, checking each admission against the authority's own state |
+| `test/unit/serval-breaker.test.ts` | The fast path, the cooldown, probe coalescing, outage protection, convergence, the stale-CLOSED behaviours and the end-to-end policy path |
+| `test/property/serval-breaker.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
+| `test/integration/serval-breaker.redis.integration.test.ts` | The measured claims against a real Redis: zero admission reads while the cached verdict is valid, and recovery through the strict probe path after the cooldown |
 
 The reference model is the specification's proof obligation for Phase 0, and the fake authority plus
 the deterministic scheduler play that role for the session. Phase 2 onwards replaces the fakes with

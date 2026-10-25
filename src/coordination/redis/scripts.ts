@@ -174,10 +174,15 @@ return {1, allowed, retryAfterMs, revision, changedAt, body}
  * ARGV[7] = openMs                how long to stay OPEN; closed hash TTL = openMs×2
  * ARGV[8] = uuid                  unique string for member deduplication
  *
- * Returns: {status, stateCode, generation, windowTotal, windowFailures}
+ * Returns: {status, stateCode, generation, windowTotal, windowFailures, openedAt}
  *   status 0 = stale  (dropped; generation or state mismatch)
  *   status 1 = observed, no transition  (remained closed)
  *   status 2 = observed, breaker opened (stateCode=1, generation incremented)
+ *
+ * `openedAt` is the server's clock reading at which the breaker opened, or 0 when
+ * the reply is not about an open breaker.  It is the authoritative origin of the
+ * recovery cooldown, so a replica that saw the transition can compute its own
+ * cooldown from the server's time instead of guessing from the receipt time.
  *
  * TTL policy:
  *   OPEN state  → PERSIST (no expiry).  A missing key is treated as closed by
@@ -268,19 +273,20 @@ end
 local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
-local f   = redis.call('HMGET', KEYS[1], 'state', 'generation')
+local f   = redis.call('HMGET', KEYS[1], 'state', 'generation', 'openedAt')
 local state = f[1] or 'closed'
 local gen   = tonumber(f[2]) or 0
+local openedAt = tonumber(f[3]) or 0
 if state ~= 'closed' then
   local sc = (state == 'open' and 1) or (state == 'half-open' and 2) or 0
-  return {0, sc, gen, 0, 0}
+  return {0, sc, gen, 0, 0, openedAt}
 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
   -- No live state hash: a scope we have never seen, or a hash that was lost
   -- while its window survived.
   if expectGen ~= 0 then
     -- The caller holds a generation this key cannot confirm.
-    return {0, 0, 0, 0, 0}
+    return {0, 0, 0, 0, 0, 0}
   end
   if redis.call('EXISTS', KEYS[2]) == 1 then
     -- Members from a superseded epoch are still here.  Mint an epoch that has
@@ -301,7 +307,7 @@ if redis.call('EXISTS', KEYS[1]) == 0 then
   redis.call('HSET', KEYS[1], 'state', 'closed', 'generation', gen,
              'openedAt', 0, 'probeCount', 0, 'probeSuccesses', 0)
 elseif gen ~= expectGen then
-  return {0, 0, gen, 0, 0}
+  return {0, 0, gen, 0, 0, 0}
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - windowTtl)
 local member = tostring(gen) .. ':' .. uuid .. ':' .. outcome
@@ -328,14 +334,14 @@ if wTotal >= minTP and wFail * 1000 >= threshNum * wTotal then
   -- OPEN state must never expire: a missing key is treated as closed,
   -- which would silently admit unrestricted traffic and reset the generation.
   redis.call('PERSIST', KEYS[1])
-  return {2, 1, gen, wTotal, wFail}
+  return {2, 1, gen, wTotal, wFail, now}
 end
 if redis.call('EXISTS', KEYS[1]) == 1 then
   -- Still CLOSED.  The cleanup TTL must not expire the state before the window
   -- it governs, otherwise retained members would survive their epoch.
   redis.call('PEXPIRE', KEYS[1], math.max(closedCleanup, windowTtl))
 end
-return {1, 0, gen, wTotal, wFail}
+return {1, 0, gen, wTotal, wFail, 0}
 end
 local result = decide()
 local out = {1, revision, changedAt}
@@ -444,7 +450,7 @@ return out
  * ARGV[6] = windowTtlMs         observation retention (TTL floor): the CLOSED
  *                               hash must outlive the window it governs
  *
- * Returns: {status, stateCode, generation}
+ * Returns: {status, stateCode, generation, openedAt}
  *   status 0 = stale  (token missing, lease elapsed, or generation mismatch;
  *              the result is dropped and any consumed token is released)
  *   status 1 = settled, no state transition  (still HALF_OPEN; an "ignored"
@@ -452,6 +458,10 @@ return out
  *   status 2 = settled, state transition occurred
  *     stateCode 0 = transitioned to CLOSED
  *     stateCode 1 = transitioned back to OPEN  (probe failure)
+ *
+ * `openedAt` is the server's clock reading at which the breaker re-opened, or 0
+ * when this settle did not open it.  It is the authoritative origin of the
+ * recovery cooldown for the replica that observed the transition.
  *
  * A token carries its own deadline as its sorted-set score.  When the lease has
  * elapsed the slot is already recoverable - admitProbe prunes expired tokens
@@ -484,7 +494,7 @@ local sc = (state == 'open' and 1) or (state == 'half-open' and 2) or 0
 local deadline = redis.call('ZSCORE', KEYS[2], probeToken)
 if not deadline then
   -- Never admitted, already settled, or dropped with its recovery window.
-  return {0, sc, gen}
+  return {0, sc, gen, 0}
 end
 redis.call('ZREM', KEYS[2], probeToken)
 if tonumber(deadline) <= now then
@@ -493,13 +503,13 @@ if tonumber(deadline) <= now then
   -- occupied so the probe count keeps matching the token set.
   probeCnt = math.max(0, probeCnt - 1)
   redis.call('HSET', KEYS[1], 'probeCount', probeCnt)
-  return {0, sc, gen}
+  return {0, sc, gen, 0}
 end
 if state ~= 'half-open' or gen ~= expectGen then
   -- Unreachable while every generation change also discards the probe set: a
   -- token from another generation is already gone by the time it is looked up
   -- above. Kept as a guard in case that invariant is ever broken.
-  return {0, sc, gen}
+  return {0, sc, gen, 0}
 end
 probeCnt = math.max(0, probeCnt - 1)
 if outcome == 'ignored' then
@@ -511,7 +521,7 @@ if outcome == 'ignored' then
   redis.call('HSET', KEYS[1], 'probeCount', probeCnt)
   -- Still HALF_OPEN: must not expire while recovery is in progress.
   redis.call('PERSIST', KEYS[1])
-  return {1, 2, gen}
+  return {1, 2, gen, 0}
 end
 if outcome == 'failure' then
   gen = gen + 1
@@ -522,7 +532,7 @@ if outcome == 'failure' then
   -- In-flight probes belong to the dead generation; free their slots so the
   -- next recovery window starts with full capacity.
   redis.call('DEL', KEYS[2])
-  return {2, 1, gen}
+  return {2, 1, gen, now}
 end
 probeSucc = probeSucc + 1
 if probeSucc >= halfOpenSucc then
@@ -532,12 +542,12 @@ if probeSucc >= halfOpenSucc then
   -- Newly CLOSED: expire for cleanup, but never before the window it governs.
   redis.call('PEXPIRE', KEYS[1], math.max(closedCleanup, windowTtl))
   redis.call('DEL', KEYS[2])
-  return {2, 0, gen}
+  return {2, 0, gen, 0}
 end
 redis.call('HSET', KEYS[1], 'probeSuccesses', probeSucc, 'probeCount', probeCnt)
 -- Still HALF_OPEN: must not expire while recovery is in progress.
 redis.call('PERSIST', KEYS[1])
-return {1, 2, gen}
+return {1, 2, gen, 0}
 end
 local result = decide()
 local out = {1, revision, changedAt}

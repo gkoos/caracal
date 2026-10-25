@@ -78,7 +78,7 @@ function coordinator(reply: unknown) {
 describe("breaker observe protocol", () => {
   it("declares both keys and the baseline revision", async () => {
     const { subject, calls, keyCounts } = coordinator([
-      1, 3, 111, 1, 0, 0, 4, 1,
+      1, 3, 111, 1, 0, 0, 4, 1, 0,
     ])
     await expect(subject.observe(identity, observeParams)).resolves.toEqual({
       type: "observed",
@@ -91,18 +91,20 @@ describe("breaker observe protocol", () => {
     expect(calls[0]?.[11]).toBe(0)
   })
 
-  it("reports an opening observation", async () => {
-    const { subject } = coordinator([1, 3, 111, 2, 1, 1, 4, 2])
+  it("reports an opening observation with its authoritative open time", async () => {
+    const { subject } = coordinator([1, 3, 111, 2, 1, 1, 4, 2, 1_700_000])
     await expect(subject.observe(identity, observeParams)).resolves.toEqual({
       type: "opened",
       newGeneration: 1,
       windowTotal: 4,
       windowFailures: 2,
+      openedAt: 1_700_000,
+      revision: 3,
     })
   })
 
   it("reports a stale observation", async () => {
-    const { subject } = coordinator([1, 3, 111, 0, 0, 7, 0, 0])
+    const { subject } = coordinator([1, 3, 111, 0, 0, 7, 0, 0, 0])
     await expect(subject.observe(identity, observeParams)).resolves.toEqual({
       type: "stale",
       currentGeneration: 7,
@@ -110,7 +112,7 @@ describe("breaker observe protocol", () => {
   })
 
   it("sends the revision it observed on the next call", async () => {
-    const reply = [1, 3, 111, 1, 0, 0, 4, 1]
+    const reply = [1, 3, 111, 1, 0, 0, 4, 1, 0]
     const { subject, calls } = coordinator(reply)
     await subject.observe(identity, observeParams)
     await subject.observe(identity, observeParams)
@@ -118,7 +120,7 @@ describe("breaker observe protocol", () => {
   })
 
   it("accepts a reply that carries the record body", async () => {
-    const reply = [1, 3, 111, 1, 0, 0, 4, 1, record(3)]
+    const reply = [1, 3, 111, 1, 0, 0, 4, 1, 0, record(3)]
     const { subject, calls } = coordinator(reply)
     await subject.observe(identity, observeParams)
     await subject.observe(identity, observeParams)
@@ -199,14 +201,27 @@ describe("breaker probe protocol", () => {
   })
 
   it("decodes a settlement that closes the breaker", async () => {
-    const { subject, calls } = coordinator([1, 0, 0, 2, 0, 1])
+    const { subject, calls } = coordinator([1, 0, 0, 2, 0, 1, 0])
     await expect(subject.settleProbe(identity, settleParams)).resolves.toEqual({
       type: "transitioned",
       newState: "closed",
       newGeneration: 1,
       previousState: "half-open",
+      revision: 0,
     })
     expect(calls[0]?.[9]).toBe(0)
+  })
+
+  it("decodes a settlement that re-opens the breaker with its open time", async () => {
+    const { subject } = coordinator([1, 4, 111, 2, 1, 3, 1_700_000])
+    await expect(subject.settleProbe(identity, settleParams)).resolves.toEqual({
+      type: "transitioned",
+      newState: "open",
+      newGeneration: 3,
+      previousState: "half-open",
+      openedAt: 1_700_000,
+      revision: 4,
+    })
   })
 })
 

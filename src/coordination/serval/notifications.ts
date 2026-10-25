@@ -181,6 +181,38 @@ export function createRedisNotificationTransport(
   }
 }
 
+/**
+ * The publish capability the Redis invalidation publisher needs.
+ *
+ * ioredis satisfies it structurally; a test double implements it directly, so the
+ * publisher is verifiable without a Redis server.
+ */
+export interface ServalPublisherClient {
+  publish(channel: string, payload: string): Promise<unknown>
+}
+
+/**
+ * Publishes a versioned invalidation.
+ *
+ * Publication is best-effort by contract: a hint that is lost is a hint that
+ * arrives by the next reconciliation, so a failure must never fail the operation
+ * that produced the transition.
+ */
+export interface ServalInvalidationPublisher {
+  publish(payload: string): Promise<void>
+}
+
+export function createRedisInvalidationPublisher(
+  client: ServalPublisherClient,
+  channel: string,
+): ServalInvalidationPublisher {
+  return {
+    async publish(payload) {
+      await client.publish(channel, payload)
+    },
+  }
+}
+
 export type ServalChannelStatus = "idle" | ServalTransportStatus
 
 export interface ServalNotificationChannelOptions {

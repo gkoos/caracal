@@ -717,6 +717,14 @@ export type ObserveResult =
       readonly newGeneration: number
       readonly windowTotal: number
       readonly windowFailures: number
+      /**
+       * Server-clock time the breaker opened, when the coordinator reports one.
+       * It is the authoritative origin of the recovery cooldown, so a cached
+       * verdict never has to guess the cooldown from the receipt time.
+       */
+      readonly openedAt?: number
+      /** Configuration revision this observation was decided under. */
+      readonly revision?: number
     }
 
 export type AdmitProbeResult =
@@ -744,6 +752,13 @@ export type SettleProbeResult =
       readonly newState: BreakerState
       readonly newGeneration: number
       readonly previousState: "half-open"
+      /**
+       * Server-clock time the breaker re-opened, when it transitioned to OPEN.
+       * Zero or absent for a transition to CLOSED, which has no cooldown.
+       */
+      readonly openedAt?: number
+      /** Configuration revision this settlement was decided under. */
+      readonly revision?: number
     }
 
 /**

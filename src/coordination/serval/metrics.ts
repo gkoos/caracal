@@ -23,6 +23,8 @@ export const SERVAL_COUNTERS = [
   "reconnects",
   "authorityApplied",
   "authorityRejected",
+  "invalidationsPublished",
+  "publishFailures",
   "incarnationRetirements",
   "rollbacksSuspected",
   "diagnosticsDropped",

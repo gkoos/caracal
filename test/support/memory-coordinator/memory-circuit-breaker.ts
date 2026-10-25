@@ -136,6 +136,7 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
           newGeneration: rec.generation,
           windowTotal: wTotal,
           windowFailures: wFail,
+          openedAt: now,
         } satisfies ObserveResult
       }
 
@@ -252,6 +253,7 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
           newState: "open",
           newGeneration: rec.generation,
           previousState: "half-open",
+          openedAt: now,
         } satisfies SettleProbeResult
       }
 

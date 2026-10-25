@@ -24,7 +24,9 @@ import {
 } from "./metrics.js"
 import {
   createServalNotificationChannel,
+  encodeServalInvalidation,
   type ServalInvalidation,
+  type ServalInvalidationPublisher,
   type ServalNotificationChannel,
   type ServalNotificationTransport,
 } from "./notifications.js"
@@ -79,6 +81,8 @@ export interface ServalSessionOptions {
   readonly reader: ServalAuthorityReader
   /** Omitted for a reconciliation-only session with no invalidation hints. */
   readonly transport?: ServalNotificationTransport
+  /** Omitted for a session that only consumes hints, never publishes one. */
+  readonly publisher?: ServalInvalidationPublisher
   readonly scheduler?: ServalScheduler
   /** Stable for the process lifetime; generated when omitted. */
   readonly replicaId?: string
@@ -124,6 +128,10 @@ export interface ServalSession {
   readonly authorityIncarnation: string | undefined
   readonly configurationRevision: number
   readonly scopeCount: number
+  /** The registered scopes, in registration order. */
+  scopes(): readonly ServalScopeIdentity[]
+  /** The monotonic clock every local deadline is measured on. */
+  now(): number
   metrics(): ServalMetricsSnapshot
   registerScope(identity: ServalScopeIdentity): ServalScopeRegistration
   unregisterScope(key: string): boolean
@@ -142,6 +150,11 @@ export interface ServalSession {
   }): ServalAuthorityApplication
   /** Retires an incarnation; its delayed messages can no longer be adopted. */
   retireIncarnation(incarnation: string): void
+  /**
+   * Publishes one versioned invalidation, best-effort. Resolves to whether it was
+   * published; a failure is counted and never thrown at the caller.
+   */
+  publish(invalidation: ServalInvalidation): Promise<boolean>
   /** Forces one reconciliation and resolves when it settles. */
   refresh(reason?: ServalRefreshReason): Promise<void>
   start(): Promise<void>
@@ -191,6 +204,7 @@ export function createServalAuthoritySession(
   )
 
   const scheduler = options.scheduler ?? createServalScheduler()
+  const publisher = options.publisher
   const idFactory = options.idFactory ?? randomUUID
   const replicaId = options.replicaId ?? idFactory()
   const replicaIncarnation = options.replicaIncarnation ?? idFactory()
@@ -512,6 +526,39 @@ export function createServalAuthoritySession(
     }
   }
 
+  function scopes(): readonly ServalScopeIdentity[] {
+    return [...registrations.values()].map(
+      (registration) => registration.identity,
+    )
+  }
+
+  function now(): number {
+    return scheduler.now()
+  }
+
+  /**
+   * Publication is best-effort: the transition is already committed, and a hint
+   * that is lost is a hint that arrives by the next reconciliation. A failure is
+   * counted rather than thrown at the caller that produced the transition.
+   */
+  function publish(invalidation: ServalInvalidation): Promise<boolean> {
+    if (closed || publisher === undefined) {
+      return Promise.resolve(false)
+    }
+    return track(
+      publisher.publish(encodeServalInvalidation(invalidation)).then(
+        () => {
+          metrics.count("invalidationsPublished")
+          return true
+        },
+        () => {
+          metrics.count("publishFailures")
+          return false
+        },
+      ),
+    )
+  }
+
   const reconciler: ServalReconciler = createServalReconciler({
     reader: options.reader,
     scheduler,
@@ -647,6 +694,10 @@ export function createServalAuthoritySession(
     get scopeCount() {
       return registrations.size
     },
+
+    scopes,
+    now,
+    publish,
 
     metrics() {
       return metrics.snapshot()
