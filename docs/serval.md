@@ -5,13 +5,14 @@ policies. It keeps Redis as the authority for shared policy state and allocation
 lets each process enforce locally held, time-bounded *authority* on the request path. The ordinary
 admission path then needs no Redis round trip while valid local authority exists.
 
-> **Status: Phase 0 (specification only).** This page and [Serval authority
-> protocol](serval-authority.md) are the RFC and the protocol contracts. No Serval code, option or
-> export ships yet. Phase 0 also delivers an executable reference model
-> (`test/support/serval/reference-model.ts`) whose acceptance cases are the contract's proof
-> obligation - see [Executable contracts](#executable-contracts). The strict Redis coordinators
-> (`redisCoordinator`, `redisCircuitBreakerCoordinator`, `redisRateLimitCoordinator`) remain the
-> supported distributed implementations.
+> **Status: Phase 1.** This page and [Serval authority
+> protocol](serval-authority.md) are the RFC and the protocol contracts. Phase 0 delivered the
+> contracts and the executable reference model; Phase 1 delivered the shared session, its
+> deterministic test infrastructure and its generated histories. **No Serval option or export ships
+> yet** - the session is internal until the policy coordinators land - and the strict Redis
+> coordinators (`redisCoordinator`, `redisCircuitBreakerCoordinator`, `redisRateLimitCoordinator`)
+> remain the supported distributed implementations. See
+> [Implementation status](#implementation-status).
 
 Serval is **not** a drop-in replacement for the strict Redis coordinators. Its consistency and
 failure guarantees differ on purpose, and those differences are stated as a deviation envelope
@@ -434,9 +435,17 @@ Which invariants hold, and under what assumption. Nothing outside this table is 
 
 ## Lifecycle and degraded behaviour
 
-Session states: `uninitialized`, `valid`, `stale`, `refreshing`, `disconnected`, `reconciling`,
-`closed`. Cold start is distinguished from a warm cache, and a Redis failure while CLOSED is
-distinguished from one while OPEN.
+Session states: `uninitialized`, `reconciling`, `valid`, `refreshing`, `stale`, `disconnected`,
+`uncertain`, `closed`. Cold start is distinguished from a warm cache, and a Redis failure while
+CLOSED is distinguished from one while OPEN.
+
+- **`disconnected`** means the process cannot reach the authority: the subscription is down, or no
+  reconciliation has ever succeeded while a read has failed.
+- **`stale`** means the last successful reconciliation is older than its allowance, so cached
+  authority may be outdated even though the connection is up.
+- **`uncertain`** is entered on a suspected rollback - a snapshot older than what is cached, or a
+  retired incarnation reappearing - or on an unfamiliar competing incarnation. It is sticky: only an
+  authoritative reconciliation that sees no rollback clears it.
 
 - **Cold start:** no local authority. The policy follows its configured cold-start behaviour; a
   missing grant is never treated as a valid one.
@@ -532,6 +541,19 @@ The current policy interfaces call the coordinator per admission or per action, 
 path must be explicit: the session-backed coordinator advertises a delegated capability and the
 policy takes the cached path, rather than silently issuing a Redis call per admission.
 
+## Implementation status
+
+Phases 0 and 1 are implemented; nothing after them is.
+
+| Phase | Delivered |
+|---|---|
+| 0 | These two pages, and the executable reference model with one acceptance group per mandatory decision |
+| 1 | The shared session under `src/coordination/serval/`: `authority.ts` (vocabulary, versioning, conservative expiry, incarnation tracking), `cache.ts` (the bounded pinned registry), `metrics.ts`, `scheduler.ts`, `notifications.ts` (versioned invalidations and the Redis pub/sub transport), `reconciliation.ts` and `session.ts`; plus the deterministic test infrastructure and the generated histories |
+
+The session is deliberately **not** reachable from a package entry point yet: the public opt-in API
+arrives with the policy coordinators (Phases 2 to 4) and is finalised in Phase 6, so no configuration
+option is exposed before its semantics are implemented and tested.
+
 ## Executable contracts
 
 Phase 0's contracts are executable, not prose alone:
@@ -540,12 +562,25 @@ Phase 0's contracts are executable, not prose alone:
 |---|---|
 | `test/support/serval/reference-model.ts` | Deterministic reference model: monotonic time, grant ledger, breaker liveness, authority history and fencing, configuration deficits, cache classes, occupancy accounting, bulkhead allocation with freeze-before-return, and rate envelope accounting |
 | `test/support/serval/histories.ts` | Seeded adversarial history generator (delayed, duplicated, reordered and dropped replies; rollback; eviction; cooldown) |
-| `test/unit/serval-authority.test.ts` | One acceptance group per mandatory decision, with the deterministic worked examples |
+| `test/unit/serval-authority.test.ts` | One acceptance group per mandatory decision, with the deterministic worked examples, plus the shared authority vocabulary |
 | `test/property/serval-authority.property.test.ts` | The same invariants over generated adversarial histories, honouring `CARACAL_TEST_SEED` |
 
-The model is the specification's proof obligation, not the implementation: it is deliberately small,
-dependency-free and Redis-free. Phase 1 replaces it as the test oracle only once the shared session
-exists and the model's cases have been ported.
+Phase 1's session has its own deterministic infrastructure and cases:
+
+| Artefact | Role |
+|---|---|
+| `test/support/serval/deterministic-scheduler.ts` | A virtual clock and task queue: time moves only when a test advances it, and pending timers are countable |
+| `test/support/serval/fake-authority.ts` | A scriptable authority: versioned records on the server's clock, plus read failures, a rewound ledger, a held read and a failover |
+| `test/support/serval/notification-transport.ts` | A transport whose delivery, duplication, disconnect and failed open the test controls |
+| `test/support/serval/session-history.ts` | The generated session history with its own oracle for deadlines, versions and bounds |
+| `test/unit/serval-cache.test.ts` | Record classes, pinning, tombstones and refusal under pressure |
+| `test/unit/serval-session.test.ts` | Identity, the scope registry, lifecycle, authority application, reconciliation and diagnostics |
+| `test/unit/serval-notifications.test.ts` | The invalidation codec, the Redis transport and the channel |
+| `test/unit/serval-reconciliation.test.ts` | The reconciler on its own: coalescing, malformed snapshots, rollback and a clean stop |
+
+The reference model is the specification's proof obligation for Phase 0, and the fake authority plus
+the deterministic scheduler play that role for the session. Phase 2 onwards replaces the fakes with
+real Redis integration suites.
 
 ## Implementation phases
 

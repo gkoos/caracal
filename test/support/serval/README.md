@@ -1,20 +1,21 @@
-# Serval authority reference model
+# Serval authority reference model and session test support
 
-This directory holds the Phase 0 executable contracts for Serval: the deterministic reference model
-(`reference-model.ts`) and the seeded adversarial history generator (`histories.ts`).
+This directory holds Serval's executable test infrastructure. It is internal test support only: it
+is never reachable from a package export, and production coordination lives in
+`src/coordination/serval/`.
 
-It is internal test support only. It is deliberately Redis-free and dependency-free, it never runs
-in production, and it is not reachable from any package export. Production coordination will live in
-`src/coordination/serval/` from Phase 1 onward.
+| File | Role |
+|---|---|
+| `reference-model.ts` | The Phase 0 deterministic reference model: one small model per mandatory decision, each recording a violation when a contract invariant breaks |
+| `histories.ts` | Seeded adversarial histories for the reference model (grants, the rate envelope, the bulkhead handoff) with independent oracles |
+| `deterministic-scheduler.ts` | A virtual clock and task queue for the session: time moves only when a test advances it |
+| `fake-authority.ts` | A scriptable authority: versioned records stamped with the server's clock, plus read failures, a held read, a rewound ledger and a failover |
+| `notification-transport.ts` | A transport whose delivery, duplication, disconnect and failed open a test controls |
+| `session-harness.ts` | The session wired to all of the above, plus the identity most tests use |
+| `session-history.ts` | The generated session history, with its own oracle for deadlines, versions and bounds |
 
-The model is the specification's proof obligation, not the implementation:
+The model is the specification's proof obligation, not the implementation. The unit suites
+(`test/unit/serval-*.test.ts`) drive one deterministic acceptance group per decision and per session
+concern, and the generated suites (`test/property/serval-authority.property.test.ts`) replay the
+same models and the session over adversarial histories, honouring `CARACAL_TEST_SEED`.
 
-- Each class in `reference-model.ts` covers one of the eleven mandatory decisions in
-  [`docs/serval.md`](../../../docs/serval.md) and records a *violation* when a contract invariant
-  breaks, so a test fails with the invariant's name.
-- `test/unit/serval-authority.test.ts` drives one deterministic acceptance group per decision,
-  including the worked examples from [`docs/serval-authority.md`](../../../docs/serval-authority.md).
-- `test/property/serval-authority.property.test.ts` replays seeded adversarial histories through the
-  same model, honouring `CARACAL_TEST_SEED` for replay.
-
-Phase 1 ports these cases to the real session and retires this module as the oracle.
