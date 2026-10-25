@@ -13,6 +13,11 @@ is never reachable from a package export, and production coordination lives in
 | `notification-transport.ts` | A transport whose delivery, duplication, disconnect and failed open a test controls |
 | `session-harness.ts` | The session wired to all of the above, plus the identity most tests use |
 | `session-history.ts` | The generated session history, with its own oracle for deadlines, versions and bounds |
+| `fake-breaker-authority.ts` | A scriptable strict breaker coordinator: a state machine that counts every call, can fail the next ones, and can hold a probe open |
+| `breaker-history.ts` | The generated breaker history, checking each admission against the authority's own state |
+| `fake-grant-authority.ts` | A scriptable quota issuer backed by the reference model's token bucket, with a lost reply that may or may not have committed and a held reply |
+| `rate-limit-harness.ts` | The delegated rate limiter wired to a manual clock and that authority |
+| `rate-limit-history.ts` | The generated quota history, with a conservation oracle: no permit is created locally, and admissions never exceed what was granted |
 
 The model is the specification's proof obligation, not the implementation. The unit suites
 (`test/unit/serval-*.test.ts`) drive one deterministic acceptance group per decision and per session
