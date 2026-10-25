@@ -99,6 +99,27 @@ Each admitted permit holds a renewable lease. Caracal renews it at approximately
 
 When using more than one bulkhead, permits are acquired in array order, not atomically. An earlier permit can be held while a later bulkhead waits or rejects. Keep a consistent acquisition order across all operations to avoid contention, and prefer immediate rejection when combining multiple budgets.
 
+## Delegated allocations
+
+`bulkhead.distributed` accepts any `BulkheadCoordinator`, so a coordinator may admit
+against a locally held slot allocation instead of asking Redis per attempt. Serval's
+delegated bulkhead is exactly that (`docs/serval.md`, Phase 4): Redis allocates each
+replica a budget of slots, the process admits within it without a round trip, and the
+budget is renewed, resized and returned out of band.
+
+Three properties are worth knowing before opting in:
+
+- **The fleet limit is a sum of allocations**, not a per-call check. Every modification
+  is validated against the lease revision the caller expects, so a reply that lost a
+  race cannot restore capacity.
+- **Tracked occupancy is this process's accounting, not physical concurrency.** A holder
+  whose downstream work ignores cancellation keeps its slot until it settles, and
+  capacity reclaimed after an allocation's validity lapses can be reallocated while old
+  holders still run - measured, not denied.
+- **Returned capacity is frozen before it is returned.** An unknown outcome keeps it
+  frozen until a retry or a reconciliation settles it, so a slot can never be spent by
+  two processes at once.
+
 ## Events
 
 See [events and observability](events-and-observability.md) for the full event reference. Relevant events: `bulkhead.admitted`, `bulkhead.rejected`, `bulkhead.waited`, `bulkhead.released`, `bulkhead.lease-lost`, `bulkhead.degraded`.

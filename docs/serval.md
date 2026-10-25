@@ -551,7 +551,7 @@ policy takes the cached path, rather than silently issuing a Redis call per admi
 
 ## Implementation status
 
-Phases 0 to 3 are implemented; nothing after them is.
+Phases 0 to 4 are implemented; nothing after them is.
 
 | Phase | Delivered |
 |---|---|
@@ -559,6 +559,7 @@ Phases 0 to 3 are implemented; nothing after them is.
 | 1 | The shared session under `src/coordination/serval/`: `authority.ts` (vocabulary, versioning, conservative expiry, incarnation tracking), `cache.ts` (the bounded pinned registry), `metrics.ts`, `scheduler.ts`, `notifications.ts` (versioned invalidations and the Redis pub/sub transport), `reconciliation.ts` and `session.ts`; plus the deterministic test infrastructure and the generated histories |
 | 2 | `breaker.ts`: the cached-verdict breaker. It is a `BreakerCoordinator`, so `circuitBreaker.distributed({ coordinator })` opts in with no change to the policy or to the strict coordinator. The strict observe/settle replies now carry the server's open time and the configuration revision, so a replica that saw a transition refreshes without a read |
 | 3 | `rate-limit.ts`: delegated admission quotas, plus `rateGrantV1` and `redisRateLimitGrantIssuer` in `caracal/redis`. It is a `RateLimitCoordinator`, so `rateLimit.distributed({ coordinator })` opts in unchanged. Grants are drawn from the **same** GCRA state the strict coordinator uses, so the delegated path is not a second budget |
+| 4 | `bulkhead.ts`: delegated slot allocations, plus `bulkheadAllocationV1` and `redisBulkheadAllocationIssuer` in `caracal/redis`. It is a `BulkheadCoordinator`, so `bulkhead.distributed({ coordinator })` opts in unchanged. The allocation hash has a key suffix of its own, so it can never land on the strict coordinator's lease set |
 
 Three things Phase 3 settles, because they are easy to get wrong:
 
@@ -582,6 +583,31 @@ Retry-after is explicit: a refusal carries the server's own hint, a local refusa
 after losing the race for stock carries the shortest honest wait, and a reply that
 arrived too late to be adopted carries the local estimate of one horizon - the
 documented fallback when the server hint is absent.
+
+Phase 4 adds `bulkhead.ts`: delegated slot allocations, plus `bulkheadAllocationV1`
+and `redisBulkheadAllocationIssuer` in `caracal/redis`. It is a `BulkheadCoordinator`,
+so `bulkhead.distributed({ coordinator })` opts in unchanged. Four things it settles:
+
+- **The fleet limit is a sum of allocations.** The server keeps one counter of granted
+  slots and updates it atomically with every commit, and it validates every
+  modification against the `leaseRevision` the caller expects, so a reply that lost a
+  race can never restore capacity, spendability or a deadline.
+- **A reservation outlives the validity it was granted for.** The allocation's validity
+  decides whether *new* work may start; the reservation keeps its slots reserved for a
+  further grace window, which is what lets a replica reconcile a lost reply before the
+  capacity is handed to someone else. The reservation set is deliberately not given a
+  TTL: it is the counter's source of truth, and an expiring set would leave the fleet's
+  counter inflated for good.
+- **Allocation validity and holder lifetime are separate clocks.** When the validity
+  lapses, new admissions stop and every holder stays recorded, and a holder keeps
+  renewing its own permit. A holder that outlives its allocation is physical work the
+  logical accounting cannot bound, which is why the integration suite *measures* the
+  tracked overshoot instead of claiming a global concurrency bound.
+- **Returned capacity is frozen before it is sent, and only reconciliation unfreezes
+  it.** A reduction is submitted after the slots leave the local spendable pool; an
+  unknown outcome keeps them frozen, and the retry of the same `operationId` is what
+  settles it - idempotently, with the original send-time anchor, so a late commit
+  cannot extend anything either.
 
 The session is deliberately **not** reachable from a package entry point yet: the public opt-in API
 arrives with the policy coordinators (Phases 2 to 4) and is finalised in Phase 6, so no configuration
@@ -631,6 +657,17 @@ Phase 3 adds the rate limiter's cases:
 | `test/unit/serval-rate-limit.test.ts` | The local stock, the issuance operation, expiry without carry, the retry-after hint, the registry bound and the end-to-end policy path |
 | `test/property/serval-rate-limit.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
 | `test/integration/serval-rate-limit.redis.integration.test.ts` | One shared bucket with the strict path, a deduplicated retry that deducts once, measured round trips per admission, the hoarding cap and contention |
+
+Phase 4 adds the bulkhead's cases:
+
+| Artefact | Role |
+|---|---|
+| `test/support/serval/fake-allocation-authority.ts` | A server model: one counter of granted slots, one allocation per replica, a reservation that outlives validity, and an idempotent operation ledger - plus an oracle that fires when the server grants past its limit, counts a renewal as capacity, or holds two allocations for one replica |
+| `test/support/serval/bulkhead-harness.ts` | The coordinator wired to a shared manual clock and that authority, so replicas can be advanced together |
+| `test/support/serval/bulkhead-history.ts` | The generated allocation history: concurrent admissions, releases, renewals, voluntary returns, outages and lost replies |
+| `test/unit/serval-bulkhead.test.ts` | The local allocation, demand-driven growth, the lapsed allocation with holders retained, renewal as a non-grant, the send-time anchor, freeze-before-return, a lost reply settled by retry, shutdown, the registry bound and the policy path |
+| `test/property/serval-bulkhead.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
+| `test/integration/serval-bulkhead.redis.integration.test.ts` | Allocations summed across replicas, renewal that adds no capacity, the freeze-before-return handoff, and the measured tracked overshoot a reclaimed allocation permits |
 
 The reference model is the specification's proof obligation for Phase 0, and the fake authority plus
 the deterministic scheduler play that role for the session. Phase 2 onwards replaces the fakes with

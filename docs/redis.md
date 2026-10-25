@@ -82,6 +82,10 @@ Every coordination slot is keyed by `caracal:v1:{sha256(JSON([namespace, policy,
 | Suffix | Policy | Purpose |
 |--------|--------|---------|
 | `leases` | bulkhead | Active permit sorted set |
+| `allocation` | bulkhead (delegated) | Allocation hash: `replicaId` → `grantId\|revision\|slots\|expiresAt` |
+| `allocation-expiry` | bulkhead (delegated) | Reservations and operation-ledger entries, scored by reservation end |
+| `allocated` | bulkhead (delegated) | Slots granted across the fleet (string counter) |
+| `allocation-ops` | bulkhead (delegated) | Operation ledger hash: `operationId` → recorded result |
 | `breaker` | circuit breaker | State hash (`state`, `generation`, `openedAt`, …) |
 | `observations` | circuit breaker | Sliding observation window sorted set |
 | `probes` | circuit breaker | Half-open probe token sorted set |
@@ -174,10 +178,12 @@ The full set of commands required by the coordination scripts is:
 | `EVAL` | all coordinators | fallback that sends the full Lua body when the server has no cached copy (restart, `SCRIPT FLUSH`, eviction) |
 | `TIME` | all Lua scripts | server-side timestamp; **first call in every script** — blocking it aborts all coordination |
 | `HMGET` | breaker scripts; `readState` direct call | reads state hash fields |
-| `HGET` | rate limit `rateGrantV1` | reads the issuance ledger for `operationId` |
-| `HSET` | breaker and rate limit scripts | writes state hash fields; records a grant in the issuance ledger |
-| `HDEL` | rate limit `rateGrantV1` | forgets a ledger entry whose grant has expired |
-| `ZADD` | bulkhead and breaker scripts | adds lease/observation/probe entries |
+| `HGET` | rate limit `rateGrantV1`; bulkhead `bulkheadAllocationV1` | reads the issuance ledger for `operationId`; reads a replica's allocation |
+| `HSET` | breaker, rate limit and bulkhead scripts | writes state hash fields; records a grant; records an allocation and its operation result |
+| `HDEL` | rate limit and bulkhead scripts | forgets a ledger entry whose grant has expired; forgets an allocation whose reservation lapsed |
+| `INCRBY` | bulkhead `bulkheadAllocationV1` | reserves the delta of a resize-up |
+| `DECRBY` | bulkhead `bulkheadAllocationV1` | releases the delta of a resize-down or a reclaimed reservation |
+| `ZADD` | bulkhead, breaker and rate limit scripts | adds lease/observation/probe entries; adds reservations and ledger entries |
 | `ZREM` | bulkhead and breaker scripts | removes lease/probe entries |
 | `ZCARD` | bulkhead, breaker and rate limit scripts | counts active entries; counts live quota grants for the outstanding-stock cap |
 | `ZSCORE` | bulkhead `bulkheadLeaseV1`; breaker `breakerSettleProbeV1` | detects an existing lease token; reads a probe token's deadline |
@@ -191,7 +197,7 @@ The full set of commands required by the coordination scripts is:
 | `PTTL` | rate limit `rateGrantV1` | keeps the longest remaining grant lifetime rather than shortening it |
 | `PERSIST` | breaker scripts | removes TTL from OPEN/HALF_OPEN state hash so it is never silently expired |
 | `EXISTS` | breaker `breakerObserveV1` | checks whether the state hash and observation set exist |
-| `DEL` | breaker `breakerAdmitProbeV1` / `breakerSettleProbeV1` | clears the probe set when a recovery window ends |
+| `DEL` | breaker and bulkhead scripts | clears the probe set when a recovery window ends; drops the granted counter once it reaches zero |
 | `GET` | rate limit `rateLimitV1`; bulkhead `bulkheadLeaseV1` | reads the GCRA theoretical arrival time; reads the configuration record |
 | `SET` | rate limit `rateLimitV1` | writes the advanced GCRA theoretical arrival time |
 | `PING` | client health checks only | `client.ping()`; not used by the coordinators themselves |

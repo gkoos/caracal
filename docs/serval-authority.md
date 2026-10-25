@@ -216,6 +216,13 @@ settled. On allocation expiry, new admissions stop and the holders stay recorded
 expiry plus grace may redistribute capacity while old holders still run, producing physical overshoot
 that must be measured rather than denied.
 
+The server keeps an allocation's slots reserved for its validity **plus a grace window**, so a replica
+that lost a reply can reconcile before the capacity is handed to another replica. The reservation set
+carries no TTL for exactly that reason: it is the granted counter's source of truth, and a set that
+expired before the next call could not decrement the counter, which would cost the fleet that capacity
+permanently. An allocation is identified by the operation that created it, so one replica cannot hold
+two allocations at once.
+
 **Renew versus resize versus return:**
 
 | Operation | Effect on `allocated` | Notes |

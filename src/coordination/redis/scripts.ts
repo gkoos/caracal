@@ -72,6 +72,211 @@ end
 return {1, allowed, occupancy, revision, changedAt, body}
 `
 
+/**
+ * Delegated slot allocation for one replica (decisions 7, 9 and 11).
+ *
+ * The fleet-wide limit is a **sum of allocations**, so the server keeps one
+ * counter of granted slots and updates it atomically with every commit. An
+ * allocation reserves its slots for its validity plus a grace period, which is what
+ * lets a replica reconcile after a lost reply before the capacity is handed to
+ * someone else: within the grace window the reservation exists and cannot be
+ * reallocated.
+ *
+ * Renewal is not a grant. It extends the deadline and advances `leaseRevision`
+ * without touching the counter. A resize-up reserves only the delta, a resize-down
+ * returns slots the caller has already frozen locally, and both are validated
+ * against the expected `leaseRevision` so a stale reply cannot undo a newer one.
+ *
+ * KEYS[1] = allocation hash   (:allocation)        replicaId -> grantId|revision|slots|expiresAt
+ * KEYS[2] = reservation expiry(:allocation-expiry) "a|replicaId|grantId|slots" and "o|operationId"
+ * KEYS[3] = granted counter   (:allocated)         slots granted across the fleet
+ * KEYS[4] = operation ledger  (:allocation-ops)    operationId -> status|reason|slots|revision|expiresAt
+ * KEYS[5] = configuration record
+ * ARGV[1] = action            allocate | renew | resize | read
+ * ARGV[2] = replicaId
+ * ARGV[3] = operationId       one modification, including all its retries
+ * ARGV[4] = slots             requested (allocate) or signed delta (resize)
+ * ARGV[5] = validityMs
+ * ARGV[6] = expectedRevision  -1 to skip the compare-and-swap
+ * ARGV[7] = limit             baseline fleet-wide ceiling
+ * ARGV[8] = graceMs           reservation grace after the validity deadline
+ * ARGV[9] = knownRevision     the configuration revision this caller holds
+ *
+ * Returns: {envelopeVersion, status, reason, allocated, revision, expiresAt,
+ *           serverTime, duplicate, configRevision, changedAt, body?}
+ *   status 1 = committed, 0 = refused
+ *   reason 0 none, 1 limit, 2 revision, 3 no live allocation, 4 one already exists
+ *   expiresAt is a server-clock reading; a client derives its own deadline from it
+ */
+export const bulkheadAllocationV1 = `
+local action = ARGV[1]
+local replicaId = ARGV[2]
+local operationId = ARGV[3]
+local amount = tonumber(ARGV[4])
+local validityMs = tonumber(ARGV[5])
+local expectedRevision = tonumber(ARGV[6])
+local limit = tonumber(ARGV[7])
+local graceMs = tonumber(ARGV[8])
+local knownRevision = tonumber(ARGV[9])
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[5])
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1 then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  local effective = decoded['effective']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number'
+     or type(effective) ~= 'table' or effective['policy'] ~= 'bulkhead' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  local override = tonumber(effective['limit'])
+  if not override or override < 1 or override ~= math.floor(override) then
+    return redis.error_reply('unsupported configuration record')
+  end
+  limit = override
+  if knownRevision ~= revision then body = record end
+end
+
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+
+-- A reservation ends at its expiry plus the grace period. Until then the slots are
+-- held for the replica that owns them, which is what makes a lost reply
+-- reconcilable instead of immediately reallocated.
+local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now)
+for _, member in ipairs(expired) do
+  local kind, rest = string.match(member, '^(%a)|(.*)$')
+  if kind == 'a' then
+    local replica, grantId, slots = string.match(rest, '^([^|]*)|([^|]*)|(%d+)$')
+    if replica and grantId and slots then
+      redis.call('DECRBY', KEYS[3], tonumber(slots))
+      local held = redis.call('HGET', KEYS[1], replica)
+      local heldGrant = held and string.match(held, '^([^|]*)|')
+      -- Only the allocation that owned this reservation is forgotten: a replica
+      -- that has since allocated again keeps its newer one.
+      if heldGrant == grantId then redis.call('HDEL', KEYS[1], replica) end
+    end
+  elseif kind == 'o' then
+    redis.call('HDEL', KEYS[4], rest)
+  end
+end
+if #expired > 0 then redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now) end
+
+local function reply(status, reason, allocated, rev, expiresAt, duplicate)
+  if body == '' then
+    return {1, status, reason, allocated, rev, expiresAt, now, duplicate, revision, changedAt}
+  end
+  return {1, status, reason, allocated, rev, expiresAt, now, duplicate, revision, changedAt, body}
+end
+
+local function grantedTotal()
+  return tonumber(redis.call('GET', KEYS[3]) or '0')
+end
+
+local function remember(status, reason, allocated, rev, expiresAt)
+  local reservationEnd = math.max(expiresAt, now) + graceMs
+  redis.call('HSET', KEYS[4], operationId, status .. '|' .. reason .. '|' .. allocated .. '|' .. rev .. '|' .. expiresAt)
+  redis.call('ZADD', KEYS[2], reservationEnd, 'o|' .. operationId)
+  local ledgerTtl = redis.call('PTTL', KEYS[4])
+  if ledgerTtl < reservationEnd - now then
+    redis.call('PEXPIREAT', KEYS[4], reservationEnd)
+  end
+  -- The reservation set is deliberately not given a TTL. It is the granted counter's
+  -- source of truth: if it expired before the next call, that call could not decrement
+  -- the counter, and the fleet would lose the capacity for good. The prune below
+  -- removes members as they lapse, and Redis drops the key when the last one goes.
+  if grantedTotal() <= 0 then redis.call('DEL', KEYS[3]) end
+end
+
+local current = redis.call('HGET', KEYS[1], replicaId)
+local grantId, curRevision, curAllocated, curExpiresAt = '', 0, 0, 0
+if current then
+  local heldGrant, heldRevision, heldSlots, heldExpiresAt =
+    string.match(current, '^([^|]*)|(%d+)|(%d+)|(%d+)$')
+  if heldGrant then
+    grantId = heldGrant
+    curRevision = tonumber(heldRevision)
+    curAllocated = tonumber(heldSlots)
+    curExpiresAt = tonumber(heldExpiresAt)
+  end
+end
+
+-- A committed modification is idempotent: a retry returns its recorded result and
+-- changes nothing, so an ambiguous reply cannot be applied twice.
+local recorded = redis.call('HGET', KEYS[4], operationId)
+if recorded and action ~= 'read' then
+  local status, reason, allocated, rev, expiresAt =
+    string.match(recorded, '^(%d+)|(%d+)|(%d+)|(%d+)|(%d+)$')
+  return reply(tonumber(status), tonumber(reason), tonumber(allocated), tonumber(rev), tonumber(expiresAt), 1)
+end
+
+if action == 'read' then
+  return reply(1, 0, curAllocated, curRevision, curExpiresAt, 0)
+end
+
+if action == 'allocate' then
+  if grantId ~= '' then return reply(0, 4, curAllocated, curRevision, curExpiresAt, 0) end
+  local granted = math.min(amount, limit - grantedTotal())
+  if granted <= 0 then return reply(0, 1, 0, 0, 0, 0) end
+  local expiresAt = now + validityMs
+  -- The allocation is identified by the operation that created it, so there is no
+  -- way to create a second allocation for one replica without retiring the first.
+  redis.call('HSET', KEYS[1], replicaId, operationId .. '|1|' .. granted .. '|' .. expiresAt)
+  redis.call('ZADD', KEYS[2], expiresAt + graceMs, 'a|' .. replicaId .. '|' .. operationId .. '|' .. granted)
+  redis.call('INCRBY', KEYS[3], granted)
+  remember(1, 0, granted, 1, expiresAt)
+  return reply(1, 0, granted, 1, expiresAt, 0)
+end
+
+if grantId == '' or now > curExpiresAt then
+  return reply(0, 3, curAllocated, curRevision, curExpiresAt, 0)
+end
+if expectedRevision >= 0 and expectedRevision ~= curRevision then
+  return reply(0, 2, curAllocated, curRevision, curExpiresAt, 0)
+end
+
+if action == 'renew' then
+  local expiresAt = now + validityMs
+  local rev = curRevision + 1
+  redis.call('HSET', KEYS[1], replicaId, grantId .. '|' .. rev .. '|' .. curAllocated .. '|' .. expiresAt)
+  redis.call('ZREM', KEYS[2], 'a|' .. replicaId .. '|' .. grantId .. '|' .. curAllocated)
+  redis.call('ZADD', KEYS[2], expiresAt + graceMs, 'a|' .. replicaId .. '|' .. grantId .. '|' .. curAllocated)
+  remember(1, 0, curAllocated, rev, expiresAt)
+  return reply(1, 0, curAllocated, rev, expiresAt, 0)
+end
+
+if action == 'resize' then
+  local nextSlots = curAllocated
+  if amount > 0 then
+    local granted = math.min(amount, limit - grantedTotal())
+    if granted <= 0 then return reply(0, 1, curAllocated, curRevision, curExpiresAt, 0) end
+    nextSlots = curAllocated + granted
+  elseif amount < 0 then
+    nextSlots = curAllocated - math.min(-amount, curAllocated)
+  end
+  local rev = curRevision + 1
+  redis.call('ZREM', KEYS[2], 'a|' .. replicaId .. '|' .. grantId .. '|' .. curAllocated)
+  redis.call('INCRBY', KEYS[3], nextSlots - curAllocated)
+  if nextSlots == 0 then
+    -- Returned in full: the allocation is retired and its reservation is gone, so
+    -- the capacity is reallocatable from this commit onwards.
+    redis.call('HDEL', KEYS[1], replicaId)
+  else
+    redis.call('HSET', KEYS[1], replicaId, grantId .. '|' .. rev .. '|' .. nextSlots .. '|' .. curExpiresAt)
+    redis.call('ZADD', KEYS[2], curExpiresAt + graceMs, 'a|' .. replicaId .. '|' .. grantId .. '|' .. nextSlots)
+  end
+  remember(1, 0, nextSlots, rev, curExpiresAt)
+  return reply(1, 0, nextSlots, rev, curExpiresAt, 0)
+end
+
+return redis.error_reply('unsupported allocation action')
+`
+
 // ---------------------------------------------------------------------------
 // Rate-limit script
 //
