@@ -2,7 +2,7 @@
  * Property tests for the delegated rate limiter.
  *
  * The generated histories mix clock advances, concurrent admissions, ambiguous and
- * late replies, outages and several scopes, and check decision 8's invariants after
+ * late replies, outages and several scopes, and check Contract 8's invariants after
  * every step against the reference model's token bucket. The deterministic suite
  * resolves one seed per run (`CARACAL_TEST_SEED` replays it).
  */

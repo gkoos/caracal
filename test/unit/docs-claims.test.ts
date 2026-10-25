@@ -41,7 +41,7 @@ import {
 const ENTRY_DOCS: Record<string, readonly string[]> = {
   "src/index.ts": ["docs/core-api.md", "README.md"],
   "src/redis.ts": ["docs/redis.md"],
-  "src/serval.ts": ["docs/serval-api.md"],
+  "src/serval.ts": ["docs/serval/api.md"],
   "src/fetch.ts": ["docs/fetch.md"],
   "src/postgres.ts": ["docs/postgres.md"],
   "src/aws-sdk.ts": ["docs/aws-sdk.md"],

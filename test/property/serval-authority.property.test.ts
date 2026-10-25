@@ -1,7 +1,7 @@
 /**
  * Property tests for the Serval authority reference model.
  *
- * `docs/serval.md` and `docs/serval-authority.md` are the contract; the model in
+ * `docs/serval/README.md` and `docs/serval/authority.md` are the contract; the model in
  * `test/support/serval/reference-model.ts` is its executable obligation. These
  * properties replay seeded adversarial histories through that model and assert
  * that no contract invariant breaks - delayed, duplicated, reordered and dropped
@@ -11,7 +11,7 @@
  * The suite resolves one seed per run (`CARACAL_TEST_SEED` replays it), scales
  * every case count by the run depth (`CARACAL_TEST_RUNS`), and prints both on
  * failure. `test/unit/serval-authority.test.ts` pins the deterministic acceptance
- * cases, one per mandatory decision.
+ * cases, one per contract.
  */
 
 import * as fc from "fast-check"

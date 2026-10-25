@@ -1,7 +1,7 @@
 /**
  * Unit tests for the cached-verdict circuit breaker.
  *
- * `docs/serval.md` decision 2 is the contract: a warm valid CLOSED verdict admits
+ * `docs/serval/README.md` Contract 2 is the contract: a warm valid CLOSED verdict admits
  * with no authority read, a cached OPEN rejects locally until its cooldown
  * elapses, and only then does one coalesced probe reach the authority - which
  * stays authoritative for every transition. The strict coordinator is a scriptable

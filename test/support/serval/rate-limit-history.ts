@@ -10,7 +10,7 @@ import {
  * A seeded adversarial history for the delegated rate limiter.
  *
  * It mixes clock advances, single and concurrent admissions, ambiguous replies,
- * outages, late replies and several scopes, and checks decision 8's invariants
+ * outages, late replies and several scopes, and checks Contract 8's invariants
  * after every step against the authority the reference model implements:
  *
  * - No local admission beyond granted quota, and no permit created locally: every

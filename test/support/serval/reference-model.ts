@@ -1,9 +1,9 @@
 /**
  * The Serval authority reference model.
  *
- * `docs/serval.md` and `docs/serval-authority.md` are the contract; this module is
+ * `docs/serval/README.md` and `docs/serval/authority.md` are the contract; this module is
  * their proof obligation. It is deliberately small, deterministic and Redis-free:
- * every decision in the RFC has a model entry point here, and every acceptance
+ * every contract has a model entry point here, and every acceptance
  * case in `test/unit/serval-authority.test.ts` and
  * `test/property/serval-authority.property.test.ts` drives one of these models.
  *
@@ -59,7 +59,7 @@ export abstract class ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decisions 1 and 11 - send-time-anchored validity, identity and revision order
+// Contracts 1 and 11 - send-time-anchored validity, identity and revision order
 // ---------------------------------------------------------------------------
 
 export interface GrantReply {
@@ -122,7 +122,7 @@ interface OperationRecord {
 
 /**
  * The client-side grant ledger: send-time anchoring, monotonic revision order,
- * incarnation adoption and replay tombstones (decisions 1, 5 and 11).
+ * incarnation adoption and replay tombstones (contracts 1, 5 and 11).
  */
 export class GrantLedger extends ContractModel {
   readonly #clock: MonotonicTime
@@ -209,7 +209,7 @@ export class GrantLedger extends ContractModel {
   /**
    * Applies an authoritative reply. The deadline is computed from the operation's
    * original send-time anchor, never from the receipt time, and a reply that
-   * arrives after that deadline is unusable (decision 1).
+   * arrives after that deadline is unusable (Contract 1).
    */
   acceptReply(reply: GrantReply): GrantReplyOutcome {
     const record = this.#operations.get(reply.operationId)
@@ -309,7 +309,7 @@ export class GrantLedger extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 2 - cached-OPEN cooldown, coalesced probing, protective liveness
+// Contract 2 - cached-OPEN cooldown, coalesced probing, protective liveness
 // ---------------------------------------------------------------------------
 
 export type BreakerState = "closed" | "open" | "half-open"
@@ -344,7 +344,7 @@ export type BreakerAdmission =
     }
 
 /**
- * The cached breaker verdict (decision 2). A cached OPEN is a protective floor:
+ * The cached breaker verdict (Contract 2). A cached OPEN is a protective floor:
  * it rejects until an authoritative cooldown hint makes a probe eligible, and it
  * never becomes HALF_OPEN without a reservation from the authority.
  */
@@ -488,7 +488,7 @@ export class BreakerLiveness extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 3 - authority-history loss: fenced holdoff or unfenced deviation
+// Contract 3 - authority-history loss: fenced holdoff or unfenced deviation
 // ---------------------------------------------------------------------------
 
 export type FencingSource = "verified" | "none"
@@ -510,7 +510,7 @@ export interface HistoryLossEvent {
 /**
  * The server-side authority lifecycle across a failover or restore that loses
  * acknowledged issuance. A holdoff is only ever claimed when a verified fence
- * makes `T_last_old_issue` meaningful (decisions 3 and 10).
+ * makes `T_last_old_issue` meaningful (Contracts 3 and 10).
  */
 export class AuthorityHistory extends ContractModel {
   readonly #fencing: FencingSource
@@ -586,7 +586,7 @@ export class AuthorityHistory extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 10 - monotonic, authoritative incarnation adoption
+// Contract 10 - monotonic, authoritative incarnation adoption
 // ---------------------------------------------------------------------------
 
 export type AdoptionState = "uninitialized" | "valid" | "uncertain"
@@ -658,7 +658,7 @@ export class IncarnationAdoption extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 4 - configuration revision, effective time and deficit accounting
+// Contract 4 - configuration revision, effective time and deficit accounting
 // ---------------------------------------------------------------------------
 
 export interface ConfigurationRevision {
@@ -673,7 +673,7 @@ export interface DeficitState {
 
 /**
  * A limit reduction does not revoke outstanding authority. It pauses or reduces
- * new issuance until `outstandingReserved - limit` clears (decision 4).
+ * new issuance until `outstandingReserved - limit` clears (Contract 4).
  */
 export class ConfigurationLedger extends ContractModel {
   #revision = 0
@@ -755,7 +755,7 @@ export class ConfigurationLedger extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 5 - pinned and protective records, replay tombstones
+// Contract 5 - pinned and protective records, replay tombstones
 // ---------------------------------------------------------------------------
 
 export type RegistryEntryClass = "disposable" | "pinned" | "protective"
@@ -768,7 +768,7 @@ export interface RegistryEntry {
 
 /**
  * The bounded authority registry. Pinned accounting and protective knowledge are
- * never evicted to satisfy the bound: a new scope is refused instead (decision 5).
+ * never evicted to satisfy the bound: a new scope is refused instead (Contract 5).
  */
 export class AuthorityRegistry extends ContractModel {
   readonly #capacity: number
@@ -843,7 +843,7 @@ export class AuthorityRegistry extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 6 - tracked occupancy versus physical downstream work
+// Contract 6 - tracked occupancy versus physical downstream work
 // ---------------------------------------------------------------------------
 
 export interface IncarnationOccupancy {
@@ -857,7 +857,7 @@ export interface IncarnationOccupancy {
 /**
  * Tracked occupancy is bounded by the sum of the local guardrail limits over
  * incarnations with live holders. Physical work is counted separately, because it
- * can outlive a retired process (decision 6).
+ * can outlive a retired process (Contract 6).
  */
 export class OccupancyLedger extends ContractModel {
   readonly #incarnations = new Map<string, IncarnationOccupancy>()
@@ -987,7 +987,7 @@ export class OccupancyLedger extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decisions 7, 9 and 11 - slot allocation, free-only return, freeze handoff
+// contracts 7, 9 and 11 - slot allocation, free-only return, freeze handoff
 // ---------------------------------------------------------------------------
 
 export type BulkheadOperationKind =
@@ -1036,7 +1036,7 @@ export interface BulkheadAllocationOptions {
 }
 
 /**
- * The local slot allocation (decisions 7, 9 and 11). Modifications are
+ * The local slot allocation (contracts 7, 9 and 11). Modifications are
  * serialised, the lease revision only advances, and returned capacity is frozen
  * before the reduction is sent.
  */
@@ -1396,7 +1396,7 @@ export class BulkheadAllocation extends ContractModel {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 8 - rate issuance-and-spending envelope
+// Contract 8 - rate issuance-and-spending envelope
 // ---------------------------------------------------------------------------
 
 export interface RateEnvelopeOptions {
@@ -1428,7 +1428,7 @@ export interface RateIssuance {
 /**
  * Server token-bucket issuance with send-time-anchored spend horizons and no
  * carry. The rolling-window bound is `R * (L + V) + B` for an interval of length
- * `L` (decision 8).
+ * `L` (Contract 8).
  */
 export class RateEnvelope extends ContractModel {
   readonly #ratePerSecond: number

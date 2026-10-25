@@ -16,7 +16,7 @@ import { ServalRegistryPressureError } from "./cache.js"
  * layer admits within that budget with no round trip, and reconciles the budget out
  * of band.
  *
- * The contract is `docs/serval.md` decisions 6, 7, 9 and 11, and three separations
+ * The contract is `docs/serval/README.md` contracts 6, 7, 9 and 11, and three separations
  * carry the whole design:
  *
  * - **Allocation validity and holder lifetime are different clocks.** When the

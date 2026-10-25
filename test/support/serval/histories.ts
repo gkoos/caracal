@@ -38,7 +38,7 @@ const GRANT_ID = "g"
 const INCARNATION = "A"
 
 /**
- * Decision 1 and 11: send-time anchoring, late and duplicate replies, revision
+ * Contract 1 and 11: send-time anchoring, late and duplicate replies, revision
  * order and replay tombstones. The oracle derives each reply's usable deadline
  * from the operation's original send-time anchor, independently of the model.
  */
@@ -204,7 +204,7 @@ const RATE_BURST = 5
 const RATE_SPEND_HORIZON_MS = 40
 
 /**
- * Decision 8: the rolling-window admission envelope. Permits are issued from a
+ * Contract 8: the rolling-window admission envelope. Permits are issued from a
  * token bucket and spent as late as their deadline allows, which is exactly the
  * case the envelope has to bound.
  */
@@ -287,7 +287,7 @@ export function runRateHistory(seed: number, steps: number): HistoryOutcome {
 }
 
 /**
- * Decisions 7, 9 and 11: allocation accounting, delta resize, free-only return
+ * contracts 7, 9 and 11: allocation accounting, delta resize, free-only return
  * and the freeze-before-return handoff under delayed, lost and refused replies.
  */
 export function runBulkheadHistory(

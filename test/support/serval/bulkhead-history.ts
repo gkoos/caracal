@@ -14,7 +14,7 @@ import {
  * A seeded adversarial history for the delegated bulkhead.
  *
  * It mixes clock advances, concurrent admissions, releases, renewals, voluntary
- * returns, outages and lost replies, and checks decisions 6, 7, 9 and 11 after every
+ * returns, outages and lost replies, and checks contracts 6, 7, 9 and 11 after every
  * step against the server model:
  *
  * - No admission beyond the capacity the server actually granted, counting the slots

@@ -18,8 +18,8 @@
  *
  * This entry point is **experimental**. It is exported so the strategy can be
  * evaluated and reviewed, not because its operating envelope is settled: read
- * `docs/serval-api.md` for the guarantees it makes, the deviations it documents and
- * the numbers `docs/serval-benchmarks.md` measures.
+ * `docs/serval/api.md` for the guarantees it makes, the deviations it documents and
+ * the numbers `docs/serval/benchmarks.md` measures.
  */
 
 export {

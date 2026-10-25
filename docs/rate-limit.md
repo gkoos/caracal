@@ -88,7 +88,7 @@ A refusal is not evidence about the dependency, so an enclosing [circuit breaker
 
 `rateLimit.distributed` accepts any `RateLimitCoordinator`, so a coordinator may spend
 locally held quota instead of asking Redis on every admission. Serval's delegated rate limiter
-is exactly that (`docs/serval.md`): Redis issues a bounded grant of permits, the
+is exactly that (`docs/serval/README.md`): Redis issues a bounded grant of permits, the
 process spends them without a round trip, and the ordinary admission path costs nothing while
 stock remains.
 

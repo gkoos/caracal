@@ -2,7 +2,7 @@
  * Property tests for the cached-verdict circuit breaker.
  *
  * The generated histories mix clock advances, out-of-band transitions, reads,
- * probe attempts, settlements and refresh cycles, and check decision 2's
+ * probe attempts, settlements and refresh cycles, and check Contract 2's
  * invariants against the authority's own state after every step. The deterministic
  * suite resolves one seed per run (`CARACAL_TEST_SEED` replays it).
  */

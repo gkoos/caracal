@@ -14,7 +14,7 @@ import { createBreakerHarness, type BreakerHarness } from "./session-harness.js"
  * A seeded adversarial history for the cached-verdict breaker.
  *
  * It mixes clock advances, out-of-band transitions, reads, probe attempts,
- * settlements and refresh cycles, and checks the invariants decision 2 promises
+ * settlements and refresh cycles, and checks the invariants Contract 2 promises
  * after every step against the authority's own state:
  *
  * - An admission is never fabricated: only a reply from the authority admits one.

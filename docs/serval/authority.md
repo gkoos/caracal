@@ -1,9 +1,205 @@
 # Serval authority protocol
 
-This page is the normative protocol companion to [Serval: delegated coordination](serval.md). It
+This page is the normative protocol companion to [Serval: delegated coordination](README.md). It
 defines the identifiers, the conservative validity arithmetic, the state machines and the
 exceptional transitions the contracts depend on. Read it as the specification the
 reference model implements.
+
+## Contracts
+
+The contracts below are normative. Each names the acceptance case that exercises it: the deterministic scenarios in `test/unit/serval-authority.test.ts` and the generated histories in `test/property/serval-authority.property.test.ts`. The [contract-to-test map](#contract-to-test-map) lists them side by side.
+
+### 1. Send-time anchoring, late and duplicate replies, conservative time
+
+- A client records a monotonic `requestStartedAt` immediately before dispatch.
+- `deadline = requestStartedAt + validForMs - safetyMarginMs`; a reply arriving after it is rejected
+  and leaves local authority unchanged.
+- A retry reuses the operation's `operationId` **and** its original `requestStartedAt`.
+- A duplicate or replayed reply for an already-settled operation returns the recorded result and
+  changes nothing.
+- Client time is monotonic elapsed time only. Server time governs issuance; the contract assumes no
+  wall-clock synchronisation and no bounded clock offset between processes.
+- `safetyMarginMs` is a configured budget that is only ever subtracted, never added.
+
+### 2. Cached-OPEN cooldown and probe liveness
+
+- A cached OPEN rejects **before** cooldown eligibility. Rejection is protective and local.
+- The write reply that opened the breaker carries an authoritative cooldown hint
+  (`openedAt`, `cooldownMs`), so `cooldownEligibleAt` is server-derived, not guessed.
+- Once `now >= cooldownEligibleAt`, one eligible request per identity attempts authoritative
+  `admitProbe()` even while the cached verdict still says OPEN. Concurrent local attempts are
+  coalesced into that single in-flight probe.
+- The cooldown's **origin** is the instant this process adopted the OPEN verdict, and its length is
+  the policy's `openMs`. The strict protocol reports the server's open time but not the server's
+  clock, so a client cannot convert that timestamp into a local deadline; anchoring to the adoption
+  instant instead is conservative, because a verdict is adopted at or after the moment the breaker
+  opened. A probe that still arrives early - a shortened cooldown, or a client clock that leads the
+  server's - is refused by the authority, and the refusal re-anchors the local cooldown so one skewed
+  replica cannot probe on every request. The open time is retained for diagnostics and for a future
+  refinement that measures the clock offset.
+- A read alone never performs OPEN to HALF_OPEN. HALF_OPEN exists only as an authoritative
+  reservation. If Redis is unavailable, the process rejects rather than fabricating a probe.
+- A cached CLOSED admits only within its configured freshness allowance; after that the explicit
+  fail-open/fail-closed setting applies.
+
+### 3. Redis authority-history loss, incarnation identity, holdoff or overlap
+
+Redis asynchronous replication can lose acknowledged issuance on promotion or restore. Serval chooses
+**one** strategy per deployment, and refuses to claim a holdoff it cannot verify:
+
+- **Fenced holdoff (preferred, when a trustworthy fence exists).** If the deployment supplies an
+  independently established `T_last_old_issue` (the last possible old issuance or renewal time) and
+  a verified fence that stops the old authority from issuing, new issuance pauses for
+  `T_last_old_issue + maximumOldGrantValidity + safetyMargin`.
+- **Unfenced competing-authority deviation (default when no fence can be verified).** Issuance
+  resumes immediately and overlapping grants are permitted during the bounded validity window.
+  There is **no** bounded single-event overlap claim; local guardrails carry the protection and the
+  physical-work overshoot is measured. Repeated failovers repeat the overlap.
+
+An `authorityIncarnation` is an opaque identifier of a verified authority lifecycle, sourced from
+outside the rollback-prone data set (or from the deployment's fencing source). A counter stored in
+Redis is **not** sufficient, and a random identifier neither orders incarnations nor fences a writer.
+Ordinary reconnect with intact history reconciles versions and live allocations; suspected rollback
+enters an explicit uncertain-authority state and emits telemetry.
+
+### 4. Configuration revision, effective time and deficit accounting
+
+- A configuration update cannot instantly revoke disconnected grants. Previously issued authority
+  may be used until its conservative deadline; notifications expedite convergence but do not
+  establish revocation.
+- For a limit reduction, the server computes `deficit = outstandingReserved - newLimit` and **pauses
+  or reduces new issuance until the deficit clears**.
+- Bulkhead holder records survive grant expiry and downsizing; a resize-down below active occupancy
+  admits no new work until capacity becomes free under a valid allocation.
+- If a future-effective change is adopted, its activation delay must exceed the maximum existing
+  usable validity.
+- Breaker cached-CLOSED freshness, rate-grant spend horizon and bulkhead new-admission allocation
+  lifetime are **separate** budgets, not one shared TTL.
+
+### 5. Pinned records and replay tombstones
+
+Entries fall into three classes:
+
+| Class | Examples | Eviction |
+|---|---|---|
+| Disposable | expired, unreferenced state | freely evictable |
+| Pinned | active grants, holders, pending requests, consumed-quota accounting, deduplication tombstones | never evicted to satisfy a bound |
+| Protective | last-known OPEN / HALF_OPEN knowledge | never silently downgraded to permissive cold start |
+
+An `operationId` remains protected for at least the maximum late-response/retry window
+(`replayRetentionMs`), or is guarded by an equivalent monotonic generation that makes replay
+impossible after eviction. When registry capacity is exhausted, the session **refuses new scope
+registration with an observable error** instead of dropping accounting. A late reply to a retired
+entry never resurrects authority.
+
+### 6. Tracked versus physical occupancy
+
+Serval's bulkhead target is an **approximate fleet allocation**, not a physical concurrency bound.
+The local guardrail bound is:
+
+```text
+tracked occupancy <= sum(L_i) over every process incarnation with tracked live holders
+```
+
+For `N` concurrently relevant incarnations with identical limit `L`: `tracked occupancy <= N x L`.
+Retired incarnations whose remote work is still running must be counted for any physical claim.
+Tracked occupancy is **not** physical concurrency: fetch may resolve at response headers,
+abort-unsupported work may continue, and remote work can outlive a crashed process. v1 therefore
+makes **no unqualified global physical bound**; physical work is measured independently in the
+benchmark and fault lab.
+
+### 7. Bulkhead renew, resize and free-only return
+
+- Renewing an existing allocation is **not** an additional grant. A renewal preserves grant identity
+  and accounting, or atomically replaces it with a versioned successor without counting both.
+- Resize-up reserves only the delta. Resize-down returns **free** slots only.
+- If active occupancy exceeds the new target, the replica admits nothing new and retains the active
+  holder records until release.
+- Reconnect cannot forget existing holders.
+- `grantId` is stable across renewals; each modification carries its own `operationId`; a successful
+  change advances `leaseRevision`.
+- Allocation validity (may I start *new* work?) and holder lifetime (is started work still active?)
+  are separate clocks. On allocation expiry, new admissions stop; existing work continues.
+
+### 8. Rate issuance-and-spending envelope
+
+The rate limiter is GCRA, so delegated quota needs its own explicit contract rather than an
+"exact distributed GCRA" label. Serval chooses **token-bucket issuance with send-time-anchored spend
+horizons and no carry**:
+
+- The server holds one token bucket per identity: rate `R` permits/second, burst capacity `B`. A
+  grant of `n` permits deducts `n` tokens at issuance, atomically, deduplicated by `operationId`.
+- A grant's spend horizon is `validForMs = V`. Permits are spendable only within
+  `requestStartedAt + V - margin`.
+- Unused stock simply expires; it is **never** credited back into a later accounting window, so a
+  permit cannot be spent twice.
+- Issuance is refused, with a `retryAfterMs` hint, when the bucket is empty or when granting would
+  exceed the configured maximum outstanding stock.
+
+The resulting rolling-window bound, for any interval of length `L`:
+
+```text
+admissions(L) <= R * (L + V) + B
+```
+
+*Why:* every admission is backed by a permit issued no earlier than `L + V` before the interval's
+end (an older permit has expired), and a token bucket admits at most `R * elapsed + B` issuance over
+any interval. This bounds **admissions**, not issuance, and holds only under intact authority
+history. Adaptive grant sizing is an optimisation, not part of the envelope.
+
+### 9. Freeze-before-return and ambiguous handoff
+
+Capacity return is a two-sided transfer of admission authority, not a server-side decrement:
+
+1. Under the local allocation lock, **freeze the free slots first** and remove them from the
+   spendable pool *before sending* any reduction. Active holders are never returned as free slots.
+2. Record `operationId`, expected `leaseRevision`, requested amount and frozen count, then send an
+   idempotent conditional reduction. The server validates the expected revision, commits once, and
+   only then makes the capacity reallocatable.
+3. While the reply is delayed, lost or uncertain, frozen slots stay unavailable. A timeout or
+   disconnect must not unfreeze them.
+4. On confirmed success the frozen slots are retired under the old revision. Unfreezing on a proven
+   non-commit requires authoritative reconciliation showing the old allocation is still valid and
+   not superseded. A stale reply never restores capacity.
+5. A new allocation or a successful resize-up grants spendable capacity through a **new revision**,
+   independently of the frozen slots, with no double counting.
+
+For an intact allocation, `active + freeSpendable + frozenPendingReturn <= allocated` before the
+server commits; afterwards the frozen slots leave the local allocation entirely. Expiry-based
+reclamation is a distinct, explicitly approximate path that may overlap continuing work.
+
+### 10. Fencing, last-old-issuance boundary, repeated failover, monotonic adoption
+
+- A holdoff is meaningful only with an independently established `T_last_old_issue`. The protocol
+  requires the deployment to name who fences the old authority, how successful fencing is verified,
+  and how the timestamp is conservatively bounded including detection and clock uncertainty.
+- If an old primary can keep issuing or renewing, **no finite wait suffices**; the session must use
+  the unfenced competing-authority deviation model and stop claiming a bounded overlap.
+- A client adopts a new incarnation only through an authoritative reconciliation or fencing
+  decision. A late command reply or notification advertising an unfamiliar identifier never switches
+  the client. Once an incarnation is retired, no delayed message from it can switch the client back,
+  even if its numeric epoch looks higher.
+- Retired-incarnation rejection knowledge is retained for the maximum late-message window. Unknown
+  or unordered competing incarnations put the client into the uncertain-authority state with the
+  configured conservative admission behaviour.
+
+### 11. `grantId`, `operationId`, `leaseRevision` and replay-safe renewal ordering
+
+- `grantId` identifies a stable allocation across renewals and resizes; it is **not** an idempotency
+  key for every modification.
+- `operationId` identifies **one** acquire/renew/resize/relinquish operation including all of its
+  retries, with an immutable `requestStartedAt` and response deadline retained until the operation
+  can no longer be replayed.
+- `leaseRevision` is a monotonic version within a grant and authority incarnation. A successful
+  renewal or resize advances it. An older response cannot overwrite capacity, spendability, expiry
+  or frozen-state decisions made at a newer revision.
+- Modifications to one allocation are serialised, with a Redis-side compare-and-swap on the
+  expected lease revision plus an idempotent operation-result lookup. A duplicate after a later
+  revision has committed returns the recorded result without re-applying it, and the client must not
+  regress.
+- A renewal's new deadline is anchored to **that renewal operation's** original send time. The old
+  usable deadline is kept until the renewal is confirmed; after an uncertain outcome the client does
+  not assume extension.
 
 ## Identifiers and versions
 
@@ -279,7 +475,7 @@ Rules that make the handoff safe:
 rollback-prone data set, and a random identifier is not sufficient: it neither orders incarnations nor
 fences a writer.
 
-Two v1 strategies, chosen per deployment:
+Two strategies, chosen per deployment:
 
 **Fenced holdoff.** Valid only with an independently established `T_last_old_issue`:
 
@@ -342,7 +538,7 @@ An invalidation is a compact versioned hint, not a state command:
   or uses the versioned verdict returned by its own write.
 - Delivery is best-effort. Correctness comes from expiry, reconciliation and reconnect snapshots.
 
-## Decision-to-test map
+## Contract-to-test map
 
 | Decision | Reference model entry point | Acceptance case |
 |---|---|---|
@@ -357,6 +553,5 @@ An invalidation is a compact versioned hint, not a state command:
 | 9 Freeze-before-return | `BulkheadAllocation` | frozen during flight, lost reply, reconciliation |
 | 10 Fencing and adoption | `IncarnationAdoption` | retired incarnation, unknown incarnation |
 | 11 Identity and revision ordering | `GrantLedger`, `BulkheadAllocation` | duplicate renewal, older resize reply |
-
 
 

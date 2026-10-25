@@ -2,7 +2,7 @@
 
 This page reports what the reproducible fault lab measures, what the numbers mean, and
 which configurations the evidence supports. It is the measurement behind
-[Serval](serval.md) and [its API](serval-api.md): every claim those pages make about
+[Serval](README.md) and [its API](api.md): every claim those pages make about
 cost, admission behaviour and tracked occupancy is checked here rather than asserted.
 
 The lab is **not part of `npm test`**: it takes minutes, spawns real processes and
@@ -69,7 +69,7 @@ not portable; the *ratios* and the admission outcomes are the point.
 **The admission read really is removed, and that is most of the cost.** On a healthy
 dependency one replica pays **1.70 Redis commands per offered request** with Serval
 against **5.00** with the strict coordinators - a 66% reduction, and the same
-admissions. The remaining cost is what the RFC says it should be: the rate grant and
+admissions. The remaining cost is what the contract expects: the rate grant and
 the bulkhead allocation on their slow paths, plus the breaker's **awaited settlement**
 on every call. Serval does not make settlement free, and this number is the honest
 measurement of that.

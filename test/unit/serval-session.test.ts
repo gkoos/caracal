@@ -3,7 +3,7 @@
  *
  * The session is policy-agnostic infrastructure: identity, the shared scope
  * registry, the bounded authority registry, notification handling, reconciliation
- * and lifecycle. `docs/serval.md` and `docs/serval-authority.md` are the contract;
+ * and lifecycle. `docs/serval/README.md` and `docs/serval/authority.md` are the contract;
  * the breaker, rate limiter and bulkhead all reuse this session unchanged.
  */
 

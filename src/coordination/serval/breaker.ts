@@ -34,10 +34,10 @@ import { createServalAuthoritySession, type ServalSession } from "./session.js"
  * What it removes is the per-admission read. A warm, valid cached CLOSED verdict
  * admits with no Redis call at all; a cached OPEN rejects locally until its
  * cooldown elapses, and only then does one coalesced probe reach the authority.
- * That is `docs/serval.md` decision 2, and it is deliberately conservative:
+ * That is `docs/serval/README.md` Contract 2, and it is deliberately conservative:
  *
  * - A cached verdict is only ever *adopted* through the session, which requires an
- *   authoritative reconciliation (decision 10), so a stray reply never switches
+ *   authoritative reconciliation (Contract 10), so a stray reply never switches
  *   this process to a different authority incarnation.
  * - The cooldown's origin is the server's `openedAt` from the transition reply.
  *   Converting that to a local deadline uses the reply's receipt time as the

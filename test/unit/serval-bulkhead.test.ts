@@ -1,7 +1,7 @@
 /**
  * Unit tests for the delegated bulkhead.
  *
- * `docs/serval.md` decisions 6, 7, 9 and 11 are the contract: Redis allocates a slot
+ * `docs/serval/README.md` contracts 6, 7, 9 and 11 are the contract: Redis allocates a slot
  * budget, the process admits within it without a round trip, allocation validity and
  * holder lifetime are separate clocks, a renewal is not a grant, and returned
  * capacity is frozen before it is sent. The authority here is a server model with its

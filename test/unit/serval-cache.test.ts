@@ -1,7 +1,7 @@
 /**
  * Unit tests for the bounded Serval authority registry.
  *
- * `docs/serval.md` decision 5 is the contract: three record classes, pinned and
+ * `docs/serval/README.md` Contract 5 is the contract: three record classes, pinned and
  * protective records that pressure never evicts, replay tombstones that outlive
  * their operation, and an observable refusal instead of dropped accounting.
  */

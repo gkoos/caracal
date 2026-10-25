@@ -48,7 +48,7 @@ import { createServalScheduler, type ServalScheduler } from "./scheduler.js"
  * breaker verdicts, quota envelopes or slot allocations: those are policy-specific
  * and reuse this session unchanged.
  *
- * `docs/serval.md` and `docs/serval-authority.md` are the contract.
+ * `docs/serval/README.md` and `docs/serval/authority.md` are the contract.
  */
 
 export type ServalSessionState =

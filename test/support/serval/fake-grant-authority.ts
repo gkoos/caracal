@@ -9,7 +9,7 @@ import { RateEnvelope } from "./reference-model.js"
  * A scriptable stand-in for the Redis grant issuer, backed by the reference model's
  * token bucket.
  *
- * The oracle is the point: `RateEnvelope` is the executable form of decision 8, so
+ * The oracle is the point: `RateEnvelope` is the executable form of Contract 8, so
  * the generated histories drive the real coordinator against the specified server
  * rather than against a second implementation of it. The fake adds what a test
  * needs to steer - call counting, a lost reply that may or may not have committed,

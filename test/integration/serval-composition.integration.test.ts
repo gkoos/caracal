@@ -26,7 +26,7 @@ import { redisProxy } from "../support/redis-proxy.js"
  *
  * The point of composing them is the absence of surprises: no cross-policy
  * interference, no stuck recovery, no unbounded growth and no unreported degradation.
- * Each case here exercises a composition requirement from `docs/serval.md` section 6
+ * Each case here exercises a composition requirement from `docs/serval/authority.md` contract 6
  * with the real coordinators, so a policy that quietly depends on another's state, or
  * that keeps accounting after shutdown, fails rather than passing plausibly.
  *

@@ -4,8 +4,8 @@ import { coordinationKey } from "../redis/keys.js"
  * The shared authority vocabulary for Serval: scope identity, versioning,
  * conservative expiry and incarnation tracking.
  *
- * Nothing here interprets policy semantics. `docs/serval.md` and
- * `docs/serval-authority.md` are the contract; this module carries the parts all
+ * Nothing here interprets policy semantics. `docs/serval/README.md` and
+ * `docs/serval/authority.md` are the contract; this module carries the parts all
  * three policies share, and every policy-specific algorithm lives in its own
  * module.
  */

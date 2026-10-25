@@ -1,7 +1,7 @@
 /**
  * Acceptance tests for the Serval authority protocol.
  *
- * One group per mandatory decision in `docs/serval.md`. Each group asserts the
+ * One group per contract in `docs/serval/authority.md`. Each group asserts the
  * contract's own worked examples and invariants against the deterministic
  * reference model in `test/support/serval/reference-model.ts`, so the RFC has an
  * executable obligation rather than prose alone. The generated suite in
@@ -55,7 +55,7 @@ function grantReply(overrides: Partial<GrantReply> = {}): GrantReply {
   }
 }
 
-describe("decision 1: send-time anchoring and conservative validity", () => {
+describe("Contract 1: send-time anchoring and conservative validity", () => {
   it("rejects a 100 ms grant whose reply arrives after 150 ms", () => {
     const clock = new MonotonicTime(1_000)
     const ledger = new GrantLedger(clock)
@@ -133,7 +133,7 @@ describe("decision 1: send-time anchoring and conservative validity", () => {
   })
 })
 
-describe("decision 2: cached-OPEN cooldown and probe liveness", () => {
+describe("Contract 2: cached-OPEN cooldown and probe liveness", () => {
   function openBreaker(openedAt = 1_000) {
     const breaker = new BreakerLiveness({ cooldownMs: 5_000, freshnessMs: 100 })
     breaker.applyTransition(
@@ -205,7 +205,7 @@ describe("decision 2: cached-OPEN cooldown and probe liveness", () => {
   })
 })
 
-describe("decision 3: authority-history loss", () => {
+describe("Contract 3: authority-history loss", () => {
   it("pauses issuance until the fenced last-old-issuance boundary", () => {
     const history = new AuthorityHistory({
       fencing: "verified",
@@ -249,7 +249,7 @@ describe("decision 3: authority-history loss", () => {
   })
 })
 
-describe("decision 4: configuration revision and deficit accounting", () => {
+describe("Contract 4: configuration revision and deficit accounting", () => {
   it("pauses issuance while a reduction deficit is outstanding", () => {
     const ledger = new ConfigurationLedger(10)
 
@@ -291,7 +291,7 @@ describe("decision 4: configuration revision and deficit accounting", () => {
   })
 })
 
-describe("decision 5: pinned records and replay tombstones", () => {
+describe("Contract 5: pinned records and replay tombstones", () => {
   it("refuses a new scope instead of evicting pinned records", () => {
     const registry = new AuthorityRegistry(2)
     registry.register({ key: "a", entryClass: "pinned", retainedUntil: 0 }, 0)
@@ -354,7 +354,7 @@ describe("decision 5: pinned records and replay tombstones", () => {
   })
 })
 
-describe("decision 6: tracked occupancy versus physical work", () => {
+describe("Contract 6: tracked occupancy versus physical work", () => {
   it("holds the tracked-occupancy ceiling across retired generations", () => {
     const occupancy = new OccupancyLedger()
     occupancy.register("A", 2)
@@ -399,7 +399,7 @@ describe("decision 6: tracked occupancy versus physical work", () => {
   })
 })
 
-describe("decision 7: bulkhead renew, resize and free-only return", () => {
+describe("Contract 7: bulkhead renew, resize and free-only return", () => {
   it("does not double the allocation on a renewal", () => {
     const clock = new MonotonicTime(0)
     const allocation = new BulkheadAllocation(clock, { serverCapacity: 20 })
@@ -487,7 +487,7 @@ describe("decision 7: bulkhead renew, resize and free-only return", () => {
   })
 })
 
-describe("decision 8: rate issuance-and-spending envelope", () => {
+describe("Contract 8: rate issuance-and-spending envelope", () => {
   it("holds the rolling-window bound when permits are spent at expiry", () => {
     const envelope = new RateEnvelope({
       ratePerSecond: 20,
@@ -572,7 +572,7 @@ describe("decision 8: rate issuance-and-spending envelope", () => {
   })
 })
 
-describe("decision 9: freeze-before-return and ambiguous handoff", () => {
+describe("Contract 9: freeze-before-return and ambiguous handoff", () => {
   function frozenAllocation() {
     const clock = new MonotonicTime(0)
     const allocation = new BulkheadAllocation(clock, { serverCapacity: 20 })
@@ -639,7 +639,7 @@ describe("decision 9: freeze-before-return and ambiguous handoff", () => {
   })
 })
 
-describe("decision 10: fencing, adoption and monotonic client state", () => {
+describe("Contract 10: fencing, adoption and monotonic client state", () => {
   it("ignores a delayed message from a retired incarnation", () => {
     const adoption = new IncarnationAdoption()
     expect(adoption.reconcile("A")).toMatchObject({ adopted: true })
@@ -717,7 +717,7 @@ describe("decision 10: fencing, adoption and monotonic client state", () => {
   })
 })
 
-describe("decision 11: grantId, operationId and leaseRevision ordering", () => {
+describe("Contract 11: grantId, operationId and leaseRevision ordering", () => {
   it("does not extend expiry twice from a duplicated renewal reply", () => {
     const clock = new MonotonicTime(0)
     const ledger = new GrantLedger(clock)

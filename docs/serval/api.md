@@ -1,7 +1,7 @@
 # Serval API: configuration, lifecycle and migration
 
 `@gkoos/caracal/serval` is the **opt-in, experimental** entry point for the delegated
-coordination strategy described in [Serval](serval.md). Nothing in the root package,
+coordination strategy described in [Serval](README.md). Nothing in the root package,
 `caracal/redis`, or the policy factories changes when you use it: a delegated
 coordinator is passed to the policy you already call.
 
@@ -152,7 +152,7 @@ create -> start() -> serving -> close()
 | Bounded local state | One registry entry per scope per policy; the registry refuses rather than evicting live accounting |
 | Convergence | A cached verdict or allocation converges through reconciliation, invalidation or expiry, with or without notifications |
 
-**Explicit deviations**, all measured in [the fault lab](serval-benchmarks.md):
+**Explicit deviations**, all measured in [the fault lab](benchmarks.md):
 
 - Delegated rate limiting is not exact GCRA, and a slow dependency exhausts local stock
   earlier than the strict coordinator would refuse.
@@ -226,7 +226,7 @@ The numbers worth alerting on:
 
 - The strategy is experimental: this API may change in a minor release until multi-seed,
   real-process evidence supports stability.
-- It is approximate by construction. Read [the fault lab](serval-benchmarks.md) before
+- It is approximate by construction. Read [the fault lab](benchmarks.md) before
   relying on it for a hard guarantee.
 - The lab runs on one machine with a loopback dependency, a closed loop per replica and
   short cells: it compares profiles, it does not certify steady-state behaviour.

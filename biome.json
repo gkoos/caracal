@@ -6,7 +6,8 @@
       "!node_modules",
       "!dist",
       "!coverage",
-      "!docs/circuitbreaker.svg"
+      "!docs/circuitbreaker.svg",
+      "!docs/serval/architecture.svg"
     ]
   },
   "formatter": {

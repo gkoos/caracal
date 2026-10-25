@@ -13,8 +13,8 @@ existing `circuitBreaker.distributed`, `rateLimit.distributed` or
 `bulkhead.distributed` as its coordinator, so nothing about the strict coordinators or
 the root package changes.
 
-`docs/serval-api.md` documents the configuration, lifecycle, approximate guarantees,
+`docs/serval/api.md` documents the configuration, lifecycle, approximate guarantees,
 explicit deviations, failure behaviour, metrics, local-guardrail recipe and migration
-steps; `docs/serval-benchmarks.md` carries the measured trade-offs and the operating
+steps; `docs/serval/benchmarks.md` carries the measured trade-offs and the operating
 envelopes, including the finding that a Redis outage stops a composed pipeline which
 includes the distributed breaker.

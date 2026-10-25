@@ -15,7 +15,7 @@
  * closes.
  *
  * When the registry cannot admit a new key it refuses, with an observable error,
- * rather than dropping accounting. `docs/serval.md` (decision 5) is the contract.
+ * rather than dropping accounting. `docs/serval/README.md` (Contract 5) is the contract.
  */
 
 export type ServalCacheClass = "disposable" | "pinned" | "protective"

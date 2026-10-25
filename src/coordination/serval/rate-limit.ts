@@ -12,7 +12,7 @@ import { ServalRegistryPressureError } from "./cache.js"
  * quota grants; this layer spends them locally, so the ordinary admission path
  * costs no round trip at all.
  *
- * The contract is `docs/serval.md` decision 8: token-bucket issuance with
+ * The contract is `docs/serval/README.md` Contract 8: token-bucket issuance with
  * send-time-anchored spend horizons and no carry. Three consequences are the whole
  * design:
  *
