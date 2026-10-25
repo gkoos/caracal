@@ -1,0 +1,284 @@
+import { randomUUID } from "node:crypto"
+import {
+  bulkhead,
+  BulkheadRejectedError,
+  circuitBreaker,
+  operation,
+  rateLimit,
+  RateLimitExceededError,
+  timeout,
+} from "../../src/index.js"
+import { redisBulkheadAllocationIssuer } from "../../src/coordination/redis/bulkhead.js"
+import { redisRateLimitGrantIssuer } from "../../src/coordination/redis/rate-limit.js"
+import { createServalBreaker } from "../../src/coordination/serval/breaker.js"
+import { createServalBulkheadCoordinator } from "../../src/coordination/serval/bulkhead.js"
+import { createServalRateLimitCoordinator } from "../../src/coordination/serval/rate-limit.js"
+import {
+  createCoordinationClient,
+  redisCircuitBreakerCoordinator,
+  redisCoordinator,
+  redisRateLimitCoordinator,
+} from "../../src/redis.js"
+
+/**
+ * One replica of the Serval fault lab.
+ *
+ * It is a real process with its own event loop, its own Redis connection and its own
+ * coordinator state, because that is the only way to observe the deviations that are
+ * per-process: overlapping generations, redistributed capacity, and a partitioned
+ * replica that keeps admitting from local authority.
+ *
+ * Every Redis command the coordinators issue is counted through a proxy over the
+ * client, so "cost" is what the run actually sent - including the settlement writes
+ * that caching the admission read does not remove.
+ */
+
+export type Profile = "unprotected" | "strict" | "serval" | "serval-guarded"
+
+export interface RunCell {
+  readonly namespace: string
+  readonly profile: Profile
+  readonly offers: number
+  readonly intervalMs: number
+  readonly target: number
+  readonly guardrailLimit: number
+  readonly abort: "supported" | "unsupported"
+  readonly timeoutMs: number
+  readonly redisUrl: string
+  readonly downstreamUrl: string
+  readonly identity: { readonly name: string; readonly operation: string }
+}
+
+export interface Metrics {
+  readonly offered: number
+  readonly ok: number
+  readonly rejectedRate: number
+  readonly rejectedBulkhead: number
+  readonly failed: number
+  readonly other: number
+  readonly redisOps: number
+  readonly peakTracked: number
+  readonly admissionLatency: readonly number[]
+  readonly endToEnd: readonly number[]
+}
+
+export function percentile(
+  samples: readonly number[],
+  fraction: number,
+): number {
+  if (samples.length === 0) return 0
+  const sorted = [...samples].sort((left, right) => left - right)
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil(fraction * sorted.length) - 1),
+  )
+  return Math.round(sorted[index] as number)
+}
+
+export async function runCell(cell: RunCell): Promise<Metrics> {
+  const raw = createCoordinationClient(cell.redisUrl, 250)
+  // A partitioned replica cannot connect at all; waiting for the client's own retry
+  // loop would hang the run. The point of the cell is what the coordinators do once
+  // their commands fail, not how long a client takes to give up.
+  await Promise.race([
+    raw.connect().catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 300)),
+  ])
+
+  let redisOps = 0
+  const client = new Proxy(raw as never, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target as object, property, receiver)
+      if (typeof value !== "function") return value
+      if (
+        property === "eval" ||
+        property === "evalsha" ||
+        property === "hmget"
+      ) {
+        return (...args: unknown[]) => {
+          redisOps += 1
+          return (value as (...inner: unknown[]) => unknown).apply(target, args)
+        }
+      }
+      return (value as (...inner: unknown[]) => unknown).bind(target)
+    },
+  }) as ReturnType<typeof createCoordinationClient>
+
+  const replicaId = `replica-${process.pid}-${randomUUID().slice(0, 8)}`
+  const identity = { ...cell.identity, scope: "lab" }
+  const breaker = createServalBreaker({
+    namespace: cell.namespace,
+    authority: redisCircuitBreakerCoordinator(client, {
+      namespace: cell.namespace,
+    }),
+    replicaId,
+    freshnessMs: 1_000,
+    reconciliationIntervalMs: 60_000,
+  })
+  const rate = createServalRateLimitCoordinator({
+    authority: redisRateLimitGrantIssuer(client, { namespace: cell.namespace }),
+    grantSize: 4,
+    validForMs: 1_000,
+  })
+  const capacity = createServalBulkheadCoordinator({
+    authority: redisBulkheadAllocationIssuer(client, {
+      namespace: cell.namespace,
+    }),
+    replicaId,
+    validityMs: 5_000,
+    graceMs: 1_000,
+    initialSlots: 1,
+    maximumSlots: Math.max(1, Math.ceil(cell.target / 2)),
+    redistributionIntervalMs: 25,
+  })
+
+  const localGuardrail = bulkhead.local({
+    name: "lab-guardrail",
+    limit: cell.guardrailLimit,
+  })
+  const policies: unknown[] = []
+  if (cell.profile === "strict") {
+    policies.push(
+      circuitBreaker.distributed({
+        name: identity.name,
+        coordinator: redisCircuitBreakerCoordinator(client, {
+          namespace: cell.namespace,
+        }),
+        scope: () => identity.scope,
+        openMs: 500,
+      }),
+      rateLimit.distributed({
+        name: identity.name,
+        rate: 50,
+        burst: 8,
+        coordinator: redisRateLimitCoordinator(client, {
+          namespace: cell.namespace,
+        }),
+        scope: () => identity.scope,
+      }),
+      bulkhead.distributed({
+        name: identity.name,
+        limit: cell.target,
+        coordinator: redisCoordinator(client, { namespace: cell.namespace }),
+        scope: () => identity.scope,
+      }),
+    )
+  }
+  if (cell.profile === "serval" || cell.profile === "serval-guarded") {
+    policies.push(
+      circuitBreaker.distributed({
+        name: identity.name,
+        coordinator: breaker.coordinator,
+        scope: () => identity.scope,
+        openMs: 500,
+      }),
+      rateLimit.distributed({
+        name: identity.name,
+        rate: 50,
+        burst: 8,
+        coordinator: rate,
+        scope: () => identity.scope,
+      }),
+      bulkhead.distributed({
+        name: identity.name,
+        limit: cell.target,
+        coordinator: capacity,
+        scope: () => identity.scope,
+      }),
+    )
+  }
+  if (cell.profile === "serval-guarded") policies.push(localGuardrail)
+  if (cell.timeoutMs > 0) policies.push(timeout({ ms: cell.timeoutMs }))
+
+  let offerStartedAt = 0
+  let admissionLatency = 0
+  const admissionLatencies: number[] = []
+  const endToEnd: number[] = []
+  const op = operation({
+    name: identity.operation,
+    adapter: {
+      capabilities: () => ({ abort: cell.abort, replay: "safe" }) as const,
+      execute: async () => {
+        admissionLatency = performance.now() - offerStartedAt
+        const response = await fetch(cell.downstreamUrl)
+        if (!response.ok) throw new Error(`downstream ${response.status}`)
+        await response.text()
+        return "ok"
+      },
+    },
+    policies: policies as never,
+  })
+
+  await breaker.session.start()
+  await breaker.session.whenIdle()
+
+  let ok = 0
+  let rejectedRate = 0
+  let rejectedBulkhead = 0
+  let failed = 0
+  let other = 0
+  let peakTracked = 0
+
+  for (let offer = 0; offer < cell.offers; offer += 1) {
+    offerStartedAt = performance.now()
+    try {
+      await op.execute(undefined)
+      ok += 1
+    } catch (error) {
+      if (error instanceof RateLimitExceededError) rejectedRate += 1
+      else if (error instanceof BulkheadRejectedError) rejectedBulkhead += 1
+      else if (error instanceof Error && error.name === "TimeoutError")
+        other += 1
+      else failed += 1
+    }
+    endToEnd.push(performance.now() - offerStartedAt)
+    if (admissionLatency > 0) admissionLatencies.push(admissionLatency)
+    admissionLatency = 0
+
+    const tracked =
+      cell.profile === "serval" || cell.profile === "serval-guarded"
+        ? (capacity.diagnostics(identity)?.active ?? 0)
+        : localGuardrail.snapshot().occupancy
+    peakTracked = Math.max(peakTracked, tracked)
+
+    if (offer + 1 < cell.offers && cell.intervalMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, cell.intervalMs))
+    }
+  }
+
+  await breaker.session.close()
+  await capacity.close()
+  await rate.whenIdle()
+  raw.disconnect()
+
+  return {
+    offered: cell.offers,
+    ok,
+    rejectedRate,
+    rejectedBulkhead,
+    failed,
+    other,
+    redisOps,
+    peakTracked,
+    admissionLatency: admissionLatencies,
+    endToEnd,
+  }
+}
+
+process.on("message", (message: { action: string; cell?: RunCell }) => {
+  if (message.action === "stop") {
+    process.exit(0)
+  }
+  if (message.action !== "run" || message.cell === undefined) return
+  runCell(message.cell)
+    .then((metrics) => {
+      process.send?.({ metrics })
+    })
+    .catch((error: unknown) => {
+      process.send?.({
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+})
+
+process.send?.({ ready: true })

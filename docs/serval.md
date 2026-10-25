@@ -551,7 +551,8 @@ policy takes the cached path, rather than silently issuing a Redis call per admi
 
 ## Implementation status
 
-Phases 0 to 4 are implemented; nothing after them is.
+Phases 0 to 5 are implemented; Phase 6 - release documentation, runnable examples and
+CI jobs - is not.
 
 | Phase | Delivered |
 |---|---|
@@ -608,6 +609,31 @@ so `bulkhead.distributed({ coordinator })` opts in unchanged. Four things it set
   unknown outcome keeps them frozen, and the retry of the same `operationId` is what
   settles it - idempotently, with the original send-time anchor, so a late commit
   cannot extend anything either.
+
+Phase 5 composes the three policies in one operation and runs the fault lab:
+
+| Phase | Delivered |
+|---|---|
+| 5 | `test/integration/serval-composition.integration.test.ts`: local and delegated layers together, per-attempt admission under retry, refusals that stay out of breaker evidence, cancellation with a dependency that ignores it, a Redis outage that leaves local authority intact, and bounded shutdown. `bench/serval/`: a multi-process fault lab over four profiles, five fault cells and paired seeds, reporting Redis cost, admission outcomes, tracked occupancy and the dependency's own physical concurrency |
+
+Three findings from that phase are worth stating, because they shape the operating
+envelope rather than the implementation:
+
+- **A refusal is not evidence, and a settlement is not free.** A rate or bulkhead
+  refusal never reaches the breaker's window, and a delegation does not remove the
+  awaited observation write: the lab measures roughly 1.7 Redis commands per offered
+  request for Serval against 5.0 for the strict coordinators, not zero.
+- **Redis unavailable stops a composed pipeline on both paths.** The delegated layers
+  keep their local authority - which is what the rate limiter and the bulkhead are for -
+  but the distributed breaker's settlement is awaited by design, so a call fails rather
+  than pretending its outcome was recorded. A deployment that must survive an outage
+  should not put the distributed breaker on that path.
+- **Tracked occupancy is asserted; physical concurrency is measured.** The lab accounts
+  for the dependency's own work, including attempts that were abandoned and kept
+  running, so the two numbers are reported separately rather than conflated.
+
+`docs/serval-benchmarks.md` carries the measured table, the recommended envelopes and
+the known limitations.
 
 The session is deliberately **not** reachable from a package entry point yet: the public opt-in API
 arrives with the policy coordinators (Phases 2 to 4) and is finalised in Phase 6, so no configuration
@@ -668,6 +694,15 @@ Phase 4 adds the bulkhead's cases:
 | `test/unit/serval-bulkhead.test.ts` | The local allocation, demand-driven growth, the lapsed allocation with holders retained, renewal as a non-grant, the send-time anchor, freeze-before-return, a lost reply settled by retry, shutdown, the registry bound and the policy path |
 | `test/property/serval-bulkhead.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
 | `test/integration/serval-bulkhead.redis.integration.test.ts` | Allocations summed across replicas, renewal that adds no capacity, the freeze-before-return handoff, and the measured tracked overshoot a reclaimed allocation permits |
+
+Phase 5 composes them and runs the fault campaign:
+
+| Artefact | Role |
+|---|---|
+| `test/integration/serval-composition.integration.test.ts` | All three delegated policies over one operation, local guardrails, retry placement and per-attempt admission, refusals that stay out of breaker evidence, cancellation against an adapter that ignores it, a Redis outage with local authority intact, and bounded shutdown |
+| `bench/serval/lab.ts` | The fault lab: four profiles, five fault cells, paired seeds, real worker processes, and raw per-seed results written to `bench/serval/results/` |
+| `bench/serval/worker.ts` | One replica: its own process, its own Redis connection, every coordination command counted through a proxy over the client |
+| `bench/serval/downstream.ts` | The controlled dependency: programmable mode and latency, with physical concurrency and overshoot area measured at the server, and no listener that stops work when a client disconnects |
 
 The reference model is the specification's proof obligation for Phase 0, and the fake authority plus
 the deterministic scheduler play that role for the session. Phase 2 onwards replaces the fakes with

@@ -105,6 +105,7 @@
     "test:integration:cluster": "node scripts/test-redis-cluster.mjs",
     "test:integration:soak": "node scripts/test-soak.mjs",
     "bench": "npm run build && node --expose-gc scripts/bench.mjs",
+    "bench:serval": "tsx bench/serval/lab.ts",
     "bench:gate": "npm run build && node --expose-gc scripts/bench-gate.mjs",
     "bench:baseline": "npm run build && node --expose-gc scripts/bench-gate.mjs --update-baseline",
     "audit:bundle": "npm run build && node scripts/audit-bundle.mjs",
