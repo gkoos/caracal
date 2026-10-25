@@ -103,7 +103,7 @@ When using more than one bulkhead, permits are acquired in array order, not atom
 
 `bulkhead.distributed` accepts any `BulkheadCoordinator`, so a coordinator may admit
 against a locally held slot allocation instead of asking Redis per attempt. Serval's
-delegated bulkhead is exactly that (`docs/serval.md`, Phase 4): Redis allocates each
+delegated bulkhead is exactly that (`docs/serval.md`): Redis allocates each
 replica a budget of slots, the process admits within it without a round trip, and the
 budget is renewed, resized and returned out of band.
 

@@ -9,7 +9,7 @@ import { SERVAL_DEFAULT_SAFETY_MARGIN_MS } from "./authority.js"
 import { ServalRegistryPressureError } from "./cache.js"
 
 /**
- * The delegated bulkhead (Phase 4).
+ * The delegated bulkhead.
  *
  * It is a `BulkheadCoordinator`, so `bulkhead.distributed({ coordinator })` opts in
  * without changing the policy. Redis allocates each replica a budget of slots; this

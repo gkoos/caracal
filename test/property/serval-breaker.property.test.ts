@@ -1,5 +1,5 @@
 /**
- * Property tests for the cached-verdict circuit breaker (Phase 2).
+ * Property tests for the cached-verdict circuit breaker.
  *
  * The generated histories mix clock advances, out-of-band transitions, reads,
  * probe attempts, settlements and refresh cycles, and check decision 2's

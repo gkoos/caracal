@@ -1,5 +1,5 @@
 /**
- * Unit tests for the cached-verdict circuit breaker (Phase 2).
+ * Unit tests for the cached-verdict circuit breaker.
  *
  * `docs/serval.md` decision 2 is the contract: a warm valid CLOSED verdict admits
  * with no authority read, a cached OPEN rejects locally until its cooldown
@@ -69,7 +69,7 @@ describe("serval breaker fast path", () => {
       ).toMatchObject({ state: "closed" })
     }
 
-    // The whole point of Phase 2: the ordinary admission path costs nothing.
+    // The whole point of the cached verdict: the ordinary admission path costs nothing.
     expect(harness.authority.calls.readState).toBe(0)
   })
 

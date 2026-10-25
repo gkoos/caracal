@@ -1,5 +1,5 @@
 /**
- * Acceptance tests for the Serval authority protocol (Phase 0).
+ * Acceptance tests for the Serval authority protocol.
  *
  * One group per mandatory decision in `docs/serval.md`. Each group asserts the
  * contract's own worked examples and invariants against the deterministic

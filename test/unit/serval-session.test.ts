@@ -1,11 +1,10 @@
 /**
- * Unit tests for the shared Serval session (Phase 1).
+ * Unit tests for the shared Serval session.
  *
  * The session is policy-agnostic infrastructure: identity, the shared scope
  * registry, the bounded authority registry, notification handling, reconciliation
  * and lifecycle. `docs/serval.md` and `docs/serval-authority.md` are the contract;
- * the breaker, rate and bulkhead algorithms arrive in Phases 2 to 4 and reuse this
- * session unchanged.
+ * the breaker, rate limiter and bulkhead all reuse this session unchanged.
  */
 
 import { describe, expect, it } from "vitest"

@@ -5,7 +5,7 @@ import { SERVAL_DEFAULT_SAFETY_MARGIN_MS, servalDeadline } from "./authority.js"
 import { ServalRegistryPressureError } from "./cache.js"
 
 /**
- * The delegated rate limiter (Phase 3).
+ * The delegated rate limiter.
  *
  * It is a `RateLimitCoordinator`, so `rateLimit.distributed({ coordinator })` opts
  * in without changing the policy or the strict coordinator. Redis issues bounded

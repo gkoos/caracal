@@ -1,5 +1,5 @@
 /**
- * The Serval authority reference model (Phase 0).
+ * The Serval authority reference model.
  *
  * `docs/serval.md` and `docs/serval-authority.md` are the contract; this module is
  * their proof obligation. It is deliberately small, deterministic and Redis-free:
@@ -9,8 +9,8 @@
  *
  * The model is not the implementation. It records a *violation* whenever a
  * contract invariant is broken, so a test fails with the invariant's name rather
- * than with a diff of two large structures. Phase 1 ports the acceptance cases to
- * the real session and retires this module as the oracle.
+ * than with a diff of two large structures. The session has its own oracle; this
+ * module stays the specification's proof obligation.
  */
 
 /** A monotonic millisecond clock. Only elapsed time is read, never wall time. */

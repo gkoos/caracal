@@ -6,8 +6,8 @@ import type {
 import { RateEnvelope } from "./reference-model.js"
 
 /**
- * A scriptable stand-in for the Redis grant issuer, backed by the Phase 0
- * reference model's token bucket.
+ * A scriptable stand-in for the Redis grant issuer, backed by the reference model's
+ * token bucket.
  *
  * The oracle is the point: `RateEnvelope` is the executable form of decision 8, so
  * the generated histories drive the real coordinator against the specified server

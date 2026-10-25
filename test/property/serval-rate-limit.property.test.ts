@@ -1,5 +1,5 @@
 /**
- * Property tests for the delegated rate limiter (Phase 3).
+ * Property tests for the delegated rate limiter.
  *
  * The generated histories mix clock advances, concurrent admissions, ambiguous and
  * late replies, outages and several scopes, and check decision 8's invariants after

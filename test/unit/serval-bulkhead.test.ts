@@ -1,5 +1,5 @@
 /**
- * Unit tests for the delegated bulkhead (Phase 4).
+ * Unit tests for the delegated bulkhead.
  *
  * `docs/serval.md` decisions 6, 7, 9 and 11 are the contract: Redis allocates a slot
  * budget, the process admits within it without a round trip, allocation validity and

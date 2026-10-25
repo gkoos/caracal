@@ -2,7 +2,7 @@
 
 This page is the normative protocol companion to [Serval: delegated coordination](serval.md). It
 defines the identifiers, the conservative validity arithmetic, the state machines and the
-exceptional transitions that the Phase 0 contracts depend on. Read it as the specification the
+exceptional transitions the contracts depend on. Read it as the specification the
 reference model implements.
 
 ## Identifiers and versions

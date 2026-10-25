@@ -1,10 +1,10 @@
 /**
- * Unit tests for the delegated rate limiter (Phase 3).
+ * Unit tests for the delegated rate limiter.
  *
  * `docs/serval.md` decision 8 is the contract: the server issues bounded quota
  * grants from a token bucket, the process spends them locally within a
  * send-time-anchored horizon, and unused stock expires rather than being carried
- * forward. The authority here is the Phase 0 reference model, so these cases check
+ * forward. The authority here is the reference model, so these cases check
  * the implementation against the specification's own oracle.
  */
 

@@ -22,9 +22,9 @@ import {
 import { identityFor } from "./session-harness.js"
 
 /**
- * A seeded adversarial history for the Phase 1 session.
+ * A seeded adversarial history for the session.
  *
- * It mixes the events the Phase 1 gate names - reordered and duplicated
+ * It mixes the events the contract names - reordered and duplicated
  * invalidations, failed reads, a disconnected subscription and a reconnect,
  * registration pressure, send-time-anchored replies and clock advances - and
  * checks the invariants after every step against an oracle it maintains itself.

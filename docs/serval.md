@@ -5,14 +5,13 @@ policies. It keeps Redis as the authority for shared policy state and allocation
 lets each process enforce locally held, time-bounded *authority* on the request path. The ordinary
 admission path then needs no Redis round trip while valid local authority exists.
 
-> **Status: Phase 1.** This page and [Serval authority
-> protocol](serval-authority.md) are the RFC and the protocol contracts. Phase 0 delivered the
-> contracts and the executable reference model; Phase 1 delivered the shared session, its
-> deterministic test infrastructure and its generated histories. **No Serval option or export ships
-> yet** - the session is internal until the policy coordinators land - and the strict Redis
-> coordinators (`redisCoordinator`, `redisCircuitBreakerCoordinator`, `redisRateLimitCoordinator`)
-> remain the supported distributed implementations. See
-> [Implementation status](#implementation-status).
+> **Status: experimental.** The strategy ships as the opt-in
+> [`@gkoos/caracal/serval`](serval-api.md) entry point. This page and [Serval authority
+> protocol](serval-authority.md) are the specification - the contracts, the guarantees and the
+> deviations; [the API page](serval-api.md) is the reference for using it, and
+> [the fault lab](serval-benchmarks.md) carries the measured trade-offs and the operating
+> envelopes. The strict Redis coordinators (`redisCoordinator`, `redisCircuitBreakerCoordinator`,
+> `redisRateLimitCoordinator`) remain the default distributed implementations.
 
 Serval is **not** a drop-in replacement for the strict Redis coordinators. Its consistency and
 failure guarantees differ on purpose, and those differences are stated as a deviation envelope
@@ -126,7 +125,7 @@ fencing and diagnostic metadata, not proof of instant revocation. See
 
 ## The eleven mandatory decisions
 
-Phase 0 settles each decision as a concrete v1 contract. Every decision below names the acceptance
+Each decision below is settled as a concrete v1 contract. Every one names the acceptance
 case that exercises it; the cases live in `test/unit/serval-authority.test.ts` (deterministic
 scenarios) and `test/property/serval-authority.property.test.ts` (generated adversarial histories).
 
@@ -159,8 +158,8 @@ reply never resets the deadline", "clock jumps do not lengthen a grant".
   instant instead is conservative, because a verdict is adopted at or after the moment the breaker
   opened. A probe that still arrives early - a shortened cooldown, or a client clock that leads the
   server's - is refused by the authority, and the refusal re-anchors the local cooldown so one skewed
-  replica cannot probe on every request. The open time is retained for diagnostics and for a later
-  phase that can measure the clock offset.
+  replica cannot probe on every request. The open time is retained for diagnostics and for a future
+  refinement that measures the clock offset.
 - A read alone never performs OPEN to HALF_OPEN. HALF_OPEN exists only as an authoritative
   reservation. If Redis is unavailable, the process rejects rather than fabricating a probe.
 - A cached CLOSED admits only within its configured freshness allowance; after that the explicit
@@ -287,7 +286,7 @@ admissions(L) <= R * (L + V) + B
 *Why:* every admission is backed by a permit issued no earlier than `L + V` before the interval's
 end (an older permit has expired), and a token bucket admits at most `R * elapsed + B` issuance over
 any interval. This bounds **admissions**, not issuance, and holds only under intact authority
-history. Adaptive grant sizing is a Phase 3 optimisation, not part of the envelope.
+history. Adaptive grant sizing is an optimisation, not part of the envelope.
 
 Acceptance: *decision 8* - "a generated history with spend-at-expiry never exceeds
 `R * (L + V) + B`", "unused quota is not credited back".
@@ -318,7 +317,7 @@ reply does not unfreeze", "reconciliation, not a stale reply, restores capacity"
 
 ### 10. Fencing, last-old-issuance boundary, repeated failover, monotonic adoption
 
-- A holdoff is meaningful only with an independently established `T_last_old_issue`. Phase 0
+- A holdoff is meaningful only with an independently established `T_last_old_issue`. The protocol
   requires the deployment to name who fences the old authority, how successful fencing is verified,
   and how the timestamp is conservatively bounded including detection and clock uncertainty.
 - If an old primary can keep issuing or renewing, **no finite wait suffices**; the session must use
@@ -511,9 +510,11 @@ autoscaling changes the aggregate bound.
 
 ## Public API
 
-Illustrative only; the syntax is finalised in Phase 0 review, and no option is exposed until its
-semantics are implemented and tested. Existing `circuitBreaker.distributed`,
-`rateLimit.distributed` and `bulkhead.distributed` keep working unchanged.
+The published surface is `@gkoos/caracal/serval`; `docs/serval-api.md` is its reference,
+with the exports, the options and their defaults, the lifecycle and the migration steps.
+Every option named there is implemented and tested. Existing
+`circuitBreaker.distributed`, `rateLimit.distributed` and `bulkhead.distributed` keep
+working unchanged, and the sketch below is the shape they are composed in.
 
 ```ts
 const serval = createServalSession(redis, {
@@ -545,29 +546,29 @@ const capacity = bulkhead.distributed({
 // Compose local policies independently as hard per-process guardrails.
 ```
 
-The current policy interfaces call the coordinator per admission or per action, so the delegated
-path must be explicit: the session-backed coordinator advertises a delegated capability and the
-policy takes the cached path, rather than silently issuing a Redis call per admission.
+The current policy interfaces call the coordinator per admission or per action, and a delegated
+coordinator answers from locally held authority. Opting in is therefore explicit and local: you pass
+it where you would pass the strict coordinator, and the policy keeps its own admission semantics -
+rather than a policy silently issuing a Redis call per admission.
 
 ## Implementation status
 
-Phases 0 to 6 are implemented: the strategy ships as the opt-in, experimental
-`@gkoos/caracal/serval` entry point, documented in `docs/serval-api.md`, with its
-measured trade-offs in `docs/serval-benchmarks.md` and a scheduled fault-lab workflow.
+The strategy is implemented and shipped as an opt-in, experimental entry point. The
+session and the three delegated coordinators are reachable **only** through
+`@gkoos/caracal/serval`; the root package, `caracal/redis` and the three policy
+factories are unchanged, so opting in is a coordinator argument rather than a
+configuration flag.
 
-The session and the three delegated coordinators are reachable **only** through that
-entry point. The root package, `caracal/redis` and the three policy factories are
-unchanged, so opting in is a coordinator argument rather than a configuration flag.
-
-| Phase | Delivered |
+| Component | Delivered |
 |---|---|
-| 0 | These two pages, and the executable reference model with one acceptance group per mandatory decision |
-| 1 | The shared session under `src/coordination/serval/`: `authority.ts` (vocabulary, versioning, conservative expiry, incarnation tracking), `cache.ts` (the bounded pinned registry), `metrics.ts`, `scheduler.ts`, `notifications.ts` (versioned invalidations and the Redis pub/sub transport), `reconciliation.ts` and `session.ts`; plus the deterministic test infrastructure and the generated histories |
-| 2 | `breaker.ts`: the cached-verdict breaker. It is a `BreakerCoordinator`, so `circuitBreaker.distributed({ coordinator })` opts in with no change to the policy or to the strict coordinator. The strict observe/settle replies now carry the server's open time and the configuration revision, so a replica that saw a transition refreshes without a read |
-| 3 | `rate-limit.ts`: delegated admission quotas, plus `rateGrantV1` and `redisRateLimitGrantIssuer` in `caracal/redis`. It is a `RateLimitCoordinator`, so `rateLimit.distributed({ coordinator })` opts in unchanged. Grants are drawn from the **same** GCRA state the strict coordinator uses, so the delegated path is not a second budget |
-| 4 | `bulkhead.ts`: delegated slot allocations, plus `bulkheadAllocationV1` and `redisBulkheadAllocationIssuer` in `caracal/redis`. It is a `BulkheadCoordinator`, so `bulkhead.distributed({ coordinator })` opts in unchanged. The allocation hash has a key suffix of its own, so it can never land on the strict coordinator's lease set |
+| Specification | These two pages, and the executable reference model with one acceptance group per mandatory decision |
+| Session | The shared session under `src/coordination/serval/`: `authority.ts` (vocabulary, versioning, conservative expiry, incarnation tracking), `cache.ts` (the bounded pinned registry), `metrics.ts`, `scheduler.ts`, `notifications.ts` (versioned invalidations and the Redis pub/sub transport), `reconciliation.ts` and `session.ts` |
+| Breaker | `breaker.ts`: the cached-verdict breaker. It is a `BreakerCoordinator`, so `circuitBreaker.distributed({ coordinator })` opts in with no change to the policy or to the strict coordinator. The strict observe/settle replies carry the server's open time and the configuration revision, so a replica that saw a transition refreshes without a read |
+| Rate limiter | `rate-limit.ts`: delegated admission quotas, plus `rateGrantV1` and `redisRateLimitGrantIssuer`. It is a `RateLimitCoordinator`, so `rateLimit.distributed({ coordinator })` opts in unchanged. Grants are drawn from the **same** GCRA state the strict coordinator uses, so the delegated path is not a second budget |
+| Bulkhead | `bulkhead.ts`: delegated slot allocations, plus `bulkheadAllocationV1` and `redisBulkheadAllocationIssuer`. It is a `BulkheadCoordinator`, so `bulkhead.distributed({ coordinator })` opts in unchanged. The allocation hash has a key suffix of its own, so it can never land on the strict coordinator's lease set |
+| Composition | The three policies in one operation, and a multi-process fault lab with measured trade-offs |
 
-Three things Phase 3 settles, because they are easy to get wrong:
+Three things the rate limiter settles, because they are easy to get wrong:
 
 - **The rate limiter has no session, no snapshot and no reconciliation.** A breaker
   verdict is re-derivable state, so a snapshot converges it. A quota grant is a
@@ -590,8 +591,8 @@ after losing the race for stock carries the shortest honest wait, and a reply th
 arrived too late to be adopted carries the local estimate of one horizon - the
 documented fallback when the server hint is absent.
 
-Phase 4 adds `bulkhead.ts`: delegated slot allocations, plus `bulkheadAllocationV1`
-and `redisBulkheadAllocationIssuer` in `caracal/redis`. It is a `BulkheadCoordinator`,
+The bulkhead adds delegated slot allocations, plus `bulkheadAllocationV1`
+and `redisBulkheadAllocationIssuer`. It is a `BulkheadCoordinator`,
 so `bulkhead.distributed({ coordinator })` opts in unchanged. Four things it settles:
 
 - **The fleet limit is a sum of allocations.** The server keeps one counter of granted
@@ -615,13 +616,15 @@ so `bulkhead.distributed({ coordinator })` opts in unchanged. Four things it set
   settles it - idempotently, with the original send-time anchor, so a late commit
   cannot extend anything either.
 
-Phase 5 composes the three policies in one operation and runs the fault lab:
+Composing the three policies in one operation is where their claims meet, and the fault lab
+is where they are measured:
 
-| Phase | Delivered |
+| Artefact | Delivered |
 |---|---|
-| 5 | `test/integration/serval-composition.integration.test.ts`: local and delegated layers together, per-attempt admission under retry, refusals that stay out of breaker evidence, cancellation with a dependency that ignores it, a Redis outage that leaves local authority intact, and bounded shutdown. `bench/serval/`: a multi-process fault lab over four profiles, five fault cells and paired seeds, reporting Redis cost, admission outcomes, tracked occupancy and the dependency's own physical concurrency |
+| Composition suite | `test/integration/serval-composition.integration.test.ts`: local and delegated layers together, per-attempt admission under retry, refusals that stay out of breaker evidence, cancellation with a dependency that ignores it, a Redis outage that leaves local authority intact, and bounded shutdown |
+| Fault lab | `bench/serval/`: a multi-process sweep over four profiles, five fault cells and paired seeds, reporting Redis cost, admission outcomes, tracked occupancy and the dependency's own physical concurrency |
 
-Three findings from that phase are worth stating, because they shape the operating
+Three findings from that work are worth stating, because they shape the operating
 envelope rather than the implementation:
 
 - **A refusal is not evidence, and a settlement is not free.** A rate or bulkhead
@@ -648,7 +651,7 @@ failure behaviour, metrics, guardrails and migration - is documented in
 
 ## Executable contracts
 
-Phase 0's contracts are executable, not prose alone:
+The specification's contracts are executable, not prose alone:
 
 | Artefact | Role |
 |---|---|
@@ -657,7 +660,9 @@ Phase 0's contracts are executable, not prose alone:
 | `test/unit/serval-authority.test.ts` | One acceptance group per mandatory decision, with the deterministic worked examples, plus the shared authority vocabulary |
 | `test/property/serval-authority.property.test.ts` | The same invariants over generated adversarial histories, honouring `CARACAL_TEST_SEED` |
 
-Phase 1's session has its own deterministic infrastructure and cases:
+### The session
+
+The session has its own deterministic infrastructure and cases:
 
 | Artefact | Role |
 |---|---|
@@ -670,7 +675,9 @@ Phase 1's session has its own deterministic infrastructure and cases:
 | `test/unit/serval-notifications.test.ts` | The invalidation codec, the Redis transport and the channel |
 | `test/unit/serval-reconciliation.test.ts` | The reconciler on its own: coalescing, malformed snapshots, rollback and a clean stop |
 
-Phase 2 adds the breaker's own cases:
+### The breaker
+
+The breaker's own cases:
 
 | Artefact | Role |
 |---|---|
@@ -680,7 +687,9 @@ Phase 2 adds the breaker's own cases:
 | `test/property/serval-breaker.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
 | `test/integration/serval-breaker.redis.integration.test.ts` | The measured claims against a real Redis: zero admission reads while the cached verdict is valid, and recovery through the strict probe path after the cooldown |
 
-Phase 3 adds the rate limiter's cases:
+### The rate limiter
+
+The rate limiter's cases:
 
 | Artefact | Role |
 |---|---|
@@ -691,7 +700,9 @@ Phase 3 adds the rate limiter's cases:
 | `test/property/serval-rate-limit.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
 | `test/integration/serval-rate-limit.redis.integration.test.ts` | One shared bucket with the strict path, a deduplicated retry that deducts once, measured round trips per admission, the hoarding cap and contention |
 
-Phase 4 adds the bulkhead's cases:
+### The bulkhead
+
+The bulkhead's cases:
 
 | Artefact | Role |
 |---|---|
@@ -702,30 +713,19 @@ Phase 4 adds the bulkhead's cases:
 | `test/property/serval-bulkhead.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
 | `test/integration/serval-bulkhead.redis.integration.test.ts` | Allocations summed across replicas, renewal that adds no capacity, the freeze-before-return handoff, and the measured tracked overshoot a reclaimed allocation permits |
 
-Phase 5 composes them and runs the fault campaign:
+### Composition and the fault lab
 
 | Artefact | Role |
 |---|---|
 | `test/integration/serval-composition.integration.test.ts` | All three delegated policies over one operation, local guardrails, retry placement and per-attempt admission, refusals that stay out of breaker evidence, cancellation against an adapter that ignores it, a Redis outage with local authority intact, and bounded shutdown |
+| `test/integration/serval-public-api.integration.test.ts` | A pipeline built only from the published exports, against a real Redis |
 | `bench/serval/lab.ts` | The fault lab: four profiles, five fault cells, paired seeds, real worker processes, and raw per-seed results written to `bench/serval/results/` |
 | `bench/serval/worker.ts` | One replica: its own process, its own Redis connection, every coordination command counted through a proxy over the client |
 | `bench/serval/downstream.ts` | The controlled dependency: programmable mode and latency, with physical concurrency and overshoot area measured at the server, and no listener that stops work when a client disconnects |
 
-The reference model is the specification's proof obligation for Phase 0, and the fake authority plus
-the deterministic scheduler play that role for the session. Phase 2 onwards replaces the fakes with
-real Redis integration suites.
-
-## Implementation phases
-
-| Phase | Scope | Gate |
-|---|---|---|
-| 0 (this page) | Authority protocol specification and executable contracts | Every policy has a falsifiable contract and deviation envelope; all eleven decisions have executable model cases |
-| 1 | Shared session, replica incarnation, bounded pinned registry, notification transport, reconciliation, deterministic scheduler | Reordering, expiry, duplicate messages, partitions, reconnect and bounded cleanup pass; no policy algorithm inside the session |
-| 2 | Circuit breaker | Cached-OPEN recovery via authoritative probe after cooldown; protective through outage; admission reads near zero on warm valid CLOSED |
-| 3 | Rate limiter | No double spending in generated histories; correct server accounting under contention |
-| 4 | Bulkhead | Resize-down below occupancy stops new admissions without forgetting holders; frozen capacity is never spent |
-| 5 | Composition and fault campaign | No cross-policy interference, stuck recovery or unreported degradation |
-| 6 | Documentation and release | Reproducible benchmarks, complete conformance suite, explicit known limitations |
+The reference model is the specification's proof obligation; the fake authorities and the
+deterministic schedulers play that role for each coordinator, and the real Redis suites
+verify what only a server can settle.
 
 Serval ships as an **opt-in experimental strategy** until multi-seed, real-process evidence supports
 stability.

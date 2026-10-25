@@ -15,7 +15,7 @@ import {
   type FakeBreakerAuthority,
 } from "./fake-breaker-authority.js"
 
-/** The breaker identity the Phase 2 tests use. */
+/** The breaker identity the breaker tests use. */
 export const TEST_BREAKER_IDENTITY: BreakerIdentity = Object.freeze({
   name: "payments",
   operation: "charge",
@@ -59,7 +59,7 @@ export interface BreakerHarness {
 }
 
 /**
- * The Phase 2 breaker wired to deterministic collaborators: the session, the
+ * The cached-verdict breaker wired to deterministic collaborators: the session, the
  * scriptable strict authority, a controllable transport and a capturing publisher.
  */
 export function createBreakerHarness(

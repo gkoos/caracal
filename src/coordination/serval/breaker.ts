@@ -24,7 +24,7 @@ import type { ServalScheduler } from "./scheduler.js"
 import { createServalAuthoritySession, type ServalSession } from "./session.js"
 
 /**
- * The cached-verdict circuit breaker (Phase 2).
+ * The cached-verdict circuit breaker.
  *
  * It is a `BreakerCoordinator`, so `circuitBreaker.distributed({ coordinator })`
  * opts in without changing the policy or the strict coordinator: the strict
@@ -683,7 +683,7 @@ export interface ServalBreaker {
  * Wires one cached-verdict breaker: the session, its authoritative reader and the
  * coordinator the policy uses.
  *
- * This is the Phase 2 opt-in. Nothing about the policy or the strict coordinator
+ * This is the opt-in. Nothing about the policy or the strict coordinator
  * changes: `circuitBreaker.distributed({ coordinator: breaker.coordinator })`
  * simply stops paying for a read on every admission while a cached verdict is
  * valid, and keeps the strict coordinator authoritative for everything else.

@@ -185,7 +185,7 @@ Retention is per `(operation, scope)` and covers **only non-closed states**. A C
 
 `circuitBreaker.distributed` accepts any `BreakerCoordinator`, so a coordinator may serve the
 admission decision from locally held authority instead of reading Redis per admission. Serval's
-cached-verdict breaker is exactly that (`docs/serval.md`, Phase 2): a warm, valid cached CLOSED
+cached-verdict breaker is exactly that (`docs/serval.md`): a warm, valid cached CLOSED
 verdict admits with no round trip, a cached OPEN rejects locally until its cooldown elapses, and the
 strict coordinator stays authoritative for every transition, probe and settlement.
 

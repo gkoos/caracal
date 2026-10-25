@@ -7,7 +7,7 @@ import { coordinationKey } from "../redis/keys.js"
  * Nothing here interprets policy semantics. `docs/serval.md` and
  * `docs/serval-authority.md` are the contract; this module carries the parts all
  * three policies share, and every policy-specific algorithm lives in its own
- * module (Phases 2 to 4).
+ * module.
  */
 
 export type ServalPolicyKind = "circuit-breaker" | "rate-limit" | "bulkhead"

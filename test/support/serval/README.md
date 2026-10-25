@@ -6,7 +6,7 @@ is never reachable from a package export, and production coordination lives in
 
 | File | Role |
 |---|---|
-| `reference-model.ts` | The Phase 0 deterministic reference model: one small model per mandatory decision, each recording a violation when a contract invariant breaks |
+| `reference-model.ts` | The deterministic reference model: one small model per mandatory decision, each recording a violation when a contract invariant breaks |
 | `histories.ts` | Seeded adversarial histories for the reference model (grants, the rate envelope, the bulkhead handoff) with independent oracles |
 | `deterministic-scheduler.ts` | A virtual clock and task queue for the session: time moves only when a test advances it |
 | `fake-authority.ts` | A scriptable authority: versioned records stamped with the server's clock, plus read failures, a held read, a rewound ledger and a failover |

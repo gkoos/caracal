@@ -1,8 +1,9 @@
 # Serval fault lab: measured trade-offs and operating envelopes
 
 This page reports what the reproducible fault lab measures, what the numbers mean, and
-which configurations the evidence supports. It is the Phase 5 deliverable of
-`docs/serval.md`, and the raw material for the release documentation in Phase 6.
+which configurations the evidence supports. It is the measurement behind
+[Serval](serval.md) and [its API](serval-api.md): every claim those pages make about
+cost, admission behaviour and tracked occupancy is checked here rather than asserted.
 
 The lab is **not part of `npm test`**: it takes minutes, spawns real processes and
 needs Redis, so it is a research tool rather than a gate.
@@ -106,7 +107,7 @@ capacity.
 slow-downstream cell the four replicas tracked 4 slots between them while the dependency
 was physically working on 4 responses - and in the outage cells the dependency's peak
 was 0 because nothing was admitted. The two are measured independently on purpose: the
-plan's safety claim is about *tracked* occupancy against the sum of the local ceilings,
+safety claim is about *tracked* occupancy against the sum of the local ceilings,
 and the physical number is what the dependency actually did, including work that
 outlived its admission (the lab's adapter ignores cancellation, so an abandoned attempt
 is not mistaken for a stopped one).

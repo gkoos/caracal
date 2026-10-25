@@ -17,7 +17,7 @@ import {
  * Redis coordinators, Serval, and Serval with a local guardrail. Nothing here is part
  * of `npm test`: the point is to measure trade-offs, not to gate a commit.
  *
- * What it is careful about, because the plan asks for it:
+ * What it is careful about, deliberately:
  *
  * - **Paired, seeded runs.** Every profile sees the same cells, the same offered load
  *   and the same seeds, so a difference is attributable.
@@ -161,7 +161,7 @@ function aggregate(runs: readonly Metrics[]): Metrics {
     failed: total((run) => run.failed),
     other: total((run) => run.other),
     redisOps: total((run) => run.redisOps),
-    // Summed across replicas: the plan compares observed tracked occupancy against the
+    // Summed across replicas: the safety claim compares observed tracked occupancy against the
     // sum of the local ceilings, so a per-replica maximum would understate it.
     peakTracked: total((run) => run.peakTracked),
     admissionLatency,

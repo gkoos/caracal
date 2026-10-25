@@ -1,5 +1,5 @@
 /**
- * Property tests for the delegated bulkhead (Phase 4).
+ * Property tests for the delegated bulkhead.
  *
  * The generated histories mix clock advances, concurrent admissions, releases,
  * renewals, voluntary returns, outages and lost replies, and check the allocation

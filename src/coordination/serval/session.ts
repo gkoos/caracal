@@ -45,8 +45,8 @@ import { createServalScheduler, type ServalScheduler } from "./scheduler.js"
  *
  * It is deliberately policy-agnostic. It knows the authority vocabulary
  * (identities, versions, incarnations, conservative deadlines) and nothing about
- * breaker verdicts, quota envelopes or slot allocations: those arrive with their
- * policies in Phases 2 to 4 and reuse this session unchanged.
+ * breaker verdicts, quota envelopes or slot allocations: those are policy-specific
+ * and reuse this session unchanged.
  *
  * `docs/serval.md` and `docs/serval-authority.md` are the contract.
  */

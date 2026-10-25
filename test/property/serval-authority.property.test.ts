@@ -1,5 +1,5 @@
 /**
- * Property tests for the Serval authority reference model (Phase 0).
+ * Property tests for the Serval authority reference model.
  *
  * `docs/serval.md` and `docs/serval-authority.md` are the contract; the model in
  * `test/support/serval/reference-model.ts` is its executable obligation. These
