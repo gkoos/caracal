@@ -1,4 +1,119 @@
+import type { BreakerIdentity } from "../../../src/core/circuit-breaker.js"
 import type { ServalScopeIdentity } from "../../../src/coordination/serval/authority.js"
+import {
+  createServalBreaker,
+  breakerScopeIdentity,
+  type ServalBreakerCoordinator,
+  type ServalStaleClosedBehavior,
+} from "../../../src/coordination/serval/breaker.js"
+import {
+  decodeServalInvalidation,
+  type ServalInvalidation,
+} from "../../../src/coordination/serval/notifications.js"
+import {
+  createFakeBreakerAuthority,
+  type FakeBreakerAuthority,
+} from "./fake-breaker-authority.js"
+
+/** The breaker identity the Phase 2 tests use. */
+export const TEST_BREAKER_IDENTITY: BreakerIdentity = Object.freeze({
+  name: "payments",
+  operation: "charge",
+  scope: "tenant-a",
+})
+
+let harnessSequence = 0
+
+function nextHarnessName(): string {
+  harnessSequence += 1
+  return `serval-breaker-${harnessSequence}`
+}
+
+export interface BreakerHarnessOptions {
+  /** Shared by replicas that must coordinate with each other. */
+  readonly namespace?: string
+  readonly freshnessMs?: number
+  readonly staleClosed?: ServalStaleClosedBehavior
+  readonly reconciliationIntervalMs?: number
+  readonly registryCapacity?: number
+  readonly initialNow?: number
+  /** Shared by replicas that must see the same clock. */
+  readonly scheduler?: DeterministicScheduler
+  /** Shared by replicas that must see the same authority. */
+  readonly authority?: FakeBreakerAuthority
+  readonly withTransport?: boolean
+  readonly replicaId?: string
+}
+
+export interface BreakerHarness {
+  readonly scheduler: DeterministicScheduler
+  readonly authority: FakeBreakerAuthority
+  readonly notifications: FakeTransport
+  readonly session: ServalSession
+  readonly coordinator: ServalBreakerCoordinator
+  /** Every invalidation this replica published. */
+  readonly published: ServalInvalidation[]
+  readonly identity: BreakerIdentity
+  start(): Promise<void>
+  close(): Promise<void>
+}
+
+/**
+ * The Phase 2 breaker wired to deterministic collaborators: the session, the
+ * scriptable strict authority, a controllable transport and a capturing publisher.
+ */
+export function createBreakerHarness(
+  options: BreakerHarnessOptions = {},
+): BreakerHarness {
+  const scheduler =
+    options.scheduler ??
+    createDeterministicScheduler(options.initialNow ?? 1_000)
+  const authority =
+    options.authority ??
+    createFakeBreakerAuthority({ now: () => scheduler.now() })
+  const notifications = createFakeTransport()
+  const published: ServalInvalidation[] = []
+
+  const breaker = createServalBreaker({
+    namespace: options.namespace ?? nextHarnessName(),
+    authority: authority.coordinator,
+    transport:
+      options.withTransport === false ? undefined : notifications.transport,
+    publisher: {
+      async publish(payload) {
+        const invalidation = decodeServalInvalidation(payload)
+        if (invalidation !== undefined) {
+          published.push(invalidation)
+        }
+      },
+    },
+    scheduler,
+    replicaId: options.replicaId ?? "replica-1",
+    replicaIncarnation: `${options.replicaId ?? "replica-1"}#1`,
+    freshnessMs: options.freshnessMs,
+    staleClosed: options.staleClosed,
+    reconciliationIntervalMs: options.reconciliationIntervalMs,
+    registryCapacity: options.registryCapacity,
+  })
+
+  return {
+    scheduler,
+    authority,
+    notifications,
+    session: breaker.session,
+    coordinator: breaker.coordinator,
+    published,
+    identity: TEST_BREAKER_IDENTITY,
+    async start() {
+      // A deployment registers the scopes its policies use, so the cold start
+      // caches a verdict for each of them instead of learning them one at a time.
+      breaker.session.registerScope(breakerScopeIdentity(TEST_BREAKER_IDENTITY))
+      await breaker.session.start()
+    },
+    close: () => breaker.session.close(),
+  }
+}
+
 import {
   createServalAuthoritySession,
   type ServalSession,
