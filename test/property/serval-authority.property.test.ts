@@ -17,6 +17,7 @@
 import * as fc from "fast-check"
 import { describe, expect, it } from "vitest"
 import { runAdversarialHistories } from "../support/serval/histories.js"
+import { runSessionHistory } from "../support/serval/session-history.js"
 import { createGeneratedSuite } from "../support/seed.js"
 
 const suite = createGeneratedSuite({
@@ -68,5 +69,38 @@ describe("serval authority model", () => {
 
     expect(second).toEqual(first)
     expect(first.length).toBe(3)
+  })
+})
+
+describe("serval session histories", () => {
+  suite.itProperty(
+    "survives reordering, duplication, partitions, reconnects and pressure",
+    historyArb,
+    async (spec) => {
+      const violations = await runSessionHistory({
+        seed: spec.seed,
+        steps: spec.steps,
+      })
+      expect(
+        violations,
+        `seed ${spec.seed} over ${spec.steps} steps\n${suite.replay}`,
+      ).toEqual([])
+    },
+    { runs: 60 },
+  )
+
+  it("replays a fixed session history set without a violation", async () => {
+    for (let index = 0; index < 12; index += 1) {
+      const seed = (suite.seed + index * 2_246_822_519) >>> 0
+      const violations = await runSessionHistory({ seed, steps: 24 })
+      expect(violations, `seed ${seed}\n${suite.replay}`).toEqual([])
+    }
+  })
+
+  it("reproduces the same session history for the same seed", async () => {
+    const first = await runSessionHistory({ seed: 4_242, steps: 20 })
+    const second = await runSessionHistory({ seed: 4_242, steps: 20 })
+
+    expect(second).toEqual(first)
   })
 })

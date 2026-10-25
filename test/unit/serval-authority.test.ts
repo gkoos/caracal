@@ -10,6 +10,19 @@
  */
 
 import { describe, expect, it } from "vitest"
+import {
+  SERVAL_DEFAULT_SAFETY_MARGIN_MS,
+  ServalIncarnationTracker,
+  compareServalVersions,
+  isServalReplyUsable,
+  isValidServalIdentity,
+  isValidServalRecord,
+  isValidServalVersion,
+  servalDeadline,
+  servalInvalidationChannel,
+  servalRecordKey,
+  servalScopeKey,
+} from "../../src/coordination/serval/authority.js"
 import type {
   BulkheadOperation,
   GrantReply,
@@ -26,6 +39,10 @@ import {
   OccupancyLedger,
   RateEnvelope,
 } from "../support/serval/reference-model.js"
+import {
+  TEST_IDENTITY,
+  identityFor,
+} from "../support/serval/session-harness.js"
 
 function grantReply(overrides: Partial<GrantReply> = {}): GrantReply {
   return {
@@ -794,5 +811,195 @@ describe("decision 11: grantId, operationId and leaseRevision ordering", () => {
     expect(allocation.grantId).toBe("grant-0")
     expect(allocation.allocated).toBe(6)
     expect(allocation.violations).toEqual([])
+  })
+})
+
+describe("shared authority vocabulary", () => {
+  it("derives a deadline from the send time and only subtracts the margin", () => {
+    expect(servalDeadline(1_000, 100)).toBe(
+      1_100 - SERVAL_DEFAULT_SAFETY_MARGIN_MS,
+    )
+    expect(servalDeadline(1_000, 100, 0)).toBe(1_100)
+    expect(servalDeadline(1_000, 100, 150)).toBe(950)
+
+    for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => servalDeadline(invalid, 100)).toThrow(RangeError)
+    }
+    expect(() => servalDeadline(0, -1)).toThrow(RangeError)
+  })
+
+  it("decides reply usability from the send time, never the receipt time", () => {
+    expect(
+      isServalReplyUsable({
+        requestStartedAt: 1_000,
+        validForMs: 100,
+        safetyMarginMs: 0,
+        receivedAt: 1_100,
+      }),
+    ).toBe(true)
+
+    // The RFC's worked example: a 100 ms grant with a 150 ms delayed response.
+    expect(
+      isServalReplyUsable({
+        requestStartedAt: 1_000,
+        validForMs: 100,
+        safetyMarginMs: 0,
+        receivedAt: 1_150,
+      }),
+    ).toBe(false)
+
+    // The margin shortens the window; it is never added to it.
+    expect(
+      isServalReplyUsable({
+        requestStartedAt: 1_000,
+        validForMs: 100,
+        safetyMarginMs: 25,
+        receivedAt: 1_076,
+      }),
+    ).toBe(false)
+  })
+
+  it("orders versions within one incarnation and never across one", () => {
+    const base = {
+      authorityIncarnation: "authority-1",
+      epoch: 1,
+      version: 2,
+      configRevision: 1,
+    }
+
+    expect(compareServalVersions(undefined, base)).toBe("newer")
+    expect(compareServalVersions(base, { ...base })).toBe("same")
+    expect(compareServalVersions(base, { ...base, version: 3 })).toBe("newer")
+    expect(compareServalVersions(base, { ...base, version: 1 })).toBe("older")
+    // A higher epoch wins even with a lower version: epochs order state.
+    expect(compareServalVersions(base, { ...base, epoch: 2, version: 0 })).toBe(
+      "newer",
+    )
+    expect(compareServalVersions(base, { ...base, epoch: 0, version: 9 })).toBe(
+      "older",
+    )
+    // A configuration roll-forward is newer at the same epoch and version.
+    expect(compareServalVersions(base, { ...base, configRevision: 4 })).toBe(
+      "newer",
+    )
+    expect(compareServalVersions(base, { ...base, configRevision: 0 })).toBe(
+      "older",
+    )
+    expect(
+      compareServalVersions(base, {
+        ...base,
+        authorityIncarnation: "authority-2",
+      }),
+    ).toBe("other-incarnation")
+  })
+
+  it("validates identities, versions and records", () => {
+    expect(isValidServalIdentity(TEST_IDENTITY)).toBe(true)
+    expect(isValidServalIdentity({ ...TEST_IDENTITY, scope: " " })).toBe(false)
+    expect(
+      isValidServalIdentity({ ...TEST_IDENTITY, policyKind: "other" }),
+    ).toBe(false)
+    expect(
+      isValidServalIdentity({ ...TEST_IDENTITY, scope: "x".repeat(1025) }),
+    ).toBe(false)
+
+    const version = {
+      authorityIncarnation: "authority-1",
+      epoch: 0,
+      version: 1,
+      configRevision: 1,
+    }
+    expect(isValidServalVersion(version)).toBe(true)
+    expect(isValidServalVersion({ ...version, epoch: -1 })).toBe(false)
+    expect(isValidServalVersion({ ...version, version: 1.5 })).toBe(false)
+    expect(isValidServalVersion({ ...version, authorityIncarnation: "" })).toBe(
+      false,
+    )
+
+    const record = {
+      identity: TEST_IDENTITY,
+      version,
+      issuedAt: 1_000,
+      expiresAt: 2_000,
+      payload: undefined,
+    }
+    expect(isValidServalRecord(record)).toBe(true)
+    expect(isValidServalRecord({ ...record, expiresAt: 999 })).toBe(false)
+    expect(isValidServalRecord({ ...record, issuedAt: -1 })).toBe(false)
+  })
+
+  it("keys one identity into one cluster slot and keeps identities separate", () => {
+    const key = servalRecordKey("ns", TEST_IDENTITY)
+
+    expect(key).toMatch(/^caracal:v1:\{[0-9a-f]{64}\}:record$/)
+    expect(servalRecordKey("ns", TEST_IDENTITY)).toBe(key)
+
+    const tag = (value: string) =>
+      value.slice(value.indexOf("{") + 1, value.indexOf("}"))
+    expect(tag(servalRecordKey("ns", identityFor("tenant-b")))).not.toBe(
+      tag(key),
+    )
+    expect(tag(servalInvalidationChannel("ns"))).not.toBe(tag(key))
+
+    // Scope isolation: every part of the identity is part of the key.
+    const keys = new Set([
+      servalScopeKey(TEST_IDENTITY),
+      servalScopeKey({ ...TEST_IDENTITY, scope: "tenant-b" }),
+      servalScopeKey({ ...TEST_IDENTITY, operation: "refund" }),
+      servalScopeKey({ ...TEST_IDENTITY, policyName: "refunds" }),
+      servalScopeKey({ ...TEST_IDENTITY, policyKind: "rate-limit" }),
+    ])
+    expect(keys.size).toBe(5)
+  })
+})
+
+describe("incarnation tracking", () => {
+  it("adopts only through reconciliation and never re-adopts a retired incarnation", () => {
+    const tracker = new ServalIncarnationTracker()
+    expect(tracker.state).toBe("uninitialized")
+
+    // A reply or a hint never adopts: it puts the client into the uncertain state.
+    expect(tracker.observe("authority-1")).toBe("uncertain")
+    expect(tracker.state).toBe("uncertain")
+
+    expect(tracker.reconcile("authority-1")).toBe(true)
+    expect(tracker.state).toBe("valid")
+    expect(tracker.observe("authority-1")).toBe("current")
+
+    tracker.retire("authority-1")
+    expect(tracker.current).toBeUndefined()
+    expect(tracker.state).toBe("uncertain")
+    expect(tracker.observe("authority-1")).toBe("ignored-retired")
+    // A retired incarnation is not re-adopted by a reconciliation either.
+    expect(tracker.reconcile("authority-1")).toBe(false)
+
+    expect(tracker.reconcile("authority-2")).toBe(true)
+    expect(tracker.state).toBe("valid")
+  })
+
+  it("bounds the memory of retired incarnations", () => {
+    const tracker = new ServalIncarnationTracker({
+      maximumRetiredIncarnations: 2,
+    })
+
+    tracker.retire("authority-1")
+    tracker.retire("authority-2")
+    tracker.retire("authority-3")
+
+    expect(tracker.retired).toEqual(["authority-2", "authority-3"])
+    // The oldest retirement is forgotten, so it is treated as unfamiliar rather
+    // than as retired - the documented cost of a bounded window.
+    expect(tracker.observe("authority-1")).toBe("uncertain")
+  })
+
+  it("rejects an unusable incarnation identifier", () => {
+    const tracker = new ServalIncarnationTracker()
+
+    expect(() => tracker.reconcile("")).toThrow(TypeError)
+    expect(() => tracker.retire("   ")).toThrow(TypeError)
+    expect(() => tracker.observe("x".repeat(257))).toThrow(TypeError)
+    expect(
+      () => new ServalIncarnationTracker({ maximumRetiredIncarnations: 0 }),
+    ).toThrow(RangeError)
   })
 })
