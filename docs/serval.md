@@ -730,9 +730,19 @@ verify what only a server can settle.
 Serval ships as an **opt-in experimental strategy** until multi-seed, real-process evidence supports
 stability.
 
+## Prior art
 
+The circuit breaker described here - the strict coordinator and the delegated verdicts on top of it -
+follows ideas from [redeye](https://github.com/laurells/redeye) (`redeye-breaker`, MIT, by Laurels Ozy
+Echichinwo): a decision made atomically on the server rather than by a read-then-write, an exclusive
+recovery claim whose lease bounds a hung attempt so it cannot wedge recovery, and a verdict cached
+locally together with the version it was derived from, so a stale cache is detectable. Nothing here
+is derived from its code - the resemblance is in the shape of the problem - and the contracts differ
+where this page says they do: redeye counts a consecutive streak or an EWMA failure rate and closes
+on a single successful trial, while the breaker here counts a fixed-size window above
+`minimumThroughput`, requires `halfOpenSuccesses`, and discards results from a superseded generation.
 
-
-
-
-
+Its [reliability model and
+limitations](https://github.com/laurells/redeye#reliability-model--limitations) is the kind of
+writing this page's [guarantees and deviations](#guarantees-and-deviations) aims at: say what is
+solved, say what is not, and measure what it costs.
