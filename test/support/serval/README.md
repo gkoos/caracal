@@ -18,6 +18,9 @@ is never reachable from a package export, and production coordination lives in
 | `fake-grant-authority.ts` | A scriptable quota issuer backed by the reference model's token bucket, with a lost reply that may or may not have committed and a held reply |
 | `rate-limit-harness.ts` | The delegated rate limiter wired to a manual clock and that authority |
 | `rate-limit-history.ts` | The generated quota history, with a conservation oracle: no permit is created locally, and admissions never exceed what was granted |
+| `fake-allocation-authority.ts` | A server model for slot allocations, with a reservation that outlives validity, an idempotent operation ledger and an oracle for the fleet limit |
+| `bulkhead-harness.ts` | The delegated bulkhead wired to a shared manual clock and that authority |
+| `bulkhead-history.ts` | The generated allocation history: no admission beyond the server's allocation, frozen capacity never spent, revisions monotone |
 
 The model is the specification's proof obligation, not the implementation. The unit suites
 (`test/unit/serval-*.test.ts`) drive one deterministic acceptance group per decision and per session

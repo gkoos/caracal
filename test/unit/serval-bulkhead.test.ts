@@ -1,0 +1,391 @@
+/**
+ * Unit tests for the delegated bulkhead (Phase 4).
+ *
+ * `docs/serval.md` decisions 6, 7, 9 and 11 are the contract: Redis allocates a slot
+ * budget, the process admits within it without a round trip, allocation validity and
+ * holder lifetime are separate clocks, a renewal is not a grant, and returned
+ * capacity is frozen before it is sent. The authority here is a server model with its
+ * own oracle, so a client bug that provokes a server-side breach fails the test.
+ */
+
+import { describe, expect, it } from "vitest"
+import { bulkhead, BulkheadRejectedError, operation } from "../../src/index.js"
+import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
+import { createFakeAllocationAuthority } from "../support/serval/fake-allocation-authority.js"
+import {
+  TEST_BULKHEAD_IDENTITY,
+  createBulkheadHarness,
+  createManualClock,
+} from "../support/serval/bulkhead-harness.js"
+
+describe("serval bulkhead local allocation", () => {
+  it("admits a whole allocation with one round trip", async () => {
+    const harness = createBulkheadHarness({ limit: 8, initialSlots: 4 })
+
+    for (let index = 0; index < 4; index += 1) {
+      expect((await harness.acquire()).allowed).toBe(true)
+    }
+
+    // One allocation for four admissions: the round trip is not per admission.
+    expect(harness.authority.calls.modify).toBe(1)
+    expect(harness.coordinator.metrics()).toMatchObject({
+      admissions: 4,
+      allocations: 1,
+      localRefusals: 0,
+    })
+    expect(harness.authority.violations()).toEqual([])
+  })
+
+  it("grows the allocation on demand and refuses when the fleet is full", async () => {
+    const harness = createBulkheadHarness({ limit: 4, initialSlots: 2 })
+
+    // Two slots are granted; the third admission asks for more and gets the rest.
+    expect((await harness.acquire()).allowed).toBe(true)
+    expect((await harness.acquire()).allowed).toBe(true)
+    expect((await harness.acquire()).allowed).toBe(true)
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 4,
+      active: 3,
+      freeSpendable: 1,
+    })
+
+    expect((await harness.acquire()).allowed).toBe(true)
+    // The fleet's ceiling is reached, so the fifth admission is refused locally.
+    expect((await harness.acquire()).allowed).toBe(false)
+    expect(harness.authority.granted()).toBe(4)
+    expect(harness.authority.violations()).toEqual([])
+  })
+
+  it("never admits more than the allocation it holds", async () => {
+    const harness = createBulkheadHarness({ limit: 4, initialSlots: 4 })
+
+    const decisions = await Promise.all(
+      Array.from({ length: 6 }, () => harness.acquire()),
+    )
+    await harness.whenIdle()
+
+    expect(decisions.filter((decision) => decision.allowed)).toHaveLength(4)
+    const diagnostics = harness.coordinator.diagnostics(harness.identity)
+    expect(diagnostics?.active).toBe(4)
+    expect(diagnostics?.active).toBeLessThanOrEqual(diagnostics?.allocated ?? 0)
+    expect(harness.authority.peakGranted()).toBe(4)
+  })
+
+  it("stops new admissions when its allocation is reclaimed, and keeps its holders", async () => {
+    const clock = createManualClock()
+    const authority = createFakeAllocationAuthority({
+      now: () => clock.now(),
+      limit: 4,
+      graceMs: 0,
+    })
+    const shared = {
+      limit: 4,
+      validityMs: 100,
+      graceMs: 0,
+      redistributionIntervalMs: 0,
+      clock,
+      authority,
+    }
+    const first = createBulkheadHarness({
+      ...shared,
+      initialSlots: 4,
+      replicaId: "replica-1",
+    })
+    const second = createBulkheadHarness({
+      ...shared,
+      initialSlots: 4,
+      replicaId: "replica-2",
+    })
+
+    const tokens = [1, 2, 3, 4].map((index) => first.token(index))
+    for (const token of tokens) {
+      expect((await first.acquire(token)).allowed).toBe(true)
+    }
+    expect(authority.granted()).toBe(4)
+
+    // The validity lapses, the reservation is reclaimed, and another replica takes
+    // the whole fleet budget. The first replica holds four running holders and no
+    // capacity at all.
+    clock.advanceBy(200)
+    expect((await second.acquire()).allowed).toBe(true)
+    await first.whenIdle()
+
+    expect((await first.acquire(first.token(5))).allowed).toBe(false)
+    const diagnostics = first.coordinator.diagnostics(first.identity)
+    expect(diagnostics?.allocated).toBe(0)
+    expect(diagnostics?.active).toBe(4)
+    expect(diagnostics?.freeSpendable).toBe(0)
+    expect(authority.violations()).toEqual([])
+
+    // Its holders are still tracked and still renew: allocation validity and holder
+    // lifetime are separate clocks.
+    expect((await first.renew(tokens[0] as string)).allowed).toBe(true)
+    expect((await first.release(tokens[0] as string)).allowed).toBe(true)
+    expect(first.coordinator.diagnostics(first.identity)?.active).toBe(3)
+  })
+
+  it("does not count a renewal as capacity", async () => {
+    const harness = createBulkheadHarness({
+      limit: 4,
+      initialSlots: 4,
+      validityMs: 1_000,
+      renewLeadMs: 900,
+    })
+    for (let index = 0; index < 4; index += 1) await harness.acquire()
+    await harness.whenIdle()
+
+    const granted = harness.authority.granted()
+    for (let index = 0; index < 5; index += 1) {
+      harness.advanceBy(100)
+      // The pool is exhausted, so each admission consults the authority - and the
+      // only thing it can do is renew.
+      await harness.acquire()
+      await harness.whenIdle()
+    }
+
+    expect(harness.coordinator.metrics().renewals).toBeGreaterThan(0)
+    expect(harness.authority.granted()).toBe(granted)
+    expect(harness.coordinator.diagnostics(harness.identity)?.allocated).toBe(4)
+    expect(harness.authority.violations()).toEqual([])
+  })
+
+  it("keeps the deadline anchored to the renewal's send time", async () => {
+    const harness = createBulkheadHarness({
+      limit: 2,
+      initialSlots: 2,
+      validityMs: 2_000,
+      renewLeadMs: 1_000,
+    })
+    await harness.acquire()
+    await harness.acquire()
+    await harness.whenIdle()
+
+    // The renewal falls due at 1 975, and its reply is delayed by 500ms.
+    harness.advanceBy(1_000)
+    harness.authority.holdNext()
+    const pending = harness.acquire(harness.token(3))
+    harness.advanceBy(500)
+    harness.authority.release()
+    await expect(pending).resolves.toMatchObject({ allowed: false })
+    await harness.whenIdle()
+
+    // The renewal was sent at 2 000, so its deadline is 2 000 + 2 000 - margin: the
+    // 500ms the reply took never becomes authority.
+    expect(harness.coordinator.metrics().renewals).toBe(1)
+    expect(harness.coordinator.diagnostics(harness.identity)?.deadline).toBe(
+      2_000 + 2_000 - 25,
+    )
+  })
+})
+
+describe("serval bulkhead freeze-before-return", () => {
+  it("freezes returned slots before the request, and never spends them again", async () => {
+    const harness = createBulkheadHarness({ limit: 8, initialSlots: 4 })
+    await harness.acquire()
+    await harness.whenIdle()
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 4,
+      active: 1,
+      freeSpendable: 3,
+    })
+
+    // The authority is unreachable, so the outcome is unknown: the two slots stay
+    // frozen and are no longer spendable.
+    harness.authority.failNext(1)
+    await expect(
+      harness.coordinator.relinquish(harness.identity, 2),
+    ).resolves.toEqual({ type: "frozen", slots: 2, reason: "unavailable" })
+
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 4,
+      active: 1,
+      frozenPendingReturn: 2,
+      freeSpendable: 1,
+    })
+    expect(harness.authority.granted()).toBe(4)
+
+    // Only the single unfrozen slot can be spent.
+    expect((await harness.acquire()).allowed).toBe(true)
+    expect((await harness.acquire()).allowed).toBe(false)
+    expect(harness.coordinator.metrics().frozenSlots).toBe(2)
+  })
+
+  it("settles a lost reply by retrying the same operation", async () => {
+    const harness = createBulkheadHarness({ limit: 8, initialSlots: 4 })
+    await harness.acquire()
+    await harness.whenIdle()
+
+    // The reduction committed on the server and the reply was lost.
+    harness.authority.commitThenFailNext()
+    await expect(
+      harness.coordinator.relinquish(harness.identity, 2),
+    ).resolves.toMatchObject({ type: "frozen" })
+    expect(harness.coordinator.metrics().frozenSlots).toBe(2)
+    // The server already returned them: the fleet can see two slots free.
+    expect(harness.authority.granted()).toBe(2)
+
+    // The next admission, once the retry backoff has lapsed, retries the same
+    // operation in the background; the server returns its recorded result and the
+    // frozen slots are retired rather than restored.
+    harness.advanceBy(200)
+    expect((await harness.acquire()).allowed).toBe(true)
+    await harness.whenIdle()
+
+    expect(harness.authority.calls.duplicates).toBeGreaterThan(0)
+    expect(harness.coordinator.metrics().frozenSlots).toBe(0)
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 2,
+      active: 2,
+      frozenPendingReturn: 0,
+    })
+    expect(harness.authority.violations()).toEqual([])
+  })
+
+  it("does not freeze the same slots twice", async () => {
+    const harness = createBulkheadHarness({ limit: 8, initialSlots: 4 })
+    await harness.acquire()
+    await harness.whenIdle()
+
+    harness.authority.failNext(1)
+    await harness.coordinator.relinquish(harness.identity, 3)
+    const second = await harness.coordinator.relinquish(harness.identity, 3)
+
+    expect(second).toEqual({ type: "frozen", slots: 3, reason: "unknown" })
+    expect(harness.coordinator.metrics().frozenSlots).toBe(3)
+    expect(
+      harness.coordinator.diagnostics(harness.identity)?.freeSpendable,
+    ).toBe(0)
+  })
+
+  it("returns every free slot on close", async () => {
+    const harness = createBulkheadHarness({ limit: 8, initialSlots: 4 })
+    await harness.acquire()
+    await harness.acquire()
+    await harness.whenIdle()
+
+    await harness.close()
+
+    // Only free slots are returned: the two holders keep theirs, so the fleet still
+    // accounts for them and shutdown never pretends otherwise.
+    expect(harness.authority.granted()).toBe(2)
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 2,
+      active: 2,
+      state: "allocated",
+    })
+    // Shutdown stops admitting, whatever capacity is left.
+    expect((await harness.acquire()).allowed).toBe(false)
+  })
+})
+
+describe("serval bulkhead boundaries", () => {
+  it("refuses a scope its registry cannot hold rather than dropping holders", async () => {
+    const harness = createBulkheadHarness({
+      limit: 4,
+      initialSlots: 4,
+      maximumScopes: 1,
+    })
+    await harness.acquire()
+
+    const other = { ...TEST_BULKHEAD_IDENTITY, scope: "tenant-b" }
+    await expect(
+      harness.coordinator.command(
+        other,
+        "acquire",
+        "other",
+        harness.leaseMs,
+        4,
+      ),
+    ).rejects.toBeInstanceOf(ServalRegistryPressureError)
+    expect(harness.coordinator.metrics().registryRefusals).toBe(1)
+  })
+
+  it("rejects invalid parameters as the strict coordinator does", async () => {
+    const harness = createBulkheadHarness()
+    await expect(
+      harness.coordinator.command(harness.identity, "acquire", "", 1_000, 8),
+    ).rejects.toThrow("Invalid bulkhead lease action or token")
+    await expect(
+      harness.coordinator.command(harness.identity, "acquire", "token", 0, 8),
+    ).rejects.toThrow("Invalid bulkhead lease duration or limit")
+    await expect(
+      harness.coordinator.command(
+        harness.identity,
+        "acquire",
+        "token",
+        1_000,
+        0,
+      ),
+    ).rejects.toThrow("Invalid bulkhead lease duration or limit")
+
+    expect(() => createBulkheadHarness({ validityMs: 0 })).toThrow("validityMs")
+    expect(() => createBulkheadHarness({ graceMs: -1 })).toThrow("graceMs")
+    expect(() => createBulkheadHarness({ initialSlots: 0 })).toThrow(
+      "initialSlots",
+    )
+    expect(() => createBulkheadHarness({ maximumScopes: 0 })).toThrow(
+      "maximumScopes",
+    )
+  })
+
+  it("reports an unknown token as an unknown holder", async () => {
+    const harness = createBulkheadHarness({ limit: 4, initialSlots: 2 })
+    await harness.acquire()
+
+    expect((await harness.renew("never-acquired")).allowed).toBe(false)
+    expect((await harness.release("never-acquired")).allowed).toBe(false)
+    expect(harness.coordinator.metrics().admissions).toBe(1)
+  })
+})
+
+describe("serval bulkhead in the policy path", () => {
+  it("admits within the allocation and rejects beyond it", async () => {
+    const harness = createBulkheadHarness({ limit: 2, initialSlots: 2 })
+    const policy = bulkhead.distributed({
+      name: TEST_BULKHEAD_IDENTITY.name,
+      limit: 2,
+      coordinator: harness.coordinator,
+      scope: () => TEST_BULKHEAD_IDENTITY.scope,
+    })
+
+    let release: (() => void) | undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const slow = operation({
+      name: TEST_BULKHEAD_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => {
+          await held
+          return "ok"
+        },
+      },
+      policies: [policy],
+    })
+    const quick = operation({
+      name: TEST_BULKHEAD_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => "ok",
+      },
+      policies: [policy],
+    })
+
+    // Two executions hold both slots until they settle.
+    const first = slow.execute(undefined)
+    const second = slow.execute(undefined)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const rejected = await quick.execute(undefined).catch((error) => error)
+    expect(rejected).toBeInstanceOf(BulkheadRejectedError)
+    expect((rejected as BulkheadRejectedError).coordination).toBe("distributed")
+    expect(harness.coordinator.metrics().localRefusals).toBeGreaterThan(0)
+
+    release?.()
+    await expect(first).resolves.toBe("ok")
+    await expect(second).resolves.toBe("ok")
+    await harness.whenIdle()
+    expect(harness.coordinator.metrics().admissions).toBe(2)
+  })
+})
