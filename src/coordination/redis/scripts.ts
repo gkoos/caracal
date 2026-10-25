@@ -146,6 +146,140 @@ end
 return {1, allowed, retryAfterMs, revision, changedAt, body}
 `
 
+/**
+ * Issues a bounded quota grant against the same GCRA state `rateLimitV1` uses.
+ *
+ * A grant of `n` permits is `n` arrivals taken at once, so it is admissible
+ * exactly when the bucket holds `n` tokens: the TAT advances by `n * emission`
+ * and the burst condition is unchanged. That is what makes the delegated path
+ * and the strict path share one bucket instead of counting the same budget
+ * twice.
+ *
+ * Issuance is idempotent on `operationId` for as long as the grant it produced is
+ * live, so a retry after an ambiguous reply returns the recorded grant instead of
+ * deducting the bucket again. A refusal is not recorded: it deducted nothing, and
+ * re-evaluating it is what the caller asked for.
+ *
+ * KEYS[1] = rate state key          (:rate)         shared with rateLimitV1
+ * KEYS[2] = grant ledger            (:grants)       hash: operationId -> granted|validForMs
+ * KEYS[3] = live grant expiry       (:grant-expiry) zset: operationId, score = server expiry
+ * KEYS[4] = configuration record
+ * ARGV[1] = emissionIntervalMs  min time between cells at the sustained rate
+ * ARGV[2] = burstDelayMs        how far ahead of schedule an arrival may be
+ * ARGV[3] = knownRevision       the configuration revision this caller holds
+ * ARGV[4] = operationId         one issuance operation, including all its retries
+ * ARGV[5] = requestedPermits
+ * ARGV[6] = validForMs          the grant's spend horizon, V
+ * ARGV[7] = maximumGrants       live grants allowed, -1 for uncapped
+ *
+ * Returns: {envelopeVersion, granted, retryAfterMs, validForMs, duplicate,
+ *           revision, changedAt, body?}
+ *   granted 0 = refused; retryAfterMs is then always > 0
+ *   duplicate 1 = a recorded grant was returned, nothing was deducted
+ *   body is the configuration record, only when ARGV[3] differs from it
+ */
+export const rateGrantV1 = `
+local emission = tonumber(ARGV[1])
+local burstDelay = tonumber(ARGV[2])
+local knownRevision = tonumber(ARGV[3])
+local operationId = ARGV[4]
+local requested = tonumber(ARGV[5])
+local validForMs = tonumber(ARGV[6])
+local maximumGrants = tonumber(ARGV[7])
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[4])
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1 then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  local effective = decoded['effective']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number'
+     or type(effective) ~= 'table' or effective['policy'] ~= 'rateLimit' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  local overrideEmission = tonumber(effective['emissionIntervalMs'])
+  local overrideBurst = tonumber(effective['burstDelayMs'])
+  if not overrideEmission or overrideEmission < 1
+     or overrideEmission ~= math.floor(overrideEmission)
+     or not overrideBurst or overrideBurst < 0
+     or overrideBurst ~= math.floor(overrideBurst) then
+    return redis.error_reply('unsupported configuration record')
+  end
+  emission = overrideEmission
+  burstDelay = overrideBurst
+  if knownRevision ~= revision then body = record end
+end
+
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+
+-- A grant is live while now <= its server expiry. Expired grants are neither
+-- deduplicated nor outstanding, so they are forgotten here rather than lingering.
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now - 1)
+if #expired > 0 then
+  redis.call('HDEL', KEYS[2], unpack(expired))
+  redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now - 1)
+end
+
+local function reply(granted, retryAfterMs, duplicate)
+  if body == '' then
+    return {1, granted, retryAfterMs, validForMs, duplicate, revision, changedAt}
+  end
+  return {1, granted, retryAfterMs, validForMs, duplicate, revision, changedAt, body}
+end
+
+local existing = redis.call('HGET', KEYS[2], operationId)
+if existing then
+  local granted = string.match(existing, '^(%d+)|')
+  return reply(tonumber(granted), 0, 1)
+end
+
+local tat = tonumber(redis.call('GET', KEYS[1]) or '0')
+local anchored = math.max(tat, now)
+local available = math.floor((now + burstDelay - anchored) / emission) + 1
+local granted = math.min(requested, available)
+
+if granted > 0 and maximumGrants >= 0
+   and redis.call('ZCARD', KEYS[3]) >= maximumGrants then
+  -- The configured maximum outstanding stock is reached. Refuse, and hint at the
+  -- earliest expiry that frees capacity.
+  granted = 0
+  local earliest = redis.call('ZRANGE', KEYS[3], 0, 0, 'WITHSCORES')
+  local retryAfterMs = validForMs
+  if earliest[2] then retryAfterMs = tonumber(earliest[2]) - now end
+  if retryAfterMs < 1 then retryAfterMs = 1 end
+  return reply(0, retryAfterMs, 0)
+end
+
+if granted <= 0 then
+  return reply(0, anchored - burstDelay - now, 0)
+end
+
+local nextTat = anchored + granted * emission
+redis.call('SET', KEYS[1], nextTat)
+redis.call('PEXPIREAT', KEYS[1], nextTat)
+
+-- Retained until the grant can no longer be adopted: a client's send-time-anchored
+-- deadline is at or before the server expiry it was derived from.
+local expiresAt = now + validForMs
+redis.call('HSET', KEYS[2], operationId, granted .. '|' .. validForMs)
+redis.call('ZADD', KEYS[3], expiresAt, operationId)
+local ledgerTtl = redis.call('PTTL', KEYS[2])
+if ledgerTtl < expiresAt - now then
+  redis.call('PEXPIREAT', KEYS[2], expiresAt)
+end
+local expiryTtl = redis.call('PTTL', KEYS[3])
+if expiryTtl < expiresAt - now then
+  redis.call('PEXPIREAT', KEYS[3], expiresAt)
+end
+return reply(granted, 0, 0)
+`
+
 // ---------------------------------------------------------------------------
 // Circuit-breaker scripts
 //

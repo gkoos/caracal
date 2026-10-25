@@ -86,6 +86,8 @@ Every coordination slot is keyed by `caracal:v1:{sha256(JSON([namespace, policy,
 | `observations` | circuit breaker | Sliding observation window sorted set |
 | `probes` | circuit breaker | Half-open probe token sorted set |
 | `rate` | rate limit | GCRA theoretical arrival time (string value) |
+| `grants` | rate limit (delegated) | Issuance ledger hash: `operationId` → `granted\|validForMs` |
+| `grant-expiry` | rate limit (delegated) | Live grant sorted set, scored by server expiry |
 
 Empty identities and components over 1 024 UTF-8 bytes are rejected. The SHA-256 pre-image includes the raw namespace/policy/operation/scope strings; **these are not anonymised**, treat them as potentially observable in Redis keyspace.
 
@@ -172,17 +174,21 @@ The full set of commands required by the coordination scripts is:
 | `EVAL` | all coordinators | fallback that sends the full Lua body when the server has no cached copy (restart, `SCRIPT FLUSH`, eviction) |
 | `TIME` | all Lua scripts | server-side timestamp; **first call in every script** — blocking it aborts all coordination |
 | `HMGET` | breaker scripts; `readState` direct call | reads state hash fields |
-| `HSET` | breaker scripts | writes state hash fields |
+| `HGET` | rate limit `rateGrantV1` | reads the issuance ledger for `operationId` |
+| `HSET` | breaker and rate limit scripts | writes state hash fields; records a grant in the issuance ledger |
+| `HDEL` | rate limit `rateGrantV1` | forgets a ledger entry whose grant has expired |
 | `ZADD` | bulkhead and breaker scripts | adds lease/observation/probe entries |
 | `ZREM` | bulkhead and breaker scripts | removes lease/probe entries |
-| `ZCARD` | bulkhead and breaker scripts | counts active entries |
+| `ZCARD` | bulkhead, breaker and rate limit scripts | counts active entries; counts live quota grants for the outstanding-stock cap |
 | `ZSCORE` | bulkhead `bulkheadLeaseV1`; breaker `breakerSettleProbeV1` | detects an existing lease token; reads a probe token's deadline |
 | `ZREVRANGE` | bulkhead `bulkheadLeaseV1` | reads max-score entry to set key expiry |
+| `ZRANGEBYSCORE` | rate limit `rateGrantV1` | reads the grant ids whose ledger entries have expired |
 | `ZREMRANGEBYSCORE` | all Lua scripts | prunes expired entries from sorted sets |
-| `ZRANGE` | breaker `breakerObserveV1` | reads window entries for threshold calculation |
+| `ZRANGE` | breaker `breakerObserveV1`; rate limit `rateGrantV1` | reads window entries for threshold calculation; reads the earliest live grant expiry for the refusal hint |
 | `ZREMRANGEBYRANK` | breaker `breakerObserveV1` | caps observation window at `windowSize` |
 | `PEXPIRE` | breaker scripts | sets cleanup TTL on CLOSED-state hash |
-| `PEXPIREAT` | bulkhead and breaker scripts | sets absolute expiry on lease/probe sorted sets |
+| `PEXPIREAT` | bulkhead, breaker and rate limit scripts | sets absolute expiry on lease/probe/grant sorted sets and on the issuance ledger |
+| `PTTL` | rate limit `rateGrantV1` | keeps the longest remaining grant lifetime rather than shortening it |
 | `PERSIST` | breaker scripts | removes TTL from OPEN/HALF_OPEN state hash so it is never silently expired |
 | `EXISTS` | breaker `breakerObserveV1` | checks whether the state hash and observation set exist |
 | `DEL` | breaker `breakerAdmitProbeV1` / `breakerSettleProbeV1` | clears the probe set when a recovery window ends |

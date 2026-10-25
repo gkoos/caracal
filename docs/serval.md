@@ -551,13 +551,37 @@ policy takes the cached path, rather than silently issuing a Redis call per admi
 
 ## Implementation status
 
-Phases 0 and 1 are implemented; nothing after them is.
+Phases 0 to 3 are implemented; nothing after them is.
 
 | Phase | Delivered |
 |---|---|
 | 0 | These two pages, and the executable reference model with one acceptance group per mandatory decision |
 | 1 | The shared session under `src/coordination/serval/`: `authority.ts` (vocabulary, versioning, conservative expiry, incarnation tracking), `cache.ts` (the bounded pinned registry), `metrics.ts`, `scheduler.ts`, `notifications.ts` (versioned invalidations and the Redis pub/sub transport), `reconciliation.ts` and `session.ts`; plus the deterministic test infrastructure and the generated histories |
 | 2 | `breaker.ts`: the cached-verdict breaker. It is a `BreakerCoordinator`, so `circuitBreaker.distributed({ coordinator })` opts in with no change to the policy or to the strict coordinator. The strict observe/settle replies now carry the server's open time and the configuration revision, so a replica that saw a transition refreshes without a read |
+| 3 | `rate-limit.ts`: delegated admission quotas, plus `rateGrantV1` and `redisRateLimitGrantIssuer` in `caracal/redis`. It is a `RateLimitCoordinator`, so `rateLimit.distributed({ coordinator })` opts in unchanged. Grants are drawn from the **same** GCRA state the strict coordinator uses, so the delegated path is not a second budget |
+
+Three things Phase 3 settles, because they are easy to get wrong:
+
+- **The rate limiter has no session, no snapshot and no reconciliation.** A breaker
+  verdict is re-derivable state, so a snapshot converges it. A quota grant is a
+  *consumable*: no read can reconstruct what a replica holds, so its authority is the
+  issuance reply itself and the write response is its only refresh channel.
+- **A retry is deduplicated server-side, and it cannot extend the window.** The
+  issuance ledger records a granted operation for exactly as long as its grant is
+  live, so an ambiguous reply - a timeout that may or may not have committed - is
+  recoverable by retrying the same `operationId`, and the recovered grant keeps the
+  *original* send-time anchor. A refusal is deliberately not recorded: it deducted
+  nothing, and re-evaluating it is what the caller asked for.
+- **The configured maximum outstanding stock is enforced as a bound on live
+  grants.** The server counts live grants (`floor(maximumOutstandingPermits /
+  grantSize)` of them) rather than summing live permits, which is an O(1) check and
+  is conservative for any request size. A replica that hoards is bounded by it, and
+  the capacity it strands frees up when its grants expire.
+
+Retry-after is explicit: a refusal carries the server's own hint, a local refusal
+after losing the race for stock carries the shortest honest wait, and a reply that
+arrived too late to be adopted carries the local estimate of one horizon - the
+documented fallback when the server hint is absent.
 
 The session is deliberately **not** reachable from a package entry point yet: the public opt-in API
 arrives with the policy coordinators (Phases 2 to 4) and is finalised in Phase 6, so no configuration
@@ -596,6 +620,17 @@ Phase 2 adds the breaker's own cases:
 | `test/unit/serval-breaker.test.ts` | The fast path, the cooldown, probe coalescing, outage protection, convergence, the stale-CLOSED behaviours and the end-to-end policy path |
 | `test/property/serval-breaker.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
 | `test/integration/serval-breaker.redis.integration.test.ts` | The measured claims against a real Redis: zero admission reads while the cached verdict is valid, and recovery through the strict probe path after the cooldown |
+
+Phase 3 adds the rate limiter's cases:
+
+| Artefact | Role |
+|---|---|
+| `test/support/serval/fake-grant-authority.ts` | A scriptable issuer **backed by the reference model's token bucket**, so the generated histories drive the implementation against the specified authority rather than a second implementation of it. Adds a lost reply that may or may not have committed, a held reply, and call counting |
+| `test/support/serval/rate-limit-harness.ts` | The coordinator wired to a manual clock and that authority: the GCRA bucket refills from elapsed time, so advancing the clock is exactly what moves it |
+| `test/support/serval/rate-limit-history.ts` | The generated quota history: concurrent admissions, ambiguous and late replies, outages, several scopes, and a conservation check that no permit is created locally |
+| `test/unit/serval-rate-limit.test.ts` | The local stock, the issuance operation, expiry without carry, the retry-after hint, the registry bound and the end-to-end policy path |
+| `test/property/serval-rate-limit.property.test.ts` | The same invariants over generated histories, honouring `CARACAL_TEST_SEED` |
+| `test/integration/serval-rate-limit.redis.integration.test.ts` | One shared bucket with the strict path, a deduplicated retry that deducts once, measured round trips per admission, the hoarding cap and contention |
 
 The reference model is the specification's proof obligation for Phase 0, and the fake authority plus
 the deterministic scheduler play that role for the session. Phase 2 onwards replaces the fakes with

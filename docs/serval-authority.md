@@ -165,8 +165,11 @@ Rules:
   spendable and is not credited anywhere.
 - Concurrent local admissions are serialised against the stock counter, so a grant is never spent
   twice.
-- The server-side issuance operation is idempotent on `operationId`: a retry returns the recorded
-  grant instead of deducting tokens twice.
+- The server-side issuance operation is idempotent on `operationId` **for as long as the grant
+  it produced is live**: a retry returns the recorded grant instead of deducting tokens twice.
+  A refusal is not recorded, because it deducted nothing.
+- A grant is a consumable, so nothing reconstructs it: the issuance reply is its only authority,
+  and no reconciliation can restore what a replica has already spent.
 
 ### Envelope derivation
 
