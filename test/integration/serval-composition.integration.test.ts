@@ -24,11 +24,11 @@ import { redisProxy } from "../support/redis-proxy.js"
 /**
  * All three Serval policies composed in one operation, against a real Redis.
  *
- * The gate for Phase 5 is the absence of surprises: no cross-policy interference, no
- * stuck recovery, no unbounded growth and no unreported degradation. Each case here
- * exercises a composition requirement from `docs/serval.md` section 6 with the real
- * coordinators, so a policy that quietly depends on another's state, or that keeps
- * accounting after shutdown, fails rather than passing plausibly.
+ * The point of composing them is the absence of surprises: no cross-policy
+ * interference, no stuck recovery, no unbounded growth and no unreported degradation.
+ * Each case here exercises a composition requirement from `docs/serval.md` section 6
+ * with the real coordinators, so a policy that quietly depends on another's state, or
+ * that keeps accounting after shutdown, fails rather than passing plausibly.
  *
  *   npm run test:integration:redis
  */
@@ -371,7 +371,12 @@ describe.skipIf(!url)("serval composition", () => {
     // until that work settles - an abandoned admission is not evidence that the
     // dependency stopped, and the permit is not released early on its behalf.
     expect(replicaSet.rate.metrics().admissions).toBe(1)
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    // Wait for the abandoned work to settle instead of assuming a fixed delay is
+    // enough on a loaded machine.
+    const deadline = Date.now() + 5_000
+    while (finished === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
     expect(finished).toBe(1)
     await replicaSet.capacity.whenIdle()
 
