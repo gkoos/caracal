@@ -159,9 +159,10 @@ create -> start() -> serving -> close()
 - Tracked occupancy is not physical concurrency: an abandoned attempt whose adapter
   ignores cancellation keeps its permit until it settles, and capacity reclaimed after
   an allocation lapses can be reallocated while old holders still run.
-- A Redis outage stops a composed pipeline that includes the distributed breaker,
-  because its settlement is awaited. The delegated rate limiter and bulkhead keep
-  serving from local authority.
+- A cold start without Redis admits nothing, because no replica holds a verdict, a grant
+  or an allocation yet and every path has to read before it can serve. A warm process
+  keeps admitting from the authority it holds, and a failed observation or settlement is
+  reported as degradation rather than failing the call.
 - A rollback or restore that loses acknowledged issuance can permit overlapping grants;
   that is a documented failure-model deviation, not a bounded guarantee.
 

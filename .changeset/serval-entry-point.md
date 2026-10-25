@@ -16,5 +16,5 @@ the root package changes.
 `docs/serval/api.md` documents the configuration, lifecycle, approximate guarantees,
 explicit deviations, failure behaviour, metrics, local-guardrail recipe and migration
 steps; `docs/serval/benchmarks.md` carries the measured trade-offs and the operating
-envelopes, including the finding that a Redis outage stops a composed pipeline which
-includes the distributed breaker.
+envelopes, including the cold-start behaviour of a pipeline whose authority is
+unreachable.

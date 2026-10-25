@@ -178,17 +178,17 @@ The full set of commands required by the coordination scripts is:
 | `EVAL` | all coordinators | fallback that sends the full Lua body when the server has no cached copy (restart, `SCRIPT FLUSH`, eviction) |
 | `TIME` | all Lua scripts | server-side timestamp; **first call in every script** — blocking it aborts all coordination |
 | `HMGET` | breaker scripts; `readState` direct call | reads state hash fields |
-| `HGET` | rate limit `rateGrantV1`; bulkhead `bulkheadAllocationV1` | reads the issuance ledger for `operationId`; reads a replica's allocation |
+| `HGET` | rate limit `rateGrantV1`; bulkhead `bulkheadAllocationV1` | reads the issuance ledger for `operationId` and for every live grant; reads a replica's allocation |
 | `HSET` | breaker, rate limit and bulkhead scripts | writes state hash fields; records a grant; records an allocation and its operation result |
 | `HDEL` | rate limit and bulkhead scripts | forgets a ledger entry whose grant has expired; forgets an allocation whose reservation lapsed |
 | `INCRBY` | bulkhead `bulkheadAllocationV1` | reserves the delta of a resize-up |
 | `DECRBY` | bulkhead `bulkheadAllocationV1` | releases the delta of a resize-down or a reclaimed reservation |
 | `ZADD` | bulkhead, breaker and rate limit scripts | adds lease/observation/probe entries; adds reservations and ledger entries |
 | `ZREM` | bulkhead and breaker scripts | removes lease/probe entries |
-| `ZCARD` | bulkhead, breaker and rate limit scripts | counts active entries; counts live quota grants for the outstanding-stock cap |
+| `ZCARD` | bulkhead and breaker scripts | counts active entries |
 | `ZSCORE` | bulkhead `bulkheadLeaseV1`; breaker `breakerSettleProbeV1` | detects an existing lease token; reads a probe token's deadline |
 | `ZREVRANGE` | bulkhead `bulkheadLeaseV1` | reads max-score entry to set key expiry |
-| `ZRANGEBYSCORE` | rate limit `rateGrantV1` | reads the grant ids whose ledger entries have expired |
+| `ZRANGEBYSCORE` | rate limit `rateGrantV1` | reads the expired grant ids and the live ones the outstanding-permit cap is summed from |
 | `ZREMRANGEBYSCORE` | all Lua scripts | prunes expired entries from sorted sets |
 | `ZRANGE` | breaker `breakerObserveV1`; rate limit `rateGrantV1` | reads window entries for threshold calculation; reads the earliest live grant expiry for the refusal hint |
 | `ZREMRANGEBYRANK` | breaker `breakerObserveV1` | caps observation window at `windowSize` |
@@ -206,7 +206,7 @@ The full set of commands required by the coordination scripts is:
 ACL SETUSER caracal-prod on >strongpassword ~caracal:v1:* \
   +EVAL +EVALSHA \
   +TIME \
-  +HMGET +HSET \
+  +HMGET +HGET +HSET +HDEL \
   +ZADD +ZREM +ZCARD +ZSCORE \
   +ZREVRANGE +ZRANGE +ZREMRANGEBYSCORE +ZREMRANGEBYRANK \
   +PEXPIRE +PEXPIREAT +PERSIST \

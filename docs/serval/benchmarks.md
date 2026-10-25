@@ -52,65 +52,66 @@ not portable; the *ratios* and the admission outcomes are the point.
 
 | Cell | Profile | Rep | Offered | Admitted | Rate-rej | Bulkhead-rej | Failed | Redis/offer | p95 ms | Tracked | Peak physical |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| healthy | unprotected | 1 | 20 | 20 | 0 | 0 | 0 | 0.00 | 26 | 0 | 1 |
-| healthy | strict | 1 | 20 | 20 | 0 | 0 | 0 | **5.00** | 31 | 0 | 1 |
-| healthy | serval | 1 | 20 | 20 | 0 | 0 | 0 | **1.70** | 32 | 0 | 1 |
-| healthy | strict | 4 | 80 | 32 | 48 | 0 | 0 | 3.20 | 35 | 0 | 1 |
-| healthy | serval | 4 | 80 | 32 | 48 | 0 | 0 | **1.68** | 36 | 0 | 1 |
-| downstream-slow | strict | 4 | 80 | 64 | 7 | 1 | 0 | 4.71 | 75 | 0 | 4 |
-| downstream-slow | serval | 4 | 80 | 56 | 16 | 0 | 0 | **2.19** | 74 | 4 | 4 |
-| redis-outage | strict | 1 | 20 | 0 | 0 | 0 | 20 | 3.00 | 3 | 0 | 0 |
-| redis-outage | serval | 1 | 20 | 0 | 0 | 0 | 20 | 3.10 | 4 | 0 | 0 |
-| slow+partition | strict | 4 | 80 | 51 | 0 | 0 | 20 | 4.50 | 76 | 0 | 3 |
-| slow+partition | serval | 4 | 80 | 50 | 1 | 0 | 20 | **2.19** | 68 | 4 | 3 |
+| healthy | unprotected | 1 | 20 | 20 | 0 | 0 | 0 | 0.00 | 2 | 0 | 1 |
+| healthy | strict | 1 | 20 | 20 | 0 | 0 | 0 | **5.00** | 32 | 0 | 1 |
+| healthy | serval | 1 | 20 | 20 | 0 | 0 | 0 | **1.55** | 3 | 1 | 1 |
+| healthy | strict | 4 | 80 | 25 | 55 | 0 | 0 | 2.94 | 7 | 0 | 1 |
+| healthy | serval | 4 | 80 | 24 | 56 | 0 | 0 | **1.40** | 6 | 4 | 1 |
+| downstream-slow | strict | 4 | 80 | 51 | 25 | 0 | 0 | 4.06 | 63 | 0 | 4 |
+| downstream-slow | serval | 4 | 80 | 50 | 26 | 0 | 0 | **1.99** | 60 | 4 | 4 |
+| redis-outage | strict | 1 | 20 | 0 | 0 | 0 | 20 | 3.00 | 1 | 0 | 0 |
+| redis-outage | serval | 1 | 20 | 0 | 0 | 0 | 20 | 3.05 | 1 | 0 | 0 |
+| slow+partition | strict | 4 | 80 | 57 | 0 | 0 | 20 | 4.50 | 61 | 0 | 3 |
+| slow+partition | serval | 4 | 80 | 57 | 0 | 0 | 20 | **1.98** | 57 | 3 | 3 |
+
+Tracked occupancy is what the delegated bulkhead accounts for locally. The strict bulkhead keeps its leases in Redis, so its column reads 0 rather than the count a server-side read would give.
 
 ## What the numbers say
 
 **The admission read really is removed, and that is most of the cost.** On a healthy
-dependency one replica pays **1.70 Redis commands per offered request** with Serval
-against **5.00** with the strict coordinators - a 66% reduction, and the same
+dependency one replica pays **1.55 Redis commands per offered request** with Serval
+against **5.00** with the strict coordinators - a 69% reduction, and the same
 admissions. The remaining cost is what the contract expects: the rate grant and
-the bulkhead allocation on their slow paths, plus the breaker's **awaited settlement**
-on every call. Serval does not make settlement free, and this number is the honest
-measurement of that.
+the bulkhead allocation on their slow paths, plus the breaker's settlement on every
+call. Serval does not make settlement free, and this number is the honest measurement
+of that.
 
 **Under load the fleet ceiling is what binds, not the coordinator.** With four replicas
-and 80 offers the strict and Serval profiles both admit 32: the rate limit (50/s, burst
-8) refuses the rest. Coordination strategy does not change how much work the fleet
+and 80 offers the strict and Serval profiles admitted 25 and 24: the rate limit (50/s,
+burst 8) refuses the rest. Coordination strategy does not change how much work the fleet
 accepts; it changes what that costs.
 
-**A slow dependency is where the profiles diverge, and Serval is the stricter one.**
-Serval admitted 56 of 80 where strict admitted 64, with 16 rate refusals instead of 7
-and no bulkhead refusals instead of 1. The delegated rate limiter's local stock runs
-out before the strict GCRA would refuse, so it protects earlier and admits less. That
-is a *deliberate* trade: less work through a struggling dependency, at a lower Redis
-cost. It is not free - it is also the case where a caller sees a refusal the strict
-path would have admitted.
+**A slow dependency is where the profiles diverge.** In this run Serval admitted 50 of 80
+where strict admitted 51, with 26 rate refusals against 25 and no bulkhead refusals on
+either path. The delegated rate limiter spends locally held stock, so it can refuse
+before the strict GCRA would, and the integration suite pins that mechanism; how much
+earlier it bites depends on the arrival pattern. What the table shows either way is the
+cost: 1.99 Redis commands per offer against 4.06, for the same protection.
 
-**Redis unavailable stops a composed pipeline, on both paths, and that is not a bug.**
-The strict coordinators fail closed because they cannot read. Serval keeps its local
-authority - the composition suite asserts exactly that for the rate limiter and the
-bulkhead - but the breaker's outcome settlement is awaited, so a pipeline that includes
-the breaker fails the call rather than pretending the outcome was recorded. The
-measured consequence is that a full outage admits nothing on either path. If an outage
-must be survivable, the answer is a deployment choice: leave the distributed breaker
-out and rely on local protection, or accept the fail-closed behaviour. This is recorded
-as an operating envelope rather than smoothed over.
+**A cold start without Redis admits nothing, on both paths.** The outage cells start each
+worker against an unreachable authority, so no replica holds a verdict, a grant or an
+allocation yet and every path has to read before it can serve. The strict coordinators fail
+closed because they cannot read, and the delegated layers have nothing local to admit
+from. This is a cold-start envelope rather than a settlement effect: observation and
+settlement failures are reported as degradation and do not fail an otherwise successful
+call, and the composition suite asserts that a warm delegated pipeline keeps admitting from
+the authority it holds. If a cold start during an outage must be survivable, the answer is
+a deployment choice: keep a local guardrail in front, or accept the fail-closed behaviour.
+This is recorded as an operating envelope rather than smoothed over.
 
 **A partition is per replica, and the fleet carries on.** With one of four replicas cut
-off, the three healthy replicas kept admitting (50-51 of 80) while the isolated
-replica's 20 offers failed. Cost stayed lower with Serval (2.19 against 4.50 per
-offer). No replica's failure was hidden: it appeared as failures, not as silent
-capacity.
+off, the three healthy replicas kept admitting (57 of 80 on both paths) while the isolated
+replica's 20 offers failed. Cost stayed lower with Serval (1.98 against 4.50 per offer).
+No replica's failure was hidden: it appeared as failures, not as silent capacity.
 
-**Tracked occupancy is not physical concurrency, and the lab shows the gap.** In the
-slow-downstream cell the four replicas tracked 4 slots between them while the dependency
-was physically working on 4 responses - and in the outage cells the dependency's peak
-was 0 because nothing was admitted. The two are measured independently on purpose: the
-safety claim is about *tracked* occupancy against the sum of the local ceilings,
-and the physical number is what the dependency actually did, including work that
-outlived its admission (the lab's adapter ignores cancellation, so an abandoned attempt
-is not mistaken for a stopped one).
+**Tracked occupancy is measured at the client, physical concurrency at the dependency.**
+In these cells the two agree - four replicas tracked 4 slots while the dependency worked
+on 4 responses, and 3 against 3 under the partition - because every admitted request is
+held until it settles. They diverge when work outlives its admission: the composition
+suite pins the abandoned-attempt case, where the permit stays held until the adapter
+settles even though the caller has gone, and the lab's adapter ignores cancellation for
+the same reason. The safety claim is about *tracked* occupancy against the sum of the
+local ceilings; the physical number is what the dependency actually did.
 
 ## Recommended operating envelopes
 
