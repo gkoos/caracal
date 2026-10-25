@@ -41,6 +41,7 @@ import {
 const ENTRY_DOCS: Record<string, readonly string[]> = {
   "src/index.ts": ["docs/core-api.md", "README.md"],
   "src/redis.ts": ["docs/redis.md"],
+  "src/serval.ts": ["docs/serval-api.md"],
   "src/fetch.ts": ["docs/fetch.md"],
   "src/postgres.ts": ["docs/postgres.md"],
   "src/aws-sdk.ts": ["docs/aws-sdk.md"],
@@ -299,30 +300,36 @@ describe("documentation claims", () => {
     expect(row).toMatch(/admission|attempt/i)
   })
 
-  it("names every exported error class in the core reference", () => {
+  it("names every exported error class in the page that documents its entry", () => {
     const values = new Set(
       sourceFiles().flatMap((file) => declaredValues(file)),
     )
-    const errorsSection =
-      readSource("docs/core-api.md").split("## Errors")[1]?.split("\n## ")[0] ??
-      ""
-    expect(errorsSection).not.toBe("")
+    const entries = buildEntries()
     const errors = [
       ...new Set(
-        buildEntries()
+        entries
           .flatMap((entry) => [...entryExports(entry)])
           .filter((name) => name.endsWith("Error") && values.has(name)),
       ),
     ]
     expect(errors.length).toBeGreaterThan(0)
     for (const name of errors) {
-      // The Errors table specifically: a passing mention elsewhere on the page
-      // must not satisfy this, which is what a mutation showed the first version
-      // of this guard allowed.
+      // An error is documented where its own entry is documented: the Errors table
+      // of one of that entry's pages, not a passing mention anywhere. The table
+      // specifically, because a mutation showed a prose mention was enough for the
+      // first version of this guard.
+      const documented = entries
+        .filter((entry) => entryExports(entry).has(name))
+        .flatMap((entry) => ENTRY_DOCS[entry] ?? [])
+        .some((page) =>
+          (
+            readSource(page).split("## Errors")[1]?.split("\n## ")[0] ?? ""
+          ).includes(`| \`${name}\` |`),
+        )
       expect(
-        errorsSection,
-        `${name} is exported but has no row in the core-api.md Errors table`,
-      ).toContain(`| \`${name}\` |`)
+        documented,
+        `${name} is exported but has no row in the Errors table of any page documenting its entry`,
+      ).toBe(true)
     }
   })
 

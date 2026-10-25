@@ -42,6 +42,10 @@
       "types": "./dist/redis.d.ts",
       "import": "./dist/redis.js"
     },
+    "./serval": {
+      "types": "./dist/serval.d.ts",
+      "import": "./dist/serval.js"
+    },
     "./fetch": {
       "types": "./dist/fetch.d.ts",
       "import": "./dist/fetch.js"
@@ -106,6 +110,7 @@
     "test:integration:soak": "node scripts/test-soak.mjs",
     "bench": "npm run build && node --expose-gc scripts/bench.mjs",
     "bench:serval": "tsx bench/serval/lab.ts",
+    "example:serval": "tsx examples/serval-pipeline.ts",
     "bench:gate": "npm run build && node --expose-gc scripts/bench-gate.mjs",
     "bench:baseline": "npm run build && node --expose-gc scripts/bench-gate.mjs --update-baseline",
     "audit:bundle": "npm run build && node scripts/audit-bundle.mjs",

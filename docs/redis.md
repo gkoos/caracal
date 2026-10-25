@@ -234,6 +234,12 @@ redisCircuitBreakerCoordinator(client, { namespace: "orders-svc:prod" })
 
 Separate namespaces for separate environments (`prod`, `staging`, `dev`) are strongly recommended. If multiple services share a Redis instance, use distinct namespaces per service.
 
+## Errors
+
+| Error | Thrown by | Meaning |
+|---|---|---|
+| `CoordinatorUnavailableError` | every Redis-backed coordinator | The command did not complete: connection failure, timeout, or an error the server returned. The outcome is **unknown** - the command may have executed - so it is never interpreted as an admission or a denial |
+
 ## Key cardinality
 
 Each unique combination of `(namespace, policyName, operationName, scope)` creates up to 5 Redis keys. Key count grows linearly with scope cardinality. Guidelines:

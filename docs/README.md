@@ -17,6 +17,7 @@ Start with the [project README](../README.md) for installation and a first opera
 | [Serval: delegated coordination](serval.md) | the opt-in approximate coordination RFC, its eleven mandatory contracts, guarantees and deviations |
 | [Serval authority protocol](serval-authority.md) | grant lifecycle, send-time-anchored validity, fencing and freeze-before-return state machines |
 | [Serval fault lab](serval-benchmarks.md) | the measured trade-offs, operating envelopes and known limitations of the delegated strategies |
+| [Serval API](serval-api.md) | the opt-in entry point: configuration, lifecycle, guarantees, failure behaviour, metrics, guardrails and migration |
 | [Operations](operations.md) | what one scope costs, retention, namespace lifetime, per-group coordinators |
 | [Writing your own adapter](adapter-contracts.md) | the contract harness and what it checks |
 | [Testing](testing.md) | this repository's suites and harnesses |

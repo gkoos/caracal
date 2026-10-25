@@ -551,8 +551,13 @@ policy takes the cached path, rather than silently issuing a Redis call per admi
 
 ## Implementation status
 
-Phases 0 to 5 are implemented; Phase 6 - release documentation, runnable examples and
-CI jobs - is not.
+Phases 0 to 6 are implemented: the strategy ships as the opt-in, experimental
+`@gkoos/caracal/serval` entry point, documented in `docs/serval-api.md`, with its
+measured trade-offs in `docs/serval-benchmarks.md` and a scheduled fault-lab workflow.
+
+The session and the three delegated coordinators are reachable **only** through that
+entry point. The root package, `caracal/redis` and the three policy factories are
+unchanged, so opting in is a coordinator argument rather than a configuration flag.
 
 | Phase | Delivered |
 |---|---|
@@ -635,9 +640,11 @@ envelope rather than the implementation:
 `docs/serval-benchmarks.md` carries the measured table, the recommended envelopes and
 the known limitations.
 
-The session is deliberately **not** reachable from a package entry point yet: the public opt-in API
-arrives with the policy coordinators (Phases 2 to 4) and is finalised in Phase 6, so no configuration
-option is exposed before its semantics are implemented and tested.
+The session is deliberately **not** reachable from the root entry point: it is exported
+from `@gkoos/caracal/serval`, so opting in is explicit and the strict coordinators stay
+the default. The public surface - exports, configuration, lifecycle, guarantees,
+failure behaviour, metrics, guardrails and migration - is documented in
+`docs/serval-api.md`.
 
 ## Executable contracts
 

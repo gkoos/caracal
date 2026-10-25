@@ -14,7 +14,7 @@
  * Run after `npm run build`:
  *   node scripts/audit-bundle.mjs
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 
 let failures = 0
 
@@ -89,7 +89,48 @@ check(
 )
 
 // ---------------------------------------------------------------------------
-// 4. Testing harness exports
+// 4. Serval bundle exports
+//
+// The delegated strategy is its own entry point so opting in is explicit, and it
+// is expected to reach ioredis: every one of its authorities is Redis-backed.
+// ---------------------------------------------------------------------------
+
+const serval = await import("../dist/serval.js").catch(() => ({}))
+const servalKeys = Object.keys(serval)
+  .filter((k) => k !== "default")
+  .sort()
+const expectedServal = [
+  "ServalAuthorityUnavailableError",
+  "ServalRegistryPressureError",
+  "ServalSessionClosedError",
+  "createServalBreaker",
+  "createServalBulkheadCoordinator",
+  "createServalRateLimitCoordinator",
+  "createServalSession",
+  "redisBulkheadAllocationIssuer",
+  "redisRateLimitGrantIssuer",
+].sort()
+
+console.log("\n== Serval bundle (dist/serval.js) ==")
+check(
+  `Exports: ${servalKeys.join(", ")}`,
+  JSON.stringify(servalKeys) === JSON.stringify(expectedServal),
+)
+check(
+  "Reaches ioredis (its authorities are Redis-backed)",
+  [
+    "dist/serval.js",
+    ...readdirSync("dist")
+      .filter((name) => name.startsWith("chunk-") && name.endsWith(".js"))
+      .map((name) => `dist/${name}`),
+  ]
+    .map((file) => readFileSync(file, "utf8"))
+    .join("\n")
+    .includes("ioredis"),
+)
+
+// ---------------------------------------------------------------------------
+// 5. Testing harness exports
 // ---------------------------------------------------------------------------
 
 const testing = await import("../dist/testing/index.js").catch(() => ({}))
