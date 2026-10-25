@@ -375,7 +375,7 @@ return {1, allowed, retryAfterMs, revision, changedAt, body}
  * ARGV[4] = operationId         one issuance operation, including all its retries
  * ARGV[5] = requestedPermits
  * ARGV[6] = validForMs          the grant's spend horizon, V
- * ARGV[7] = maximumGrants       live grants allowed, -1 for uncapped
+ * ARGV[7] = maximumOutstanding  live permitted permits, -1 for uncapped
  *
  * Returns: {envelopeVersion, granted, retryAfterMs, validForMs, duplicate,
  *           revision, changedAt, body?}
@@ -390,7 +390,7 @@ local knownRevision = tonumber(ARGV[3])
 local operationId = ARGV[4]
 local requested = tonumber(ARGV[5])
 local validForMs = tonumber(ARGV[6])
-local maximumGrants = tonumber(ARGV[7])
+local maximumOutstanding = tonumber(ARGV[7])
 local revision = 0
 local changedAt = 0
 local body = ''
@@ -449,8 +449,22 @@ local anchored = math.max(tat, now)
 local available = math.floor((now + burstDelay - anchored) / emission) + 1
 local granted = math.min(requested, available)
 
-if granted > 0 and maximumGrants >= 0
-   and redis.call('ZCARD', KEYS[3]) >= maximumGrants then
+-- A permit cap bounds live permits, not live grants: callers ask for different
+-- sizes, so a grant count derived from one caller's request cannot bound the
+-- fleet's outstanding stock. Sum what the live grants actually hold.
+local function liveGrantedPermits()
+  local total = 0
+  local live = redis.call('ZRANGEBYSCORE', KEYS[3], now, '+inf')
+  for index = 1, #live do
+    local entry = redis.call('HGET', KEYS[2], live[index])
+    local permits = entry and string.match(entry, '^(%d+)|')
+    if permits then total = total + tonumber(permits) end
+  end
+  return total
+end
+
+if granted > 0 and maximumOutstanding >= 0
+   and liveGrantedPermits() + granted > maximumOutstanding then
   -- The configured maximum outstanding stock is reached. Refuse, and hint at the
   -- earliest expiry that frees capacity.
   granted = 0

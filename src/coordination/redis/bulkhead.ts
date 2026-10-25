@@ -277,12 +277,17 @@ export function redisBulkheadAllocationIssuer(
       if (
         typeof request.replicaId !== "string" ||
         !request.replicaId.trim() ||
+        // Reservation members are `a|replicaId|grantId|slots` and the pruning pass
+        // splits them on `|`, so a component that carries the delimiter would make
+        // its own reservation unreadable and strand the capacity it holds.
+        request.replicaId.includes("|") ||
         Buffer.byteLength(request.replicaId) > 256
       )
         throw new TypeError("Invalid bulkhead replica id")
       if (
         typeof request.operationId !== "string" ||
         !request.operationId.trim() ||
+        request.operationId.includes("|") ||
         Buffer.byteLength(request.operationId) > 1024
       )
         throw new TypeError("Invalid bulkhead allocation operation id")

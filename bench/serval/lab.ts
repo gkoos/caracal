@@ -222,6 +222,9 @@ function report(
       }
     }
     console.log("")
+    console.log(
+      "tracked is what the delegated bulkhead accounts for locally; the strict bulkhead keeps its leases in Redis, so its column reads 0",
+    )
   }
 
   console.log("paired differences against the unprotected reference")

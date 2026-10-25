@@ -113,7 +113,7 @@ export function createFakeAllocationAuthority(
       revision,
       expiresAt,
       serverTime: now(),
-      duplicate: request.operationId !== "",
+      duplicate: false,
     }
   }
 
@@ -221,9 +221,10 @@ export function createFakeAllocationAuthority(
       calls.modify += 1
       const recorded = ledger.get(request.operationId)
       if (recorded !== undefined) {
-        // Idempotent: a retry returns the recorded result and changes nothing.
+        // Idempotent: a retry returns the recorded result and changes nothing. The
+        // reply says so, the way the script does when it replays a ledger entry.
         calls.duplicates += 1
-        return recorded
+        return { ...recorded, duplicate: true }
       }
       if (held !== undefined) await held
       if (failures > 0) {

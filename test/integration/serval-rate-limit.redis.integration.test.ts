@@ -150,7 +150,8 @@ describe.skipIf(!url)("serval rate limiter against Redis", () => {
       namespace,
       grantSize: 4,
       validForMs: 200,
-      // One live grant of four permits: the cap converts to a grant count.
+      // One live grant of four permits, and the cap counts permits: the hoarder's grant
+      // is exactly the outstanding stock the cap allows.
       maximumOutstandingPermits: 4,
     }
     const hoarder = replica(options)
@@ -171,6 +172,36 @@ describe.skipIf(!url)("serval rate limiter against Redis", () => {
     expect((await hot.command(identity, knobs(50, 350))).allowed).toBe(true)
 
     await Promise.all([hoarder.whenIdle(), hot.whenIdle()])
+  })
+
+  it("bounds live permits when replicas request different grant sizes", async () => {
+    const namespace = `serval-rate-${randomUUID()}`
+    const identity = { name: "mixed-sizes", operation: "charge", scope: "t1" }
+    const bulk = replica({
+      namespace,
+      grantSize: 8,
+      validForMs: 5_000,
+      maximumOutstandingPermits: 8,
+    })
+    const single = replica({
+      namespace,
+      grantSize: 1,
+      validForMs: 5_000,
+      maximumOutstandingPermits: 8,
+    })
+
+    // One replica takes the whole cap in a single grant of eight permits.
+    expect((await bulk.command(identity, knobs(50, 500))).allowed).toBe(true)
+    await bulk.whenIdle()
+
+    // The cap counts permits, not grants. A caller asking for single permits cannot add
+    // more on top of the eight already outstanding, which a grant count derived from its
+    // own request size would have allowed.
+    const refused = await single.command(identity, knobs(50, 500))
+    expect(refused.allowed).toBe(false)
+    expect(refused.retryAfterMs).toBeGreaterThan(0)
+
+    await Promise.all([bulk.whenIdle(), single.whenIdle()])
   })
 
   it("admits no more than the fleet was granted under contention", async () => {

@@ -297,15 +297,13 @@ export function redisRateLimitGrantIssuer(
         "configuration",
       )
 
-      // The server counts live grants, so a permit cap becomes a grant count. Each
-      // grant holds at most the requested permits, which keeps the permit bound.
-      const maximumGrants =
+      // The cap is a bound on live permits, and the server sums what the live grants
+      // hold, so it holds for every grant size rather than for the one this caller
+      // happens to request.
+      const maximumOutstanding =
         request.maximumOutstandingPermits === undefined
           ? -1
-          : Math.max(
-              1,
-              Math.floor(request.maximumOutstandingPermits / request.permits),
-            )
+          : request.maximumOutstandingPermits
 
       try {
         const result = await evalScript(
@@ -322,7 +320,7 @@ export function redisRateLimitGrantIssuer(
           request.operationId,
           request.permits,
           request.validForMs,
-          maximumGrants,
+          maximumOutstanding,
         )
         const reply = decodeGrantReply(result)
         if (reply.revision > 0) revisions.set(configurationKey, reply.revision)

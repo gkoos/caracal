@@ -190,6 +190,8 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
   if (cell.profile === "serval-guarded") policies.push(localGuardrail)
   if (cell.timeoutMs > 0) policies.push(timeout({ ms: cell.timeoutMs }))
 
+  const delegated =
+    cell.profile === "serval" || cell.profile === "serval-guarded"
   let offerStartedAt = 0
   let admissionLatency = 0
   const admissionLatencies: number[] = []
@@ -200,6 +202,16 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
       capabilities: () => ({ abort: cell.abort, replay: "safe" }) as const,
       execute: async () => {
         admissionLatency = performance.now() - offerStartedAt
+        // Sampled inside the attempt, where the delegated bulkhead still holds its
+        // permit: after execute() returns, the bulkhead has released it and the peak
+        // would always read zero. The strict bulkhead keeps its leases in Redis, so
+        // its tracked occupancy is not readable from the process.
+        if (delegated) {
+          peakTracked = Math.max(
+            peakTracked,
+            capacity.diagnostics(identity)?.active ?? 0,
+          )
+        }
         const response = await fetch(cell.downstreamUrl)
         if (!response.ok) throw new Error(`downstream ${response.status}`)
         await response.text()
@@ -234,12 +246,6 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
     endToEnd.push(performance.now() - offerStartedAt)
     if (admissionLatency > 0) admissionLatencies.push(admissionLatency)
     admissionLatency = 0
-
-    const tracked =
-      cell.profile === "serval" || cell.profile === "serval-guarded"
-        ? (capacity.diagnostics(identity)?.active ?? 0)
-        : localGuardrail.snapshot().occupancy
-    peakTracked = Math.max(peakTracked, tracked)
 
     if (offer + 1 < cell.offers && cell.intervalMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, cell.intervalMs))

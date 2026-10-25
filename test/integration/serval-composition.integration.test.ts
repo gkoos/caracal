@@ -373,7 +373,7 @@ describe.skipIf(!url)("serval composition", () => {
     expect(replicaSet.rate.metrics().admissions).toBe(1)
     // Wait for the abandoned work to settle instead of assuming a fixed delay is
     // enough on a loaded machine.
-    const deadline = Date.now() + 5_000
+    const deadline = Date.now() + 2_000
     while (finished === 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10))
     }

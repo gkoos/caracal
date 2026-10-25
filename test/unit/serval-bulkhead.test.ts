@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest"
 import { bulkhead, BulkheadRejectedError, operation } from "../../src/index.js"
 import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
+import { redisBulkheadAllocationIssuer } from "../../src/coordination/redis/bulkhead.js"
 import { createFakeAllocationAuthority } from "../support/serval/fake-allocation-authority.js"
 import {
   TEST_BULKHEAD_IDENTITY,
@@ -387,5 +388,32 @@ describe("serval bulkhead in the policy path", () => {
     await expect(second).resolves.toBe("ok")
     await harness.whenIdle()
     expect(harness.coordinator.metrics().admissions).toBe(2)
+  })
+})
+
+describe("serval bulkhead allocation issuer", () => {
+  // The issuer validates before it touches the client, so a stub is enough here.
+  const issuer = redisBulkheadAllocationIssuer({} as never, { namespace: "ns" })
+
+  it("rejects ids that would break the reservation member format", async () => {
+    const request = {
+      identity: TEST_BULKHEAD_IDENTITY,
+      action: "allocate" as const,
+      replicaId: "host-1",
+      operationId: "op-1",
+      slots: 1,
+      limit: 4,
+      validityMs: 1_000,
+    }
+
+    // Reservation members are `a|replicaId|grantId|slots` and the server's pruning pass
+    // splits them on `|`. An id that carries the delimiter would make its own
+    // reservation unreadable, so the capacity it holds would never be released.
+    await expect(
+      issuer.modify({ ...request, replicaId: "host|1" }),
+    ).rejects.toThrow("Invalid bulkhead replica id")
+    await expect(
+      issuer.modify({ ...request, operationId: "op|1" }),
+    ).rejects.toThrow("Invalid bulkhead allocation operation id")
   })
 })

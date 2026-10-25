@@ -256,6 +256,26 @@ describe("serval redis notification transport", () => {
     ).rejects.toThrow("subscribe failed")
     expect(statuses).toEqual(["disconnected"])
   })
+
+  it("leaves no listeners behind when the subscription fails", async () => {
+    const fake = fakeSubscriptionClient()
+    const transport = createRedisNotificationTransport(fake.client, "ch")
+    const events = ["message", "error", "close", "end", "ready"]
+
+    // A failed open is retryable, so the channel retries it. Each attempt has to take
+    // its own listeners with it: the channel records the failure as not-opened, so its
+    // close() would skip the cleanup that removes them, and a session that kept retrying
+    // would dispatch every message once per failed attempt.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      fake.failNextSubscribe()
+      await expect(
+        transport.open({ onMessage: () => {}, onStatus: () => {} }),
+      ).rejects.toThrow("subscribe failed")
+      for (const event of events) {
+        expect(fake.listenerCount(event)).toBe(0)
+      }
+    }
+  })
 })
 
 function channelHarness() {

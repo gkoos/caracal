@@ -170,10 +170,11 @@ export async function runBulkheadHistory(
         )
       }
       if (
-        diagnostics.active + diagnostics.frozenPendingReturn <
-        Math.min(diagnostics.active, diagnostics.allocated)
+        diagnostics.deadline > clock.now() &&
+        diagnostics.active + diagnostics.frozenPendingReturn >
+          diagnostics.allocated
       ) {
-        violations.push("slot accounting lost a holder")
+        violations.push("the local allocation is over-committed")
       }
     }
 

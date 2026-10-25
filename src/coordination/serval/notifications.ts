@@ -151,6 +151,7 @@ export function createRedisNotificationTransport(
           handlers.onMessage(payload)
         }
       }
+      const installed = listeners.length
       listen("message", onMessage)
       listen("error", () => handlers.onStatus("disconnected"))
       listen("close", () => handlers.onStatus("disconnected"))
@@ -160,6 +161,12 @@ export function createRedisNotificationTransport(
       try {
         await client.subscribe(channel)
       } catch (error) {
+        // This attempt's listeners go with the attempt: the channel records a failed
+        // open as not-opened, so its close() would skip the transport cleanup that
+        // removes them, and every retry would install another set.
+        for (const { event, listener } of listeners.splice(installed)) {
+          client.off(event, listener)
+        }
         handlers.onStatus("disconnected")
         throw error
       }
