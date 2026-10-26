@@ -96,6 +96,11 @@ impossible after eviction. When registry capacity is exhausted, the session **re
 registration with an observable error** instead of dropping accounting. A late reply to a retired
 entry never resurrects authority.
 
+A per-policy scope entry is disposable once it holds nothing: expired stock, a lapsed allocation, no
+holders, no unsettled operation and no live retry hint. Expiry is judged by the same deadline the
+admission uses, so a scope is never pinned by accounting the decision would discard on sight — which
+is what keeps an idle scope from occupying an entry forever.
+
 ### 6. Tracked versus physical occupancy
 
 Serval's bulkhead target is an **approximate fleet allocation**, not a physical concurrency bound.
@@ -524,6 +529,9 @@ telemetry and applies the chosen strategy above.
 - A pinned record is released only when its own retention rule expires, never to make room.
 - When the registry cannot admit a new scope, the session refuses the registration with an observable
   error instead of dropping accounting.
+- A scope entry is reclaimable once it holds nothing — expired stock, a lapsed allocation, no
+  holders, no unsettled operation, no live retry hint — and the reclaim test is the same deadline the
+  admission uses, so nothing disposable is pinned by an entry nobody asked about again.
 - A late reply to a retired entry is discarded. Retired `operationId`s stay protected for
   `replayRetentionMs`, or are fenced by a monotonic generation that makes replay impossible after
   eviction.

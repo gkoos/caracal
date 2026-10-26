@@ -7,8 +7,8 @@ behaviour that a test proves.
 - Review: `feat/serval-authority-protocol` at `d507ea8` — six implementation bugs plus
   documentation gaps.
 - Validated against: `eb6d994` plus the four commits on top of it.
-- Method: reading the cited code. Item 3's halves, item 5, and the frozen-slot defect noted at the
-  end were reproduced by running something.
+- Method: reading the cited code. Item 3's halves, items 5 and 6, and the frozen-slot defect noted at
+  the end were reproduced by running something.
 
 ## Status
 
@@ -19,7 +19,7 @@ behaviour that a test proves.
 | 3 | Breaker freshness bypasses the send-time deadline | Fixed |
 | 4 | `maximumOutstandingPermits` does not enforce a permit cap | Fixed before the reset point |
 | 5 | Relinquishment during another modification orphans frozen slots | Fixed |
-| 6 | Expired unused quota permanently occupies registry entries | Open |
+| 6 | Expired unused quota permanently occupies registry entries | Fixed |
 | D1 | Outage behaviour claim | Fixed |
 | D2 | Warm-authority fault behaviour | Open |
 | D3 | Tracked-concurrency measurements | Partly open |
@@ -127,7 +127,28 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
 - `src/coordination/serval/rate-limit.ts:254-266`: `reclaimIdle` requires `scope.stock === 0`, so a
   scope whose stock has expired but is recorded as non-zero is never reclaimable, and expiry runs
   only when that scope is touched again.
-- Closes with: expiry processed during reclamation, so idle expired stock becomes reclaimable.
+- The bulkhead has the same defect: `reclaimIdle` requires `scope.allocated === 0`, and nothing clears
+  an untouched allocation — `isValid` only gates admission, and the `expired` refusal that zeroes it
+  needs a modification, which needs a touch.
+- Reproduced by running it: with `maximumScopes: 1`, a scope holding unspent stock past its window —
+  and one holding a lapsed allocation — made the next scope throw `ServalRegistryPressureError` while
+  the process held nothing at all.
+- Fixed: reclamation uses the predicate the admission uses. Stock counts only until its deadline; an
+  allocation is held only until its validity plus the grace window passes, after which the server's
+  reservation is gone; and a retained operation stops pinning a scope once its reply could no longer
+  be adopted — `replayableUntil`, the rule `operationFor` already applied, now shared with
+  reclamation. Every reclaimable entry is dropped in one pass, so pressure settles the registry in a
+  single scan.
+- The property suite caught what the unit cases did not: its conservation identity reads
+  `diagnostics().stock`, so a permit that is neither spent, held nor discarded must be *counted* where
+  it is dropped. Reclamation now adds discarded stock to `permitsExpired`, and the diagnostic keeps
+  reporting the recorded count with the deadline beside it.
+- Not covered: a bulkhead scope whose retained modification is past its reply window is still pinned
+  by it. The rate limiter's operation has an explicit replay window to reuse; the bulkhead's
+  `Modification` does not yet, and the retry path is what settles it today.
+- Tests: `test/unit/serval-rate-limit.test.ts` (expired stock, and a retained operation past its
+  replay window) and `test/unit/serval-bulkhead.test.ts` (a lapsed allocation, plus a live one that
+  must still be refused).
 
 ## Documentation gaps
 
@@ -145,4 +166,4 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
   `906d17c` bounds the count in `adopt`, and the property suite is green at the four seeds that
   failed and across ten further runs, but no focused unit case pins the mechanism.
 - The two claims in the table above that need reproduction rather than reading are items 2 and 6;
-  item 2 already has one from the reviewer.
+  both now have one, item 2 from the reviewer and item 6 from a unit case and the property suite.
