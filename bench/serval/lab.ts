@@ -48,6 +48,13 @@ interface CellSpec {
   /** Per-cell overrides, so a warm-outage cell can outlive the windows it is holding. */
   readonly offers?: number
   readonly intervalMs?: number
+  /** The failure rate for an `intermittent` cell. Default `1/3`. */
+  readonly failureRate?: number
+  /** Breaker thresholds, so a fault cell decides when the breaker may open. */
+  readonly breaker?: {
+    readonly minimumThroughput: number
+    readonly failureThreshold: number
+  }
 }
 
 const PROFILES: readonly Profile[] = [
@@ -77,6 +84,31 @@ const CELLS: readonly CellSpec[] = [
     offers: 30,
     intervalMs: 60,
   },
+  // The dependency is down. The thresholds are the cell's rather than the distributed default,
+  // which needs twenty observations before it may open at all; the run is long enough to leave
+  // the open window (openMs is 500) and show the half-open probes.
+  {
+    name: "downstream-failing",
+    mode: "failing",
+    redisOutage: false,
+    partition: 0,
+    offers: 40,
+    intervalMs: 25,
+    breaker: { minimumThroughput: 5, failureThreshold: 0.5 },
+  },
+  // A dependency that is up sometimes: a third of responses fail, and the threshold sits below
+  // that rate so the breaker still opens. The pattern is seeded, so every profile meets the same
+  // schedule of failures rather than whichever third the timing happened to land on.
+  {
+    name: "downstream-intermittent",
+    mode: "intermittent",
+    redisOutage: false,
+    partition: 0,
+    offers: 40,
+    intervalMs: 25,
+    failureRate: 1 / 3,
+    breaker: { minimumThroughput: 5, failureThreshold: 0.3 },
+  },
 ]
 
 interface RunResult {
@@ -90,6 +122,8 @@ interface RunResult {
     readonly peak: number
     readonly overshootArea: number
     readonly aboveTargetMs: number
+    /** What the dependency itself worked on, and how much of it failed. */
+    readonly started: number
     readonly failed: number
   }
   readonly error?: string
@@ -172,21 +206,23 @@ function revision(): string {
 }
 
 /**
- * How the tracked-occupancy column combines across replicas.
+ * How the shared-count columns combine across replicas.
  *
- * The strict bulkhead counts one shared number in Redis, which every replica reads a view of, so
- * the fleet figure is the largest view rather than a multiple of it. The delegated bulkheads count
- * per process, and those are summed: the safety claim compares observed tracked occupancy against
- * the sum of the local ceilings, so a per-replica maximum would understate it.
+ * The strict path keeps one number in Redis - the bulkhead's occupancy, the breaker's state and
+ * observations - which every replica reads a view of, so the fleet figure is the largest view
+ * rather than a multiple of it. The delegated profiles count per process, and those are summed:
+ * the safety claim compares observed tracked occupancy against the sum of the local ceilings, so a
+ * per-replica maximum would understate it. Refusal counts are per-call totals either way and are
+ * summed for every profile.
  */
-function trackedAcross(profile: Profile): "sum" | "max" {
+function sharedAcross(profile: Profile): "sum" | "max" {
   return profile === "strict" ? "max" : "sum"
 }
 
 /** Sums the counters and merges the samples of one cell's replicas. */
 function aggregate(
   runs: readonly Metrics[],
-  tracked: "sum" | "max" = "sum",
+  shared: "sum" | "max" = "sum",
 ): Metrics {
   const endToEnd = runs.flatMap((run) => [...run.endToEnd])
   const admissionLatency = runs.flatMap((run) => [...run.admissionLatency])
@@ -202,10 +238,23 @@ function aggregate(
     redisOps: total((run) => run.redisOps),
     okBeforeCut: total((run) => run.okBeforeCut),
     okAfterCut: total((run) => run.okAfterCut),
+    rejectedBreaker: total((run) => run.rejectedBreaker),
     peakTracked:
-      tracked === "max"
+      shared === "max"
         ? Math.max(0, ...runs.map((run) => run.peakTracked))
         : total((run) => run.peakTracked),
+    breakerOpens:
+      shared === "max"
+        ? Math.max(0, ...runs.map((run) => run.breakerOpens))
+        : total((run) => run.breakerOpens),
+    breakerHalfOpens:
+      shared === "max"
+        ? Math.max(0, ...runs.map((run) => run.breakerHalfOpens))
+        : total((run) => run.breakerHalfOpens),
+    breakerProbes:
+      shared === "max"
+        ? Math.max(0, ...runs.map((run) => run.breakerProbes))
+        : total((run) => run.breakerProbes),
     // Not a counter: every replica of a profile ran the same seeded schedule, so the digest is
     // the same in each and the first is the profile's.
     scheduleDigest: runs[0]?.scheduleDigest ?? 0,
@@ -230,7 +279,7 @@ function groupMetrics(bucket: readonly RunResult[], profile: Profile): Metrics {
     bySeed.set(result.seed, runs)
   }
   return aggregate(
-    [...bySeed.values()].map((runs) => aggregate(runs, trackedAcross(profile))),
+    [...bySeed.values()].map((runs) => aggregate(runs, sharedAcross(profile))),
     "max",
   )
 }
@@ -268,14 +317,18 @@ function report(
     const fault =
       cell.warmUpOffers !== undefined
         ? ` - Redis cut after ${cell.warmUpOffers} offers`
-        : cell.redisOutage
-          ? " - Redis unavailable"
-          : ""
+        : cell.mode === "failing"
+          ? " - the dependency answers 503"
+          : cell.mode === "intermittent"
+            ? ` - the dependency fails ${Math.round((cell.failureRate ?? 1 / 3) * 100)}% of responses`
+            : cell.redisOutage
+              ? " - Redis unavailable"
+              : ""
     console.log(
       `cell ${cell.name} - ${cellOffers} offers at ${cellInterval}ms +/-50%${fault}${cell.partition > 0 ? ` - ${cell.partition} replica partitioned` : ""}`,
     )
     console.log(
-      "  profile         rep  offered   ok  ok-post  rej-rate  rej-bulk  failed  redis/off  p95-ms  peak-tracked  peak-physical  overshoot-area",
+      "  profile         rep  offered   ok  ok-post  rej-rate  rej-bulk  rej-break  failed  redis/off  p95-ms  peak-tracked  peak-physical  overshoot-area",
     )
     for (const profile of PROFILES) {
       for (const replicas of config.replicaCounts) {
@@ -292,7 +345,7 @@ function report(
         const redisPerOffer =
           metrics.offered === 0 ? 0 : metrics.redisOps / metrics.offered
         console.log(
-          `  ${profile.padEnd(15)}${String(replicas).padStart(3)}  ${String(metrics.offered).padStart(7)}  ${String(metrics.ok).padStart(4)}  ${String(metrics.okAfterCut).padStart(8)}  ${String(metrics.rejectedRate).padStart(8)}  ${String(metrics.rejectedBulkhead).padStart(8)}  ${String(metrics.failed).padStart(6)}  ${redisPerOffer.toFixed(2).padStart(9)}  ${String(percentile(metrics.endToEnd, 0.95)).padStart(6)}  ${String(metrics.peakTracked).padStart(12)}  ${String(peakPhysical).padStart(13)}  ${String(overshootArea).padStart(14)}`,
+          `  ${profile.padEnd(15)}${String(replicas).padStart(3)}  ${String(metrics.offered).padStart(7)}  ${String(metrics.ok).padStart(4)}  ${String(metrics.okAfterCut).padStart(8)}  ${String(metrics.rejectedRate).padStart(8)}  ${String(metrics.rejectedBulkhead).padStart(8)}  ${String(metrics.rejectedBreaker).padStart(10)}  ${String(metrics.failed).padStart(6)}  ${redisPerOffer.toFixed(2).padStart(9)}  ${String(percentile(metrics.endToEnd, 0.95)).padStart(6)}  ${String(metrics.peakTracked).padStart(12)}  ${String(peakPhysical).padStart(13)}  ${String(overshootArea).padStart(14)}`,
         )
       }
     }
@@ -322,6 +375,32 @@ function report(
     }
   }
   console.log("")
+
+  const faulted = config.cells.filter(
+    (cell) => cell.mode === "failing" || cell.mode === "intermittent",
+  )
+  if (faulted.length > 0) {
+    console.log(
+      "fault cells: the breaker's state machine and the work the dependency received",
+    )
+    for (const cell of faulted) {
+      for (const profile of PROFILES) {
+        const bucket = groups.get(`${cell.name}|${profile}|1`) ?? []
+        const metrics = groupMetrics(bucket, profile)
+        const physical = bucket.reduce(
+          (sum, result) => ({
+            started: sum.started + result.physical.started,
+            failed: sum.failed + result.physical.failed,
+          }),
+          { started: 0, failed: 0 },
+        )
+        console.log(
+          `  ${cell.name.padEnd(24)}${profile.padEnd(16)} refused ${String(metrics.rejectedBreaker).padStart(3)} | opens ${String(metrics.breakerOpens).padStart(2)} half-opens ${String(metrics.breakerHalfOpens).padStart(2)} probes ${String(metrics.breakerProbes).padStart(2)} | dependency started ${String(physical.started).padStart(3)} failed ${String(physical.failed).padStart(3)}`,
+        )
+      }
+    }
+    console.log("")
+  }
 
   console.log("paired differences against the unprotected reference")
   for (const cell of config.cells) {
@@ -400,6 +479,8 @@ async function main(): Promise<void> {
             )
             downstream.setMode(cell.mode, {
               latencyMs: cell.mode === "slow" ? 40 : 0,
+              failureRate: cell.failureRate ?? 1 / 3,
+              seed,
             })
             downstream.reset()
 
@@ -437,6 +518,9 @@ async function main(): Promise<void> {
                       downstreamUrl: downstream.url,
                       identity,
                       seed,
+                      ...(cell.breaker === undefined
+                        ? {}
+                        : { breaker: cell.breaker }),
                       ...(cell.warmUpOffers === undefined
                         ? {}
                         : { cutAfterOffers: cell.warmUpOffers }),
@@ -462,11 +546,12 @@ async function main(): Promise<void> {
                 replicas,
                 seed,
                 intervalMs: cell.intervalMs ?? intervalMs,
-                metrics: aggregate(usable, trackedAcross(profile)),
+                metrics: aggregate(usable, sharedAcross(profile)),
                 physical: {
                   peak: stats.peakPhysical,
                   overshootArea: stats.overshootArea,
                   aboveTargetMs: stats.aboveTargetMs,
+                  started: stats.started,
                   failed: stats.failed,
                 },
                 ...(lost === 0

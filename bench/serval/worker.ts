@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import {
   bulkhead,
   BulkheadRejectedError,
+  CircuitOpenError,
   circuitBreaker,
   operation,
   rateLimit,
@@ -19,6 +20,7 @@ import {
   redisCoordinator,
   redisRateLimitCoordinator,
 } from "../../src/redis.js"
+import { mulberry32 } from "./random.js"
 
 /**
  * One replica of the Serval fault lab.
@@ -53,6 +55,15 @@ export interface RunCell {
    */
   readonly seed: number
   /**
+   * Breaker thresholds for a fault cell, so the opening condition is the cell's rather than the
+   * distributed default - which needs twenty observations before it may open at all, and the
+   * short cells do not produce that many.
+   */
+  readonly breaker?: {
+    readonly minimumThroughput: number
+    readonly failureThreshold: number
+  }
+  /**
    * Offers served against the healthy authority before its connection is cut, or absent for a
    * cell that never had one. This is what makes an outage cell *warm*: the replica holds a
    * verdict, a grant and an allocation before it loses the authority that issued them.
@@ -74,6 +85,11 @@ export interface Metrics {
   /** Admissions before and after the authority was cut, so a warm-outage cell is legible. */
   readonly okBeforeCut: number
   readonly okAfterCut: number
+  /** Calls the breaker refused, and the state machine that refused them. */
+  readonly rejectedBreaker: number
+  readonly breakerOpens: number
+  readonly breakerHalfOpens: number
+  readonly breakerProbes: number
   readonly admissionLatency: readonly number[]
   readonly endToEnd: readonly number[]
 }
@@ -89,25 +105,6 @@ export function percentile(
     Math.max(0, Math.ceil(fraction * sorted.length) - 1),
   )
   return Math.round(sorted[index] as number)
-}
-
-/**
- * A deterministic PRNG for the offered schedule.
- *
- * The lab pairs profiles by seed: the same seed has to produce the same offered load in every
- * profile, so that a difference between profiles is attributable to the coordination strategy
- * rather than to the work offered. Wall-clock scheduling still varies - these are the waits the
- * worker asks for, not the waits it gets - and the digest below is what makes the intended
- * schedule visible.
- */
-function mulberry32(seed: number): () => number {
-  let state = seed >>> 0
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0
-    let value = Math.imul(state ^ (state >>> 15), 1 | state)
-    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
-  }
 }
 
 export async function runCell(cell: RunCell): Promise<Metrics> {
@@ -181,6 +178,7 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
         }),
         scope: () => identity.scope,
         openMs: 500,
+        ...(cell.breaker ?? {}),
       }),
       rateLimit.distributed({
         name: identity.name,
@@ -206,6 +204,7 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
         coordinator: breaker.coordinator,
         scope: () => identity.scope,
         openMs: 500,
+        ...(cell.breaker ?? {}),
       }),
       rateLimit.distributed({
         name: identity.name,
@@ -230,6 +229,10 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
   const admissionLatencies: number[] = []
   const endToEnd: number[] = []
   let peakTracked = 0
+  let rejectedBreaker = 0
+  let breakerOpens = 0
+  let breakerHalfOpens = 0
+  let breakerProbes = 0
   const op = operation({
     name: identity.operation,
     adapter: {
@@ -252,15 +255,26 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
     events: {
       emit(event) {
         if (
-          event.type !== "bulkhead.admitted" &&
-          event.type !== "bulkhead.rejected" &&
-          event.type !== "bulkhead.waited"
+          event.type === "bulkhead.admitted" ||
+          event.type === "bulkhead.rejected" ||
+          event.type === "bulkhead.waited"
         ) {
+          if (event.policyName !== identity.name) return
+          if ("occupancy" in event && typeof event.occupancy === "number") {
+            peakTracked = Math.max(peakTracked, event.occupancy)
+          }
           return
         }
-        if (event.policyName !== identity.name) return
-        if ("occupancy" in event && typeof event.occupancy === "number") {
-          peakTracked = Math.max(peakTracked, event.occupancy)
+        // The breaker's own state machine, so a fault cell can show that it opened, recovered and
+        // probed rather than only how many calls it refused.
+        if (event.type === "breaker.state-changed") {
+          if (event.policyName !== identity.name) return
+          if (event.state === "open") breakerOpens += 1
+          else if (event.state === "half-open") breakerHalfOpens += 1
+          return
+        }
+        if (event.type === "breaker.probe-started") {
+          if (event.policyName === identity.name) breakerProbes += 1
         }
       },
     },
@@ -314,6 +328,7 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
     } catch (error) {
       if (error instanceof RateLimitExceededError) rejectedRate += 1
       else if (error instanceof BulkheadRejectedError) rejectedBulkhead += 1
+      else if (error instanceof CircuitOpenError) rejectedBreaker += 1
       else if (error instanceof Error && error.name === "TimeoutError")
         other += 1
       else failed += 1
@@ -345,6 +360,10 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
     scheduleDigest,
     okBeforeCut,
     okAfterCut,
+    rejectedBreaker,
+    breakerOpens,
+    breakerHalfOpens,
+    breakerProbes,
     admissionLatency: admissionLatencies,
     endToEnd,
   }

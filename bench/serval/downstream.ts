@@ -1,4 +1,5 @@
 import { createServer, type ServerResponse } from "node:http"
+import { mulberry32 } from "./random.js"
 
 /**
  * The controlled downstream dependency for the Serval fault lab.
@@ -26,10 +27,24 @@ export interface DownstreamStats {
 
 export interface Downstream {
   readonly url: string
-  setMode(mode: DownstreamMode, options?: { latencyMs?: number }): void
+  setMode(mode: DownstreamMode, options?: DownstreamModeOptions): void
   stats(): DownstreamStats
   reset(): void
   close(): Promise<void>
+}
+
+export interface DownstreamModeOptions {
+  readonly latencyMs?: number
+  /**
+   * The fraction of responses that fail in `intermittent`. Default `1/3`, and a cell may raise it
+   * above the breaker's threshold when it wants the breaker to open.
+   */
+  readonly failureRate?: number
+  /**
+   * Seeds the failure pattern. The pattern is counted from the moment the mode is set, so every
+   * profile in a cell and seed meets the same schedule of failures.
+   */
+  readonly seed?: number
 }
 
 export async function startDownstream(
@@ -39,6 +54,8 @@ export async function startDownstream(
   const pending = new Set<ServerResponse>()
   let mode: DownstreamMode = "healthy"
   let latencyMs = options.latencyMs ?? 0
+  let failureRate = 1 / 3
+  let random = mulberry32(0)
   let started = 0
   let finished = 0
   let failed = 0
@@ -92,8 +109,10 @@ export async function startDownstream(
       return
     }
     if (decision.mode === "intermittent") {
-      // Every third response fails: a dependency that is neither up nor down.
-      settle(started % 3 === 0 ? 503 : 200)
+      // A dependency that is neither up nor down. The pattern is seeded and counted from the
+      // start of the mode, so every profile in a cell and seed meets the same schedule rather
+      // than whichever third of the responses happened to land on it.
+      settle(random() < failureRate ? 503 : 200)
       return
     }
     settle(200)
@@ -115,6 +134,8 @@ export async function startDownstream(
     setMode(next, override = {}) {
       mode = next
       latencyMs = override.latencyMs ?? (next === "slow" ? 40 : 0)
+      failureRate = override.failureRate ?? 1 / 3
+      random = mulberry32(override.seed ?? 0)
     },
     stats() {
       sample()
