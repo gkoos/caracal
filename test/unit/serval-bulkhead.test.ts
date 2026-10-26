@@ -57,6 +57,41 @@ describe("serval bulkhead local allocation", () => {
     expect(harness.authority.violations()).toEqual([])
   })
 
+  it("never asks for more than the replica's own ceiling", async () => {
+    // maximumSlots is this replica's own ceiling and the authority never hears about it, so a
+    // replica that allocates past its ceiling keeps the capacity. The start is bounded like every
+    // other allocation - here by the fleet limit, which is discovered per scope rather than
+    // validated up front - so the request itself is what has to stay inside the bound.
+    const authority = createFakeAllocationAuthority({
+      now: () => 1_000,
+      limit: 4,
+      graceMs: 0,
+    })
+    const requested: number[] = []
+    const harness = createBulkheadHarness({
+      limit: 4,
+      initialSlots: 8,
+      authority: {
+        ...authority,
+        issuer: {
+          ...authority.issuer,
+          async modify(request) {
+            requested.push(request.slots ?? 0)
+            return authority.issuer.modify(request)
+          },
+        },
+      },
+    })
+
+    await harness.acquire()
+    await harness.whenIdle()
+
+    expect(requested[0]).toBe(4)
+    expect(harness.coordinator.diagnostics(harness.identity)?.allocated).toBe(4)
+    expect(harness.authority.granted()).toBe(4)
+    expect(harness.authority.violations()).toEqual([])
+  })
+
   it("never admits more than the allocation it holds", async () => {
     const harness = createBulkheadHarness({ limit: 4, initialSlots: 4 })
 
@@ -543,6 +578,14 @@ describe("serval bulkhead boundaries", () => {
     expect(harness.coordinator.metrics().registryRefusals).toBe(0)
     expect(harness.coordinator.metrics().scopes).toBe(1)
     expect(harness.coordinator.diagnostics(harness.identity)).toBeUndefined()
+  })
+
+  it("rejects a start above the replica's own ceiling", () => {
+    // The two knobs contradict each other, and the ceiling is the one that bounds authority, so
+    // the configuration is refused rather than silently resolved.
+    expect(() =>
+      createBulkheadHarness({ initialSlots: 8, maximumSlots: 2 }),
+    ).toThrow("maximumSlots")
   })
 
   it("rejects invalid parameters as the strict coordinator does", async () => {

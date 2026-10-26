@@ -264,6 +264,11 @@ export function createServalBulkheadCoordinator(
   const configuredMaximumSlots = options.maximumSlots
   if (configuredMaximumSlots !== undefined) {
     assertPositiveInteger("maximumSlots", configuredMaximumSlots)
+    if (initialSlots > configuredMaximumSlots) {
+      throw new RangeError(
+        `initialSlots (${initialSlots}) exceeds maximumSlots (${configuredMaximumSlots}): this replica's ceiling bounds every allocation, including the first`,
+      )
+    }
   }
   const renewLeadMs = assertNonNegative(
     "renewLeadMs",
@@ -674,7 +679,12 @@ export function createServalBulkheadCoordinator(
 
     if (scope.allocated === 0) {
       if (now < scope.redistributionUntil) return Promise.resolve()
-      return startModification(scope, "allocate", { slots: initialSlots })
+      // The ceiling bounds every allocation, not only demand. The configured start is a
+      // conservative request, and a fleet limit below it is discovered per scope rather than
+      // validated up front, so the clamp is what keeps this replica inside its own bound.
+      return startModification(scope, "allocate", {
+        slots: Math.min(initialSlots, maximumSlots(scope)),
+      })
     }
 
     if (now >= scope.deadline) {
