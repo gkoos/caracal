@@ -509,9 +509,8 @@ describe("distributed bulkhead admission deadline", () => {
 // Reason coverage
 //
 // Every value in `BulkheadEventReason` and `BulkheadRejectedReason` is asserted
-// somewhere: test/unit/reason-contract.test.ts fails when a documented reason
-// stops being exercised, so a new reason cannot be added without evidence that
-// it is actually reachable.
+// here, so a new reason cannot be added without evidence that it is actually
+// reachable.
 // ---------------------------------------------------------------------------
 
 describe("bulkhead reason values", () => {
