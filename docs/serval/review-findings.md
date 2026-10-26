@@ -171,3 +171,9 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
   delegated rate limiter holds a four-permit grant it cannot renew, and the breaker's verdict window
   lapses at one second with `onCoordinatorError` defaulting to fail-open. A breaker-only warm-outage
   cell would attribute the failures; the aggregate deliberately does not guess.
+- The downstream's `failing` and `intermittent` modes were implemented and unused, so no cell ever
+  opened a breaker — the one admission behaviour the page claimed to have measured and never had.
+  Both now have cells (`downstream-failing`, `downstream-intermittent`) with seeded failure patterns
+  and cell-set thresholds, and the numbers are in `docs/serval/benchmarks.md`: with the dependency
+  down it received 7 requests where the unprotected path sent 40, and refusing cost the strict path
+  2.58 Redis commands per offered request against the delegated 0.40.

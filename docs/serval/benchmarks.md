@@ -41,8 +41,10 @@ seeds:
 
 Cells: a healthy dependency, a slow one, Redis unavailable to every replica, the
 **critical interaction** (slow dependency *and* Redis unavailable), a single
-partitioned replica among healthy ones, and a **warm outage**, where every replica is served
-by the healthy authority first and cut off afterwards. Every worker is a real process with its own
+partitioned replica among healthy ones, a **warm outage**, where every replica is served
+by the healthy authority first and cut off afterwards, and two **failing dependencies** — one
+down, one failing a third of its responses — which are the only cells where the breaker opens.
+Every worker is a real process with its own
 Redis connection; the dependency is a real HTTP server that accounts for the work it
 actually does, and it ignores client disconnects on purpose.
 
@@ -123,6 +125,56 @@ What the warm numbers say:
 - **The cost and safety claims survive the fault.** Redis commands per offer stayed below the
   strict path (2.27 against 3.40), tracked occupancy stayed within the sum of the local
   ceilings, and physical concurrency stayed at 1.
+
+## A failing dependency
+
+The cells above never open a breaker: the dependency either works or is slow, so the breaker's
+open state — the thing it exists for — was the one admission behaviour the lab never visited.
+These two cells visit it. Forty offers per replica at 25ms, one seed, one and four replicas, with
+the breaker's thresholds set by the cell rather than by the distributed default (which needs twenty
+observations before it may open at all, and a cell this short does not produce them).
+
+| Cell | Profile | Rep | Offered | Admitted | Breaker-refused | Failed | Redis/offer | Dependency requests | Dependency failures |
+|---|---|---|---|---|---|---|---|---|---|
+| downstream-failing | unprotected | 1 | 40 | 0 | 0 | 40 | 0.00 | **40** | 40 |
+| downstream-failing | strict | 1 | 40 | 0 | 33 | 7 | 2.58 | **7** | 7 |
+| downstream-failing | serval | 1 | 40 | 0 | 33 | 7 | **0.40** | **7** | 7 |
+| downstream-failing | serval-guarded | 1 | 40 | 0 | 33 | 7 | **0.40** | **7** | 7 |
+| downstream-intermittent | unprotected | 1 | 40 | 25 | 0 | 15 | 0.00 | **40** | 15 |
+| downstream-intermittent | strict | 1 | 40 | 11 | 24 | 5 | 3.25 | **16** | 5 |
+| downstream-intermittent | serval | 1 | 40 | 11 | 24 | 5 | **0.68** | **16** | 5 |
+| downstream-intermittent | serval-guarded | 1 | 40 | 11 | 24 | 5 | **0.68** | **16** | 5 |
+
+The breaker's own state machine, from the same run:
+
+```text
+fault cells: the breaker's state machine and the work the dependency received
+  downstream-failing      unprotected      refused   0 | opens  0 half-opens  0 probes  0 | dependency started  40 failed  40
+  downstream-failing      strict           refused  33 | opens  3 half-opens  2 probes  2 | dependency started   7 failed   7
+  downstream-failing      serval           refused  33 | opens  3 half-opens  2 probes  2 | dependency started   7 failed   7
+  downstream-intermittent strict           refused  24 | opens  2 half-opens  1 probes  2 | dependency started  16 failed   5
+```
+
+What these cells say, for the first time in this lab:
+
+- **The breaker protects the dependency, and the protection is physical.** With the dependency
+  down, an unprotected pipeline sent it **40** requests; every breaker path sent **7**. With a third
+  of responses failing it is 40 against 16. This is measured at the dependency, not inferred from
+  any coordinator's accounting, so a client that walked away does not flatter the number.
+- **Refusing is where the cached verdict pays most.** While the breaker is open the strict path
+  still pays 2.58 Redis commands per offered request and the delegated path pays 0.40 — a factor of
+  six, against the factor of three the healthy cells show. A refusal is a local decision for one and
+  a round trip for the other, which is exactly what the caching buys and what the settlement cost
+  buys in return.
+- **The recovery window behaves as documented.** In the failing cell the breaker opened three
+  times, half-opened twice and admitted two probes: the probes failed, so it re-opened, and the run
+  ended before another window. `openMs` is 500 in the lab, so a run of a second can traverse the
+  whole machine.
+- **A cached verdict is a fleet-wide opening seen through a per-replica window.** With four
+  replicas the strict path refused 147 of 160 offers, while the delegated path refused 74 and let
+  29 reach the rate limiter. Both are protecting the dependency; the delegated one learns of the
+  opening from its own settlements and admits within its freshness allowance until it does. That is
+  the deviation the caching strategy is documented to have, measured rather than asserted.
 
 ## What the numbers say
 
@@ -212,6 +264,13 @@ physical number is what the dependency actually did.
 - The offered schedule is seeded, so profiles are paired on the load they were offered, but the
   waits are what the worker *asks* for rather than what it gets: a loaded machine adds jitter of
   its own, and the digest reports the intended schedule.
+- The two fault cells set their own breaker thresholds — `minimumThroughput` 5, and a failure
+  threshold the cell's failure rate crosses — because the distributed default needs twenty
+  observations before it may open and these cells are shorter than that. The thresholds are part of
+  the configuration under test, not a measurement of the defaults.
+- The `intermittent` failure pattern is seeded like the offered load and counted from the moment the
+  cell's mode is set, so every profile meets the same schedule of failures rather than whichever
+  third of the responses the timing landed on.
 - The cells are short: large enough to compare profiles against each other, too small to
   claim steady-state behaviour for a long-running fleet.
 - The "real-process partition" cells isolate a replica by pointing it at an unreachable
