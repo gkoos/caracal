@@ -168,6 +168,21 @@ export class CircuitOpenError extends Error {
   }
 }
 
+/**
+ * Thrown by a coordinator that refuses an admission by **decision** rather than by failing.
+ *
+ * A refusal is an answer: the coordinator read what it needed and said no. It is not evidence that
+ * the coordinator is in trouble, so a policy must not treat it as an outage. `onCoordinatorError`
+ * exists for not being able to ask, and applying it to a decision turns that decision into
+ * permission. A coordinator that cannot answer keeps throwing its own unavailability error.
+ */
+export class CoordinatorRefusalError extends Error {
+  constructor(message: string, options?: { readonly cause?: unknown }) {
+    super(message, options)
+    this.name = "CoordinatorRefusalError"
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -1065,6 +1080,24 @@ function distributed(
           lastKnownState.forget(identity.operation, scope)
         }
       } catch (readError) {
+        // A coordinator that refused by decision is not a coordinator in trouble. It answered, and
+        // the answer was no, so the refusal reaches the caller as a rejection: admitting on it
+        // would apply onCoordinatorError - which is about not being able to ask - and turn the
+        // decision into permission. Nothing is reported as degraded, because nothing degraded.
+        if (readError instanceof CoordinatorRefusalError) {
+          throwIfAdmissionCancelled()
+          emitRuntimeEvent(context, {
+            type: "breaker.rejected",
+            coordination: "distributed",
+            policyName: name,
+            scope,
+            // A rejection reports the state it was decided from. A refusal that names none keeps
+            // the fail-closed sentinel, which means "do not send traffic".
+            state: "open",
+          })
+          throw new CircuitOpenError(name, "distributed", scope)
+        }
+
         emitRuntimeEvent(context, {
           type: "breaker.coordinator-error",
           coordination: "distributed",

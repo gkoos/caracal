@@ -40,7 +40,11 @@ export type {
   ObserveResult,
   SettleProbeResult,
 } from "./core/circuit-breaker.js"
-export { CircuitOpenError, circuitBreaker } from "./core/circuit-breaker.js"
+export {
+  CircuitOpenError,
+  CoordinatorRefusalError,
+  circuitBreaker,
+} from "./core/circuit-breaker.js"
 export type {
   Adapter,
   BulkheadEventReason,

@@ -88,7 +88,7 @@ npm run example:serval
 | `redisBulkheadAllocationIssuer` | function | The Redis authority a delegated bulkhead draws allocations from |
 | `ServalSessionClosedError` | class | Thrown when a session is used after `close()` |
 | `ServalRegistryPressureError` | class | Thrown when the scope registry is full and nothing reclaimable can make room |
-| `ServalAuthorityUnavailableError` | class | Thrown when a coordinator refuses locally because no usable authority exists |
+| `ServalAuthorityRefusalError` | class | Thrown when the delegated breaker refuses locally because the authority it holds is no longer usable; it extends `CoordinatorRefusalError`, so the policy rejects the call |
 
 Types exported for annotations: `ServalSession`, `ServalSessionOptions`,
 `ServalSessionState`, `ServalScopeRegistration`, `ServalBreakerCoordinator`,
@@ -184,7 +184,7 @@ create -> start() -> serving -> close()
 |---|---|---|
 | `ServalSessionClosedError` | session and the policies using it | The session was closed, so no new authority may be acquired |
 | `ServalRegistryPressureError` | any delegated coordinator | The scope registry is full and no entry could be reclaimed without dropping live accounting |
-| `ServalAuthorityUnavailableError` | breaker | A local refusal because no usable authority exists (`staleClosed: "fail-closed"`) |
+| `ServalAuthorityRefusalError` | breaker | A local refusal because no usable authority exists (`staleClosed: "fail-closed"`). It extends `CoordinatorRefusalError`, so the policy rejects the call instead of applying `onCoordinatorError` |
 
 Admission refusals are not errors from this entry point: a rate or bulkhead refusal is
 reported by the policy as `RateLimitExceededError` or `BulkheadRejectedError`, exactly

@@ -12,12 +12,13 @@ import { describe, expect, it } from "vitest"
 import {
   bulkhead,
   circuitBreaker,
+  CoordinatorRefusalError,
   operation,
   rateLimit,
 } from "../../src/index.js"
 import * as serval from "../../src/serval.js"
 import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
-import { ServalAuthorityUnavailableError } from "../../src/coordination/serval/breaker.js"
+import { ServalAuthorityRefusalError } from "../../src/coordination/serval/breaker.js"
 import { ServalSessionClosedError } from "../../src/coordination/serval/session.js"
 
 const IDENTITY = { name: "payments", operation: "charge", scope: "tenant-a" }
@@ -26,7 +27,7 @@ describe("serval public surface", () => {
   it("exports exactly the documented runtime names", () => {
     expect(Object.keys(serval).sort()).toEqual(
       [
-        "ServalAuthorityUnavailableError",
+        "ServalAuthorityRefusalError",
         "ServalRegistryPressureError",
         "ServalSessionClosedError",
         "createServalBreaker",
@@ -42,12 +43,15 @@ describe("serval public surface", () => {
   it("exports the error classes a caller catches", () => {
     expect(serval.ServalSessionClosedError).toBe(ServalSessionClosedError)
     expect(serval.ServalRegistryPressureError).toBe(ServalRegistryPressureError)
-    expect(serval.ServalAuthorityUnavailableError).toBe(
-      ServalAuthorityUnavailableError,
-    )
+    expect(serval.ServalAuthorityRefusalError).toBe(ServalAuthorityRefusalError)
     expect(new ServalSessionClosedError()).toBeInstanceOf(Error)
     expect(new ServalRegistryPressureError("full")).toBeInstanceOf(Error)
-    expect(new ServalAuthorityUnavailableError("stale")).toBeInstanceOf(Error)
+    expect(new ServalAuthorityRefusalError("stale")).toBeInstanceOf(Error)
+    // The policy branches on the core type, so a local refusal must be one: this is the link the
+    // stale-CLOSED fail-closed path depends on to reach the caller as a rejection.
+    expect(new ServalAuthorityRefusalError("stale")).toBeInstanceOf(
+      CoordinatorRefusalError,
+    )
   })
 
   it("validates the configuration of a coordinator built from the entry point", () => {

@@ -36,6 +36,7 @@ const expectedRoot = [
   "BulkheadRejectedError",
   "ConfigurationError",
   "CircuitOpenError",
+  "CoordinatorRefusalError",
   "RateLimitExceededError",
   "TimeoutError",
   "bulkhead",
@@ -100,7 +101,7 @@ const servalKeys = Object.keys(serval)
   .filter((k) => k !== "default")
   .sort()
 const expectedServal = [
-  "ServalAuthorityUnavailableError",
+  "ServalAuthorityRefusalError",
   "ServalRegistryPressureError",
   "ServalSessionClosedError",
   "createServalBreaker",

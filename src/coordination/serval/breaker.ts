@@ -89,13 +89,23 @@ export interface ServalBreakerCoordinator extends BreakerCoordinator {
   cached(identity: BreakerIdentity): ServalBreakerPayload | undefined
 }
 
-/** Thrown when the coordinator refuses locally because no usable authority exists. */
-export class ServalAuthorityUnavailableError extends Error {
+import { CoordinatorRefusalError } from "../../core/circuit-breaker.js"
+
+/**
+ * Thrown when the delegated breaker refuses locally, because the authority it holds is no longer
+ * usable.
+ *
+ * It extends the core's `CoordinatorRefusalError` so the policy recognises it as a decision and
+ * rejects the call, instead of applying `onCoordinatorError` and admitting it. The name says
+ * refusal because that is the thing the policy has to branch on: an earlier name said
+ * "unavailable", and that is exactly how a refusal came to be read as an outage.
+ */
+export class ServalAuthorityRefusalError extends CoordinatorRefusalError {
   readonly coordination = "distributed"
 
   constructor(message: string, options?: { readonly cause?: unknown }) {
     super(message, options)
-    this.name = "ServalAuthorityUnavailableError"
+    this.name = "ServalAuthorityRefusalError"
   }
 }
 
@@ -411,7 +421,7 @@ export function createServalBreakerCoordinator(
         return { state: "closed", generation: cached.generation }
       }
       if (staleClosed === "fail-closed") {
-        throw new ServalAuthorityUnavailableError(
+        throw new ServalAuthorityRefusalError(
           "The cached CLOSED verdict is past its freshness allowance and staleClosed is fail-closed",
         )
       }

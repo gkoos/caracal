@@ -14,7 +14,7 @@ behaviour that a test proves.
 
 | # | Finding | Status |
 |---|---|---|
-| 1 | `staleClosed: "fail-closed"` admits requests through the policy | Open |
+| 1 | `staleClosed: "fail-closed"` admits requests through the policy | Fixed |
 | 2 | Bulkhead replacement grants rejected after the previous grant advances its revision | Open |
 | 3 | Breaker freshness bypasses the send-time deadline | Half fixed |
 | 4 | `maximumOutstandingPermits` does not enforce a permit cap | Fixed before the reset point |
@@ -31,7 +31,9 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
 
 ## 1. `staleClosed: "fail-closed"` admits requests through the policy
 
-- `src/coordination/serval/breaker.ts:414` throws `ServalAuthorityUnavailableError`.
+- `src/coordination/serval/breaker.ts:414` throws `ServalAuthorityUnavailableError` (since renamed
+  `ServalAuthorityRefusalError`, extending the core's `CoordinatorRefusalError`, and the policy now
+  rejects on it).
 - `CoordinatorRefusalError` appears nowhere in `src`, so a refusal by decision is indistinguishable
   from an outage.
 - `src/core/circuit-breaker.ts`, `catch (readError)`: emits `breaker.coordinator-error`, computes

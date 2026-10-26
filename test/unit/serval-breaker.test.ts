@@ -9,8 +9,8 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { circuitBreaker, operation } from "../../src/index.js"
-import type { BreakerIdentity } from "../../src/core/circuit-breaker.js"
+import { circuitBreaker, CircuitOpenError, operation } from "../../src/index.js"
+import type { BreakerIdentity, OperationEvent } from "../../src/index.js"
 import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
 import { createDeterministicScheduler } from "../support/serval/deterministic-scheduler.js"
 import { createFakeBreakerAuthority } from "../support/serval/fake-breaker-authority.js"
@@ -476,6 +476,97 @@ describe("serval breaker settlement and degraded behaviour", () => {
 })
 
 describe("serval breaker in the policy path", () => {
+  it("rejects the call when the cached verdict is stale and staleClosed is fail-closed", async () => {
+    // The refusal is a decision, not an outage. onCoordinatorError defaults to fail-open, so
+    // reading the refusal as unavailability would run the adapter the coordinator just refused -
+    // the integration failure a coordinator-only test cannot see.
+    const harness = createBreakerHarness({
+      freshnessMs: 100,
+      staleClosed: "fail-closed",
+    })
+    await harness.start()
+    await harness.scheduler.advanceBy(1_000)
+
+    const events: OperationEvent[] = []
+    let ran = 0
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: harness.coordinator,
+      scope: () => TEST_BREAKER_IDENTITY.scope,
+    })
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => {
+          ran += 1
+          return "ok"
+        },
+      },
+      policies: [policy],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    await expect(op.execute(undefined)).rejects.toBeInstanceOf(CircuitOpenError)
+    expect(ran).toBe(0)
+    expect(events.some((event) => event.type === "breaker.rejected")).toBe(true)
+    // The coordinator answered, so nothing degraded.
+    expect(events.some((event) => event.type === "breaker.degraded")).toBe(
+      false,
+    )
+  })
+
+  it("prefers the caller's cancellation over the refusal", async () => {
+    // The refusal and the cancellation land in the same window: the read is in flight when the
+    // caller gives up, and the coordinator refuses anyway. The caller is gone, so there is no
+    // admission to refuse and no rejection to report for it.
+    const harness = createBreakerHarness({
+      freshnessMs: 100,
+      staleClosed: "fail-closed",
+    })
+    await harness.start()
+    await harness.scheduler.advanceBy(1_000)
+
+    const events: OperationEvent[] = []
+    const controller = new AbortController()
+    const reason = new Error("caller cancelled")
+    let ran = 0
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: {
+        ...harness.coordinator,
+        async readState(
+          ...args: Parameters<typeof harness.coordinator.readState>
+        ) {
+          const pending = harness.coordinator.readState(...args)
+          controller.abort(reason)
+          return pending
+        },
+      },
+      scope: () => TEST_BREAKER_IDENTITY.scope,
+    })
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => {
+          ran += 1
+          return "ok"
+        },
+      },
+      policies: [policy],
+      events: { emit: (event) => events.push(event) },
+    })
+
+    await expect(
+      op.execute(undefined, { signal: controller.signal }),
+    ).rejects.toBe(reason)
+    expect(ran).toBe(0)
+    expect(events.some((event) => event.type === "breaker.rejected")).toBe(
+      false,
+    )
+  })
+
   it("removes the admission read while keeping the settlement awaited", async () => {
     const harness = createBreakerHarness({ freshnessMs: 10_000 })
     await harness.start()

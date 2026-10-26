@@ -28,7 +28,7 @@ export {
 } from "./coordination/serval/session.js"
 export {
   createServalBreaker,
-  ServalAuthorityUnavailableError,
+  ServalAuthorityRefusalError,
 } from "./coordination/serval/breaker.js"
 export { createServalRateLimitCoordinator } from "./coordination/serval/rate-limit.js"
 export { createServalBulkheadCoordinator } from "./coordination/serval/bulkhead.js"
