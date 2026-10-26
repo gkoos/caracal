@@ -15,7 +15,7 @@ behaviour that a test proves.
 | # | Finding | Status |
 |---|---|---|
 | 1 | `staleClosed: "fail-closed"` admits requests through the policy | Fixed |
-| 2 | Bulkhead replacement grants rejected after the previous grant advances its revision | Open |
+| 2 | Bulkhead replacement grants rejected after the previous grant advances its revision | Fixed |
 | 3 | Breaker freshness bypasses the send-time deadline | Half fixed |
 | 4 | `maximumOutstandingPermits` does not enforce a permit cap | Fixed before the reset point |
 | 5 | Relinquishment during another modification orphans frozen slots | Open |
@@ -52,8 +52,19 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
 - Effect: after a grant expires or is retired, the next grant's revision 1 is rejected as stale, and
   keeps being rejected.
 - Reviewer reproduced against real Valkey.
-- Closes with: revision ordering scoped to the grant — either reset the revision wherever a grant
-  ends, or compare only within the same grant, which needs the reply to carry grant identity.
+- Fixed by `b077127`. The Lua settles what the fix should be: `allocate` writes
+  `grantId|1|slots|expiresAt`, so the revision is a per-grant counter and a *lower* one means a
+  newer grant. `adopt` now rejects a reply only when a reply from a later request has already been
+  applied, using the `requestStartedAt` every modification already carries; a tie is not stale
+  because a retry reuses its original send time. The revision stays as the compare-and-swap the next
+  request sends, which the server arbitrates.
+- Not taken: resetting the revision where a grant ends. That was the suggestion above, and it
+  patches the symptom; the comparison across a grant boundary is the mistake. Grant identity is not
+  available in the reply either (the reply is `{status, reason, allocated, rev, expiresAt, serverTime,
+  duplicate, revision, changedAt, body?}`), so scoping by grant would need a protocol change.
+- The same conflation appeared twice in the history harness and both are scoped to the grant now:
+  the revision mark resets with the grant, and the occupancy check allows the physical overshoot the
+  contract permits when a replacement is smaller than the work still running.
 
 ## 3. Breaker freshness bypasses the send-time deadline
 
