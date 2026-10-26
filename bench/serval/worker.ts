@@ -48,6 +48,11 @@ export interface RunCell {
   readonly downstreamUrl: string
   readonly identity: { readonly name: string; readonly operation: string }
   /**
+   * The run's seed. It decides the offered schedule - the same seed is the same load in every
+   * profile, and a different seed is a different arrival pattern.
+   */
+  readonly seed: number
+  /**
    * Offers served against the healthy authority before its connection is cut, or absent for a
    * cell that never had one. This is what makes an outage cell *warm*: the replica holds a
    * verdict, a grant and an allocation before it loses the authority that issued them.
@@ -64,6 +69,8 @@ export interface Metrics {
   readonly other: number
   readonly redisOps: number
   readonly peakTracked: number
+  /** A digest of the waits this replica used, so paired load is visible in the report. */
+  readonly scheduleDigest: number
   /** Admissions before and after the authority was cut, so a warm-outage cell is legible. */
   readonly okBeforeCut: number
   readonly okAfterCut: number
@@ -82,6 +89,25 @@ export function percentile(
     Math.max(0, Math.ceil(fraction * sorted.length) - 1),
   )
   return Math.round(sorted[index] as number)
+}
+
+/**
+ * A deterministic PRNG for the offered schedule.
+ *
+ * The lab pairs profiles by seed: the same seed has to produce the same offered load in every
+ * profile, so that a difference between profiles is attributable to the coordination strategy
+ * rather than to the work offered. Wall-clock scheduling still varies - these are the waits the
+ * worker asks for, not the waits it gets - and the digest below is what makes the intended
+ * schedule visible.
+ */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let value = Math.imul(state ^ (state >>> 15), 1 | state)
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
+  }
 }
 
 export async function runCell(cell: RunCell): Promise<Metrics> {
@@ -251,6 +277,25 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
   let okBeforeCut = 0
   let okAfterCut = 0
 
+  // The offered schedule is a function of the seed and the cell, never of the profile, so every
+  // profile at a seed sees the same load. The jitter is what makes a seed worth having: a
+  // metronome measures one arrival pattern, and the delegated rate limiter's behaviour depends on
+  // the pattern rather than only on the rate.
+  const random = mulberry32(cell.seed)
+  const waits: number[] = []
+  for (let offer = 0; offer + 1 < cell.offers; offer += 1) {
+    waits.push(
+      cell.intervalMs <= 0
+        ? 0
+        : Math.max(1, Math.round(cell.intervalMs * (0.5 + random()))),
+    )
+  }
+  // FNV-1a over those waits: a positive 32-bit digest of the schedule this replica ran.
+  let scheduleDigest = 2166136261
+  for (const wait of waits) {
+    scheduleDigest = Math.imul(scheduleDigest ^ wait, 16777619) >>> 0
+  }
+
   const cutAfter = cell.cutAfterOffers ?? 0
   for (let offer = 0; offer < cell.offers; offer += 1) {
     if (cutAfter > 0 && offer === cutAfter) {
@@ -277,8 +322,9 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
     if (admissionLatency > 0) admissionLatencies.push(admissionLatency)
     admissionLatency = 0
 
-    if (offer + 1 < cell.offers && cell.intervalMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, cell.intervalMs))
+    const wait = waits[offer] ?? 0
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait))
     }
   }
 
@@ -296,6 +342,7 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
     other,
     redisOps,
     peakTracked,
+    scheduleDigest,
     okBeforeCut,
     okAfterCut,
     admissionLatency: admissionLatencies,

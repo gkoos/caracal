@@ -19,8 +19,9 @@ import {
  *
  * What it is careful about, deliberately:
  *
- * - **Paired, seeded runs.** Every profile sees the same cells, the same offered load
- *   and the same seeds, so a difference is attributable.
+ * - **Paired, seeded runs.** The offered schedule is derived from the seed - the waits between
+ *   offers come from a seeded generator - so every profile sees the same cells, the same load and
+ *   the same seeds, and a difference between profiles is attributable.
  * - **Physical work is measured at the dependency**, not inferred from any
  *   coordinator's accounting: a client that walks away does not stop the server, and
  *   the overshoot area is integrated from the server's own concurrency.
@@ -205,9 +206,33 @@ function aggregate(
       tracked === "max"
         ? Math.max(0, ...runs.map((run) => run.peakTracked))
         : total((run) => run.peakTracked),
+    // Not a counter: every replica of a profile ran the same seeded schedule, so the digest is
+    // the same in each and the first is the profile's.
+    scheduleDigest: runs[0]?.scheduleDigest ?? 0,
     admissionLatency,
     endToEnd,
   }
+}
+
+/**
+ * One cell/profile/replica-count group.
+ *
+ * Peak occupancy is a peak, not a total, and it combines on two axes: the replicas of one seed are
+ * combined by that profile's accounting (summed per process, largest view for the shared strict
+ * count), and the seeds are independent runs, so the fleet figure is the largest of them rather
+ * than their sum. The counters are totals over every run either way.
+ */
+function groupMetrics(bucket: readonly RunResult[], profile: Profile): Metrics {
+  const bySeed = new Map<number, Metrics[]>()
+  for (const result of bucket) {
+    const runs = bySeed.get(result.seed) ?? []
+    runs.push(result.metrics)
+    bySeed.set(result.seed, runs)
+  }
+  return aggregate(
+    [...bySeed.values()].map((runs) => aggregate(runs, trackedAcross(profile))),
+    "max",
+  )
 }
 
 function report(
@@ -247,7 +272,7 @@ function report(
           ? " - Redis unavailable"
           : ""
     console.log(
-      `cell ${cell.name} - ${cellOffers} offers at ${cellInterval}ms${fault}${cell.partition > 0 ? ` - ${cell.partition} replica partitioned` : ""}`,
+      `cell ${cell.name} - ${cellOffers} offers at ${cellInterval}ms +/-50%${fault}${cell.partition > 0 ? ` - ${cell.partition} replica partitioned` : ""}`,
     )
     console.log(
       "  profile         rep  offered   ok  ok-post  rej-rate  rej-bulk  failed  redis/off  p95-ms  peak-tracked  peak-physical  overshoot-area",
@@ -255,10 +280,7 @@ function report(
     for (const profile of PROFILES) {
       for (const replicas of config.replicaCounts) {
         const bucket = groups.get(`${cell.name}|${profile}|${replicas}`) ?? []
-        const metrics = aggregate(
-          bucket.map((result) => result.metrics),
-          trackedAcross(profile),
-        )
+        const metrics = groupMetrics(bucket, profile)
         const peakPhysical = Math.max(
           ...bucket.map((result) => result.physical.peak),
           0,
@@ -280,19 +302,40 @@ function report(
     )
   }
 
+  console.log(
+    "paired load: one digest of the offered schedule per cell and seed",
+  )
+  for (const cell of config.cells) {
+    for (const seed of config.seeds) {
+      const perProfile = PROFILES.map((profile) => {
+        const run = results.find(
+          (result) =>
+            result.cell === cell.name &&
+            result.profile === profile &&
+            result.seed === seed,
+        )
+        return `${profile} ${run?.metrics.scheduleDigest ?? 0}`
+      })
+      console.log(
+        `  ${cell.name.padEnd(18)} seed ${seed}: ${perProfile.join(" | ")}`,
+      )
+    }
+  }
+  console.log("")
+
   console.log("paired differences against the unprotected reference")
   for (const cell of config.cells) {
-    const reference = aggregate(
-      (groups.get(`${cell.name}|unprotected|1`) ?? []).map((r) => r.metrics),
-      trackedAcross("unprotected"),
+    const reference = groupMetrics(
+      groups.get(`${cell.name}|unprotected|1`) ?? [],
+      "unprotected",
     )
-    const serval = aggregate(
-      (groups.get(`${cell.name}|serval|1`) ?? []).map((r) => r.metrics),
-      trackedAcross("serval"),
+    const serval = groupMetrics(
+      groups.get(`${cell.name}|serval|1`) ?? [],
+      "serval",
     )
-    const strict = aggregate(
-      (groups.get(`${cell.name}|strict|1`) ?? []).map((r) => r.metrics),
-      trackedAcross("strict"),
+    const strict = groupMetrics(
+      groups.get(`${cell.name}|strict|1`) ?? [],
+      "strict",
     )
     const share = (value: number, base: number): string =>
       base === 0 ? "n/a" : `${Math.round((value / base) * 100)}%`
@@ -393,6 +436,7 @@ async function main(): Promise<void> {
                       redisUrl: worker.redisUrl,
                       downstreamUrl: downstream.url,
                       identity,
+                      seed,
                       ...(cell.warmUpOffers === undefined
                         ? {}
                         : { cutAfterOffers: cell.warmUpOffers }),
