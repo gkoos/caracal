@@ -142,8 +142,10 @@ create -> start() -> serving -> close()
   periodic reconciliation, expiry and reconnect snapshots provide convergence without
   them.
 - `capacity.close()` stops admitting, returns every *free* slot (holders keep theirs)
-  and awaits in-flight modifications. `session.close()` releases the registry and the
-  cache. A rate limiter needs no relinquishment: unused permits simply expire.
+  and awaits in-flight modifications. Closure wins over an admission that was already in flight, and
+  a second pass returns capacity that arrived while the first was closing. `session.close()` releases
+  the registry and the cache, and a closed session refuses every admission from then on.
+  A rate limiter needs no relinquishment: unused permits simply expire.
 - Shutdown never depends on a clean handoff. A slot that could not be returned is
   reclaimed by the server when its reservation lapses.
 
@@ -182,15 +184,16 @@ create -> start() -> serving -> close()
 | Reply the session refused (late, or superseded by a newer verdict) | Refuses the call: the cached verdict answers instead, so a protective OPEN or HALF_OPEN stands | - | - |
 | Allocation or grant expired | Cached OPEN stays protective | Refuses new admissions, keeps holders | Refuses new admissions, keeps holders |
 | Ambiguous modification | - | Retries the same `operationId` | Retries the same `operationId`; frozen slots stay frozen |
-| Registry full | Refuses the new scope | Refuses the new scope | Refuses the new scope |
+| Registry full | Refuses the call: the coordinator reports the registry's refusal as its own | Refuses the new scope | Refuses the new scope |
+| Session closed | Refuses the call | - | - |
 
 ## Errors
 
 | Error | Thrown by | Meaning |
 |---|---|---|
 | `ServalSessionClosedError` | session and the policies using it | The session was closed, so no new authority may be acquired |
-| `ServalRegistryPressureError` | any delegated coordinator | The scope registry is full and no entry could be reclaimed without dropping live accounting |
-| `ServalAuthorityRefusalError` | breaker | A local refusal because no usable authority exists: `staleClosed: "fail-closed"`, or a reply the session could not adopt (late, or superseded by a newer verdict). It extends `CoordinatorRefusalError`, so the policy rejects the call instead of applying `onCoordinatorError` |
+| `ServalRegistryPressureError` | the rate-limit and bulkhead coordinators; the breaker reports the same refusal as `ServalAuthorityRefusalError` with this as its `cause` | The scope registry is full and no entry could be reclaimed without dropping live accounting |
+| `ServalAuthorityRefusalError` | breaker | A local refusal because no usable authority exists: `staleClosed: "fail-closed"`, a reply the session could not adopt (late, or superseded by a newer verdict), a closed session, or a registry that cannot hold the scope. It extends `CoordinatorRefusalError`, so the policy rejects the call instead of applying `onCoordinatorError` |
 
 Admission refusals are not errors from this entry point: a rate or bulkhead refusal is
 reported by the policy as `RateLimitExceededError` or `BulkheadRejectedError`, exactly
