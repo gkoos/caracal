@@ -38,6 +38,15 @@ interface CellSpec {
   readonly redisOutage: boolean
   /** How many replicas are partitioned from Redis while the rest stay healthy. */
   readonly partition: number
+  /**
+   * Offers served against the healthy authority before that replica's connection is cut.
+   * Present only for a warm-outage cell: the replica is served first, so it holds a verdict,
+   * a grant and an allocation when the authority goes away.
+   */
+  readonly warmUpOffers?: number
+  /** Per-cell overrides, so a warm-outage cell can outlive the windows it is holding. */
+  readonly offers?: number
+  readonly intervalMs?: number
 }
 
 const PROFILES: readonly Profile[] = [
@@ -54,6 +63,19 @@ const CELLS: readonly CellSpec[] = [
   // The critical interaction: a stressed dependency while coordination is gone.
   { name: "slow+outage", mode: "slow", redisOutage: true, partition: 0 },
   { name: "slow+partition", mode: "slow", redisOutage: false, partition: 1 },
+  // The warm counterpart of the outage cells: every replica starts against the healthy
+  // authority, is cut off mid-run, and keeps serving from what it already holds. The longer
+  // interval is deliberate - the run has to outlive the windows (1s for the verdict and the
+  // grant, 5s for the allocation) for the lapse to appear in the same cell.
+  {
+    name: "warm-outage",
+    mode: "healthy",
+    redisOutage: true,
+    partition: 0,
+    warmUpOffers: 6,
+    offers: 30,
+    intervalMs: 60,
+  },
 ]
 
 interface RunResult {
@@ -61,6 +83,7 @@ interface RunResult {
   readonly cell: string
   readonly replicas: number
   readonly seed: number
+  readonly intervalMs: number
   readonly metrics: Metrics
   readonly physical: {
     readonly peak: number
@@ -161,6 +184,8 @@ function aggregate(runs: readonly Metrics[]): Metrics {
     failed: total((run) => run.failed),
     other: total((run) => run.other),
     redisOps: total((run) => run.redisOps),
+    okBeforeCut: total((run) => run.okBeforeCut),
+    okAfterCut: total((run) => run.okAfterCut),
     // Summed across replicas: the safety claim compares observed tracked occupancy against the
     // sum of the local ceilings, so a per-replica maximum would understate it.
     peakTracked: total((run) => run.peakTracked),
@@ -178,6 +203,7 @@ function report(
     readonly offers: number
     readonly intervalMs: number
     readonly target: number
+    readonly cells: readonly CellSpec[]
   },
 ): void {
   const groups = new Map<string, RunResult[]>()
@@ -195,12 +221,20 @@ function report(
     `profiles ${PROFILES.join(", ")} | replicas ${config.replicaCounts.join(", ")} | seeds ${config.seeds.join(", ")}\n`,
   )
 
-  for (const cell of CELLS) {
+  for (const cell of config.cells) {
+    const cellOffers = cell.offers ?? config.offers
+    const cellInterval = cell.intervalMs ?? config.intervalMs
+    const fault =
+      cell.warmUpOffers !== undefined
+        ? ` - Redis cut after ${cell.warmUpOffers} offers`
+        : cell.redisOutage
+          ? " - Redis unavailable"
+          : ""
     console.log(
-      `cell ${cell.name}${cell.redisOutage ? " - Redis unavailable" : ""}${cell.partition > 0 ? ` - ${cell.partition} replica partitioned` : ""}`,
+      `cell ${cell.name} - ${cellOffers} offers at ${cellInterval}ms${fault}${cell.partition > 0 ? ` - ${cell.partition} replica partitioned` : ""}`,
     )
     console.log(
-      "  profile         rep  offered   ok  rej-rate  rej-bulk  failed  redis/off  p95-ms  peak-tracked  peak-physical  overshoot-area",
+      "  profile         rep  offered   ok  ok-post  rej-rate  rej-bulk  failed  redis/off  p95-ms  peak-tracked  peak-physical  overshoot-area",
     )
     for (const profile of PROFILES) {
       for (const replicas of config.replicaCounts) {
@@ -217,7 +251,7 @@ function report(
         const redisPerOffer =
           metrics.offered === 0 ? 0 : metrics.redisOps / metrics.offered
         console.log(
-          `  ${profile.padEnd(15)}${String(replicas).padStart(3)}  ${String(metrics.offered).padStart(7)}  ${String(metrics.ok).padStart(4)}  ${String(metrics.rejectedRate).padStart(8)}  ${String(metrics.rejectedBulkhead).padStart(8)}  ${String(metrics.failed).padStart(6)}  ${redisPerOffer.toFixed(2).padStart(9)}  ${String(percentile(metrics.endToEnd, 0.95)).padStart(6)}  ${String(metrics.peakTracked).padStart(12)}  ${String(peakPhysical).padStart(13)}  ${String(overshootArea).padStart(14)}`,
+          `  ${profile.padEnd(15)}${String(replicas).padStart(3)}  ${String(metrics.offered).padStart(7)}  ${String(metrics.ok).padStart(4)}  ${String(metrics.okAfterCut).padStart(8)}  ${String(metrics.rejectedRate).padStart(8)}  ${String(metrics.rejectedBulkhead).padStart(8)}  ${String(metrics.failed).padStart(6)}  ${redisPerOffer.toFixed(2).padStart(9)}  ${String(percentile(metrics.endToEnd, 0.95)).padStart(6)}  ${String(metrics.peakTracked).padStart(12)}  ${String(peakPhysical).padStart(13)}  ${String(overshootArea).padStart(14)}`,
         )
       }
     }
@@ -228,7 +262,7 @@ function report(
   }
 
   console.log("paired differences against the unprotected reference")
-  for (const cell of CELLS) {
+  for (const cell of config.cells) {
     const reference = aggregate(
       (groups.get(`${cell.name}|unprotected|1`) ?? []).map((r) => r.metrics),
     )
@@ -270,6 +304,20 @@ async function main(): Promise<void> {
   const offers = Number(process.env.CARACAL_LAB_OFFERS ?? 24)
   const intervalMs = Number(process.env.CARACAL_LAB_INTERVAL ?? 10)
   const target = Number(process.env.CARACAL_LAB_TARGET ?? 4)
+  // A named subset, so one cell can be re-measured without paying for the whole sweep.
+  const requested = (process.env.CARACAL_LAB_CELLS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value !== "")
+  const cells =
+    requested.length === 0
+      ? CELLS
+      : CELLS.filter((cell) => requested.includes(cell.name))
+  if (cells.length === 0) {
+    throw new Error(
+      `CARACAL_LAB_CELLS matched no cell: ${requested.join(", ")}`,
+    )
+  }
   const identity = { name: "lab-payments", operation: "charge" }
 
   const downstream = await startDownstream({ target, latencyMs: 40 })
@@ -278,7 +326,7 @@ async function main(): Promise<void> {
 
   try {
     for (const profile of PROFILES) {
-      for (const cell of CELLS) {
+      for (const cell of cells) {
         for (const replicas of replicaCounts) {
           for (const seed of seeds) {
             const namespace = `serval-lab-${profile}-${cell.name}-${replicas}-${seed}-${runId}`
@@ -293,10 +341,11 @@ async function main(): Promise<void> {
             const workers: { handle: WorkerHandle; redisUrl: string }[] = []
             try {
               for (let index = 0; index < replicas; index += 1) {
-                // A full outage partitions every replica; the partition cell isolates a
-                // subset and leaves the rest healthy.
+                // A cold outage cell starts every replica against an unreachable authority; a
+                // warm one starts healthy and cuts its own connection mid-run. The partition
+                // cell isolates a subset and leaves the rest healthy.
                 const isolated =
-                  cell.redisOutage ||
+                  (cell.redisOutage && cell.warmUpOffers === undefined) ||
                   (!cell.redisOutage && index < cell.partition)
                 const workerUrl = isolated ? "redis://127.0.0.1:1" : redisUrl
                 workers.push({
@@ -311,8 +360,8 @@ async function main(): Promise<void> {
                     .send({
                       namespace,
                       profile,
-                      offers,
-                      intervalMs,
+                      offers: cell.offers ?? offers,
+                      intervalMs: cell.intervalMs ?? intervalMs,
                       target,
                       guardrailLimit: target,
                       // The dependency ignores cancellation, so the lab measures the
@@ -322,6 +371,9 @@ async function main(): Promise<void> {
                       redisUrl: worker.redisUrl,
                       downstreamUrl: downstream.url,
                       identity,
+                      ...(cell.warmUpOffers === undefined
+                        ? {}
+                        : { cutAfterOffers: cell.warmUpOffers }),
                     })
                     .then(
                       (metrics) => ({ metrics }),
@@ -343,6 +395,7 @@ async function main(): Promise<void> {
                 cell: cell.name,
                 replicas,
                 seed,
+                intervalMs: cell.intervalMs ?? intervalMs,
                 metrics: aggregate(usable),
                 physical: {
                   peak: stats.peakPhysical,
@@ -372,6 +425,7 @@ async function main(): Promise<void> {
     offers,
     intervalMs,
     target,
+    cells,
   })
 }
 

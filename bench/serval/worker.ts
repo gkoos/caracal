@@ -47,6 +47,12 @@ export interface RunCell {
   readonly redisUrl: string
   readonly downstreamUrl: string
   readonly identity: { readonly name: string; readonly operation: string }
+  /**
+   * Offers served against the healthy authority before its connection is cut, or absent for a
+   * cell that never had one. This is what makes an outage cell *warm*: the replica holds a
+   * verdict, a grant and an allocation before it loses the authority that issued them.
+   */
+  readonly cutAfterOffers?: number
 }
 
 export interface Metrics {
@@ -58,6 +64,9 @@ export interface Metrics {
   readonly other: number
   readonly redisOps: number
   readonly peakTracked: number
+  /** Admissions before and after the authority was cut, so a warm-outage cell is legible. */
+  readonly okBeforeCut: number
+  readonly okAfterCut: number
   readonly admissionLatency: readonly number[]
   readonly endToEnd: readonly number[]
 }
@@ -230,12 +239,24 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
   let failed = 0
   let other = 0
   let peakTracked = 0
+  let okBeforeCut = 0
+  let okAfterCut = 0
 
+  const cutAfter = cell.cutAfterOffers ?? 0
   for (let offer = 0; offer < cell.offers; offer += 1) {
+    if (cutAfter > 0 && offer === cutAfter) {
+      // A warm-outage cell: the authority has served this replica until now, so cutting the
+      // connection here is its path to Redis going away while the authority it already holds
+      // is still valid. `disconnect` is permanent, and the client is configured with no
+      // offline queue and no retries, so the next command fails instead of hanging the run.
+      raw.disconnect()
+    }
     offerStartedAt = performance.now()
     try {
       await op.execute(undefined)
       ok += 1
+      if (cutAfter > 0 && offer >= cutAfter) okAfterCut += 1
+      else okBeforeCut += 1
     } catch (error) {
       if (error instanceof RateLimitExceededError) rejectedRate += 1
       else if (error instanceof BulkheadRejectedError) rejectedBulkhead += 1
@@ -266,6 +287,8 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
     other,
     redisOps,
     peakTracked,
+    okBeforeCut,
+    okAfterCut,
     admissionLatency: admissionLatencies,
     endToEnd,
   }
