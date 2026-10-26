@@ -174,7 +174,15 @@ export async function runBulkheadHistory(
         diagnostics.active + diagnostics.frozenPendingReturn >
           diagnostics.allocated
       ) {
-        violations.push("the local allocation is over-committed")
+        // The numbers decide which defect this is. Frozen slots in the shortfall mean a return's
+        // accounting was lost; holders alone mean work outlived its allocation, which is
+        // legitimate for a replaced allocation and not for the one that admitted them.
+        violations.push(
+          `step ${step}: the local allocation is over-committed` +
+            ` (active ${diagnostics.active} + frozen ${diagnostics.frozenPendingReturn}` +
+            ` > allocated ${diagnostics.allocated}, state ${diagnostics.state},` +
+            ` revision ${diagnostics.revision}, grant ${diagnostics.grantId || "none"})`,
+        )
       }
     }
 
