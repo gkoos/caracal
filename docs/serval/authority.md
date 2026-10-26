@@ -159,7 +159,9 @@ Capacity return is a two-sided transfer of admission authority, not a server-sid
    spendable pool *before sending* any reduction. Active holders are never returned as free slots.
 2. Record `operationId`, expected `leaseRevision`, requested amount and frozen count, then send an
    idempotent conditional reduction. The server validates the expected revision, commits once, and
-   only then makes the capacity reallocatable.
+   only then makes the capacity reallocatable. A freeze that cannot be sent yet — another
+   modification holds the wire for that allocation — is still recorded, and is submitted as soon as
+   that one settles, so a freeze always has a modification that settles it.
 3. While the reply is delayed, lost or uncertain, frozen slots stay unavailable. A timeout or
    disconnect must not unfreeze them.
 4. On confirmed success the frozen slots are retired under the old revision. Unfreezing on a proven

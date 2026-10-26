@@ -7,8 +7,8 @@ behaviour that a test proves.
 - Review: `feat/serval-authority-protocol` at `d507ea8` — six implementation bugs plus
   documentation gaps.
 - Validated against: `eb6d994` plus the four commits on top of it.
-- Method: reading the cited code. Item 3's first half, item 3's second half, and the frozen-slot
-  defect noted at the end were reproduced by running something.
+- Method: reading the cited code. Item 3's halves, item 5, and the frozen-slot defect noted at the
+  end were reproduced by running something.
 
 ## Status
 
@@ -18,7 +18,7 @@ behaviour that a test proves.
 | 2 | Bulkhead replacement grants rejected after the previous grant advances its revision | Fixed |
 | 3 | Breaker freshness bypasses the send-time deadline | Fixed |
 | 4 | `maximumOutstandingPermits` does not enforce a permit cap | Fixed before the reset point |
-| 5 | Relinquishment during another modification orphans frozen slots | Open |
+| 5 | Relinquishment during another modification orphans frozen slots | Fixed |
 | 6 | Expired unused quota permanently occupies registry entries | Open |
 | D1 | Outage behaviour claim | Fixed |
 | D2 | Warm-authority fault behaviour | Open |
@@ -102,7 +102,25 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
 - Effect: the slots stay frozen with no retained operation to settle them.
 - `906d17c` bounds `frozen` in `adopt` but does not cover this: the other modification's reply
   reports the same allocation, so the bound never applies.
-- Closes with: serializing or queuing a different-action modification while keeping the freeze.
+- Reproduced by running it: with a renewal holding the wire, `relinquish` answered `frozen`, the
+  authority was asked twice (allocate, renew) and never for the reduction, `frozenPendingReturn` was
+  1 with `freeSpendable` 0, and `granted` still counted the slot. After the grant lapsed the count
+  survived into the next allocation, so the loss was permanent.
+- Fixed: the freeze is an intent the modification machinery submits. A new `submitPendingReturn`
+  follows the operation holding the wire and submits the reduction when it settles, a return the
+  authority refused stays pending and is retried by the nudge an admission already performs, and an
+  `expired` refusal drops the intent with the grant. A second path with the same cause goes with it:
+  a return refused with `revision`/`exists` cleared the operation and left the freeze orphaned.
+- The reconciliation route the header and the `relinquish` doc named does not exist —
+  `unfrozenAfterReconciliation` and `reconciliations` have no implementation (D5) — so the fix
+  settles the freeze inside the modification machinery instead of deferring to it, and those two
+  comments now describe what the code does.
+- Tests: three cases in `test/unit/serval-bulkhead.test.ts` — a return frozen while a renewal holds
+  the wire, a refused return retried, and the intent dropped when the allocation lapses — plus
+  `refuseNext` on the fake authority, so the refusal path is reachable at all.
+- Not taken: refusing the relinquish while a modification is in flight. It is one line and never
+  freezes without a submitter, but it drops the return, and the caller is a scale-down or `close()`
+  that may never retry — silently keeping capacity is what `relinquish` exists to prevent.
 
 ## 6. Expired unused quota permanently occupies registry entries
 
