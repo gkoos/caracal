@@ -111,7 +111,7 @@ Every option has a default; the ones that change behaviour are listed here.
 |---|---|---|---|
 | `namespace` | all three | required | Key prefix and the isolation boundary between deployments |
 | `freshnessMs` | breaker | `1000` | How long a cached CLOSED verdict admits without an authority read |
-| `staleClosed` | breaker | `"refresh"` | `"refresh"` reads the authority (and propagates its failure), `"fail-open"` admits from the cache, `"fail-closed"` refuses |
+| `staleClosed` | breaker | `"refresh"` | `"refresh"` reads the authority (and propagates its failure; a reply that cannot be adopted — late, or superseded by a newer verdict the replica holds — is a refusal, not a fresh verdict), `"fail-open"` admits from the cache, `"fail-closed"` refuses |
 | `reconciliationIntervalMs` | session | `10000` | Periodic convergence, independent of notifications |
 | `registryCapacity` | session | `1024` | Bounded scope registry; a full registry refuses rather than evicting live authority |
 | `grantSize` | rate limiter | the identity's burst | Permits per issuance: larger means fewer round trips and more stranded capacity |
@@ -176,6 +176,7 @@ create -> start() -> serving -> close()
 | Authority unreachable, authority held | Admits from a valid cached verdict; settlement reports degradation | Spends remaining stock within its horizon | Admits within its valid allocation |
 | Authority unreachable, no authority | `"refresh"` propagates the failure, `"fail-open"` admits, `"fail-closed"` refuses | Rejects: no permit is invented | Rejects: no slot is invented |
 | Cached verdict stale and CLOSED | Follows `staleClosed` | - | - |
+| Reply the session refused (late, or superseded by a newer verdict) | Refuses the call: the cached verdict answers instead, so a protective OPEN or HALF_OPEN stands | - | - |
 | Allocation or grant expired | Cached OPEN stays protective | Refuses new admissions, keeps holders | Refuses new admissions, keeps holders |
 | Ambiguous modification | - | Retries the same `operationId` | Retries the same `operationId`; frozen slots stay frozen |
 | Registry full | Refuses the new scope | Refuses the new scope | Refuses the new scope |
@@ -186,7 +187,7 @@ create -> start() -> serving -> close()
 |---|---|---|
 | `ServalSessionClosedError` | session and the policies using it | The session was closed, so no new authority may be acquired |
 | `ServalRegistryPressureError` | any delegated coordinator | The scope registry is full and no entry could be reclaimed without dropping live accounting |
-| `ServalAuthorityRefusalError` | breaker | A local refusal because no usable authority exists (`staleClosed: "fail-closed"`). It extends `CoordinatorRefusalError`, so the policy rejects the call instead of applying `onCoordinatorError` |
+| `ServalAuthorityRefusalError` | breaker | A local refusal because no usable authority exists: `staleClosed: "fail-closed"`, or a reply the session could not adopt (late, or superseded by a newer verdict). It extends `CoordinatorRefusalError`, so the policy rejects the call instead of applying `onCoordinatorError` |
 
 Admission refusals are not errors from this entry point: a rate or bulkhead refusal is
 reported by the policy as `RateLimitExceededError` or `BulkheadRejectedError`, exactly
