@@ -425,9 +425,18 @@ local now = t[1] * 1000 + math.floor(t[2] / 1000)
 
 -- A grant is live while now <= its server expiry. Expired grants are neither
 -- deduplicated nor outstanding, so they are forgotten here rather than lingering.
+--
+-- The drain is chunked. 'unpack' returns at most as many results as the interpreter's
+-- stack holds (8000 in the Lua 5.1 that Redis and Valkey embed), so a larger backlog
+-- must reach HDEL in slices: unchunked, the call fails, and because it fails before it
+-- removes anything, the backlog stays put to fail every later attempt the same way.
 local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now - 1)
 if #expired > 0 then
-  redis.call('HDEL', KEYS[2], unpack(expired))
+  local slice = 512
+  for offset = 1, #expired, slice do
+    local last = math.min(offset + slice - 1, #expired)
+    redis.call('HDEL', KEYS[2], unpack(expired, offset, last))
+  end
   redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now - 1)
 end
 

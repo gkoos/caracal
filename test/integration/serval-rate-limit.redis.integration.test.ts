@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { operation, rateLimit } from "../../src/index.js"
+import { coordinationKey } from "../../src/coordination/redis/keys.js"
 import { redisRateLimitGrantIssuer } from "../../src/coordination/redis/rate-limit.js"
 import { createServalRateLimitCoordinator } from "../../src/coordination/serval/rate-limit.js"
 import {
@@ -236,6 +237,79 @@ describe.skipIf(!url)("serval rate limiter against Redis", () => {
     expect(granted).toBeLessThanOrEqual(4)
     for (const entry of metrics) {
       expect(entry.admissions).toBeLessThanOrEqual(entry.permitsGranted)
+    }
+  })
+
+  it("clears an expired-grant backlog larger than one unpack", async () => {
+    const namespace = `serval-rate-${randomUUID()}`
+    const identity = { name: "backlog", operation: "charge", scope: "t1" }
+    const issuer = redisRateLimitGrantIssuer(client as never, { namespace })
+    const redis = client as NonNullable<typeof client>
+
+    const policy = `ratelimit:${identity.name}`
+    const suffix = (name: string) =>
+      coordinationKey(
+        namespace,
+        policy,
+        identity.operation,
+        identity.scope,
+        name,
+      )
+    const keys = ["rate", "grants", "grant-expiry", "configuration"].map(suffix)
+    const ledgerKey = suffix("grants")
+    const expiryKey = suffix("grant-expiry")
+
+    // One grant that outlives the case, so the drain is shown to be selective as well as
+    // complete.
+    const live = await issuer.issue({
+      identity,
+      operationId: randomUUID(),
+      ...knobs(50, 350),
+      permits: 4,
+      validForMs: 60_000,
+    })
+    expect(live).toMatchObject({ granted: 4, duplicate: false })
+
+    // A backlog of expired grants, seeded directly because 8192 issuances would cost more
+    // than the case is worth. 8192 is past the 8000 results `unpack` will return in the
+    // Lua 5.1 that Redis and Valkey embed: unchunked, the drain fails on its own HDEL, and
+    // because it fails before it removes anything, the backlog is still there to fail the
+    // next attempt - and every attempt after it - the same way.
+    const backlog = 8_192
+    const expiredAt = String(Date.now() - 60_000)
+    for (let offset = 0; offset < backlog; offset += 1_024) {
+      const fields: Record<string, string> = {}
+      const scores: string[] = []
+      for (
+        let index = offset;
+        index < Math.min(offset + 1_024, backlog);
+        index += 1
+      ) {
+        const operationId = `expired-${index}`
+        fields[operationId] = "4|1000"
+        scores.push(expiredAt, operationId)
+      }
+      await redis.hset(ledgerKey, fields)
+      await redis.zadd(expiryKey, ...scores)
+    }
+
+    try {
+      // The issuance that has to clear the backlog before it can grant anything.
+      const after = await issuer.issue({
+        identity,
+        operationId: randomUUID(),
+        ...knobs(50, 350),
+        permits: 1,
+        validForMs: 1_000,
+      })
+      expect(after).toMatchObject({ granted: 1, duplicate: false })
+
+      // Drained, not merely survived: the ledger holds the live grant and this one, and
+      // the expiry set is down to the same two.
+      expect(await redis.hlen(ledgerKey)).toBe(2)
+      expect(await redis.zcard(expiryKey)).toBe(2)
+    } finally {
+      await redis.del(...keys)
     }
   })
 })
