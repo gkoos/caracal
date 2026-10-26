@@ -496,6 +496,16 @@ export function createServalBulkheadCoordinator(
     }
     scope.allocated = reply.slots
     scope.revision = reply.revision
+    // Frozen slots are slots this process asked the server to take back, and the modification that
+    // froze them is what retires them. A reply reporting an allocation that no longer covers them
+    // is that answer arriving by another route - the server has them - so they stop being ours to
+    // return. Without this they stay frozen for the life of the grant, claiming a slot the
+    // allocation does not hold. This only ever reduces the count, and adopt is the one place the
+    // allocation changes, so every path is covered here rather than one branch at a time.
+    scope.frozen = Math.min(
+      scope.frozen,
+      Math.max(0, reply.slots - scope.active.size),
+    )
     scope.deadline =
       reply.slots === 0
         ? 0
