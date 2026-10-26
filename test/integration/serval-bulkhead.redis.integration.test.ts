@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { coordinationKey } from "../../src/coordination/redis/keys.js"
 import { redisBulkheadAllocationIssuer } from "../../src/coordination/redis/bulkhead.js"
 import { createServalBulkheadCoordinator } from "../../src/coordination/serval/bulkhead.js"
 import { createCoordinationClient } from "../../src/redis.js"
@@ -259,5 +260,113 @@ describe.skipIf(!url)("serval bulkhead against Redis", () => {
     expect(tracked - limit).toBe(2)
 
     await Promise.all([first.close(), second.close()])
+  })
+
+  it("prunes a lapsed-reservation backlog in bounded batches", async () => {
+    const namespace = `serval-bulkhead-${randomUUID()}`
+    const redis = client as NonNullable<typeof client>
+    const policy = `bulkhead:${identity.name}`
+    const suffix = (name: string) =>
+      coordinationKey(
+        namespace,
+        policy,
+        identity.operation,
+        identity.scope,
+        name,
+      )
+    const keys = [
+      "allocation",
+      "allocation-expiry",
+      "allocated",
+      "allocation-ops",
+      "configuration",
+    ].map(suffix)
+    const expiryKey = suffix("allocation-expiry")
+    const counterKey = suffix("allocated")
+    const issuer = redisBulkheadAllocationIssuer(client as never, { namespace })
+
+    // A lapsed backlog far past one call's prune budget, plus one lapsed allocation whose
+    // slots the counter still holds. Seeded directly: the set carries no TTL, so this drain
+    // is what returns capacity.
+    const backlog = 40_000
+    const lapsedAt = String(Date.now() - 60_000)
+    for (let offset = 0; offset < backlog; offset += 1_024) {
+      const scores: string[] = []
+      for (
+        let index = offset;
+        index < Math.min(offset + 1_024, backlog);
+        index += 1
+      ) {
+        scores.push(lapsedAt, `o|lapsed-${index}`)
+      }
+      await redis.zadd(expiryKey, ...scores)
+    }
+    await redis.zadd(expiryKey, lapsedAt, "a|replica-gone|grant-gone|4")
+    await redis.hset(
+      suffix("allocation"),
+      "replica-gone",
+      `grant-gone|1|4|${Number(lapsedAt)}`,
+    )
+    await redis.incrby(counterKey, 4)
+
+    const limit = 6
+    const live = replica({
+      namespace,
+      replicaId: "replica-live",
+      validityMs: 30_000,
+      initialSlots: 1,
+      maximumSlots: 1,
+    })
+
+    try {
+      // One call, and only one: a read is a single pass of the script, so what it prunes is
+      // what one call prunes.
+      await issuer.modify({
+        identity,
+        replicaId: "replica-live",
+        operationId: randomUUID(),
+        action: "read",
+        limit,
+      })
+
+      // Bounded: one call prunes a slice of the backlog rather than all of it, so no call
+      // pays a cost proportional to everything that has lapsed.
+      const afterFirst = await redis.zcount(
+        expiryKey,
+        "-inf",
+        String(Date.now() - 1),
+      )
+      expect(afterFirst).toBeGreaterThan(0)
+      expect(afterFirst).toBeLessThan(backlog + 1)
+
+      // The live replica takes its slot, so the counter below has something of its own in
+      // it once the lapsed allocation is gone.
+      await live.command(identity, "acquire", "t-0", leaseMs, limit)
+
+      // It converges over the calls that follow, and the capacity the lapsed allocation held
+      // comes back with it: only the live replica's single slot is still counted.
+      for (let index = 0; index < 12; index += 1) {
+        const lapsed = await redis.zcount(
+          expiryKey,
+          "-inf",
+          String(Date.now() - 1),
+        )
+        if (lapsed === 0) break
+        await issuer.modify({
+          identity,
+          replicaId: "replica-live",
+          operationId: randomUUID(),
+          action: "read",
+          limit,
+        })
+      }
+      expect(
+        await redis.zcount(expiryKey, "-inf", String(Date.now() - 1)),
+      ).toBe(0)
+      expect(Number(await redis.get(counterKey))).toBe(1)
+    } finally {
+      await live.close()
+      await redis.del(...keys)
+    }
   })
 })

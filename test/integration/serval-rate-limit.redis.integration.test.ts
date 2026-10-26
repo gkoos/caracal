@@ -57,6 +57,65 @@ describe.skipIf(!url)("serval rate limiter against Redis", () => {
     })
   }
 
+  /** The keys one identity's grant state lives on, for seeding and inspecting it. */
+  function grantKeys(
+    namespace: string,
+    identity: {
+      readonly name: string
+      readonly operation: string
+      readonly scope: string
+    },
+  ) {
+    const policy = `ratelimit:${identity.name}`
+    const suffix = (name: string) =>
+      coordinationKey(
+        namespace,
+        policy,
+        identity.operation,
+        identity.scope,
+        name,
+      )
+    return {
+      keys: ["rate", "grants", "grant-expiry", "configuration"].map(suffix),
+      ledgerKey: suffix("grants"),
+      expiryKey: suffix("grant-expiry"),
+    }
+  }
+
+  /**
+   * Seeds lapsed grants directly, because issuing them would cost more than the case is
+   * worth. The score is shared so the drain meets them in seeding order.
+   */
+  async function seedLapsedGrants(
+    redis: NonNullable<typeof client>,
+    keys: { readonly ledgerKey: string; readonly expiryKey: string },
+    options: { readonly count: number; readonly score: number },
+  ) {
+    for (let offset = 0; offset < options.count; offset += 1_024) {
+      const fields: Record<string, string> = {}
+      const scores: string[] = []
+      for (
+        let index = offset;
+        index < Math.min(offset + 1_024, options.count);
+        index += 1
+      ) {
+        const operationId = `lapsed-${index}`
+        fields[operationId] = "4|1000"
+        scores.push(String(options.score), operationId)
+      }
+      await redis.hset(keys.ledgerKey, fields)
+      await redis.zadd(keys.expiryKey, ...scores)
+    }
+  }
+
+  /** How many lapsed grants the cleanup has not reached yet. */
+  function lapsedCount(
+    redis: NonNullable<typeof client>,
+    expiryKey: string,
+  ): Promise<number> {
+    return redis.zcount(expiryKey, "-inf", String(Date.now() - 1))
+  }
+
   it("takes a grant from the strict bucket and deduplicates a retry", async () => {
     const namespace = `serval-rate-${randomUUID()}`
     const identity = { name: "shared-bucket", operation: "charge", scope: "t1" }
@@ -240,74 +299,116 @@ describe.skipIf(!url)("serval rate limiter against Redis", () => {
     }
   })
 
-  it("clears an expired-grant backlog larger than one unpack", async () => {
+  it("drains an expired-grant backlog in bounded batches", async () => {
     const namespace = `serval-rate-${randomUUID()}`
     const identity = { name: "backlog", operation: "charge", scope: "t1" }
     const issuer = redisRateLimitGrantIssuer(client as never, { namespace })
     const redis = client as NonNullable<typeof client>
-
-    const policy = `ratelimit:${identity.name}`
-    const suffix = (name: string) =>
-      coordinationKey(
-        namespace,
-        policy,
-        identity.operation,
-        identity.scope,
-        name,
-      )
-    const keys = ["rate", "grants", "grant-expiry", "configuration"].map(suffix)
-    const ledgerKey = suffix("grants")
-    const expiryKey = suffix("grant-expiry")
+    const { keys, ledgerKey, expiryKey } = grantKeys(namespace, identity)
 
     // One grant that outlives the case, so the drain is shown to be selective as well as
     // complete.
+    const liveOperationId = randomUUID()
     const live = await issuer.issue({
       identity,
-      operationId: randomUUID(),
+      operationId: liveOperationId,
       ...knobs(50, 350),
       permits: 4,
       validForMs: 60_000,
     })
     expect(live).toMatchObject({ granted: 4, duplicate: false })
 
-    // A backlog of expired grants, seeded directly because 8192 issuances would cost more
-    // than the case is worth. 8192 is past the 8000 results `unpack` will return in the
-    // Lua 5.1 that Redis and Valkey embed: unchunked, the drain fails on its own HDEL, and
-    // because it fails before it removes anything, the backlog is still there to fail the
-    // next attempt - and every attempt after it - the same way.
-    const backlog = 8_192
-    const expiredAt = String(Date.now() - 60_000)
-    for (let offset = 0; offset < backlog; offset += 1_024) {
-      const fields: Record<string, string> = {}
-      const scores: string[] = []
-      for (
-        let index = offset;
-        index < Math.min(offset + 1_024, backlog);
-        index += 1
-      ) {
-        const operationId = `expired-${index}`
-        fields[operationId] = "4|1000"
-        scores.push(expiredAt, operationId)
-      }
-      await redis.hset(ledgerKey, fields)
-      await redis.zadd(expiryKey, ...scores)
-    }
+    // A backlog far past both limits that matter: the 8000 results `unpack` will return in
+    // the Lua 5.1 that Redis and Valkey embed, and the cleanup budget of a single call.
+    const backlog = 20_000
+    await seedLapsedGrants(
+      redis,
+      { ledgerKey, expiryKey },
+      { count: backlog, score: Date.now() - 60_000 },
+    )
 
     try {
-      // The issuance that has to clear the backlog before it can grant anything.
-      const after = await issuer.issue({
+      const first = await issuer.issue({
         identity,
         operationId: randomUUID(),
         ...knobs(50, 350),
         permits: 1,
         validForMs: 1_000,
       })
-      expect(after).toMatchObject({ granted: 1, duplicate: false })
+      expect(first).toMatchObject({ granted: 1, duplicate: false })
 
-      // Drained, not merely survived: the ledger holds the live grant and this one, and
-      // the expiry set is down to the same two.
-      expect(await redis.hlen(ledgerKey)).toBe(2)
-      expect(await redis.zcard(expiryKey)).toBe(2)
+      // Bounded: one call takes a slice of the backlog rather than all of it, so no single
+      // issuance pays a cost proportional to everything that has lapsed.
+      const afterFirst = await lapsedCount(redis, expiryKey)
+      expect(afterFirst).toBeGreaterThan(0)
+      expect(afterFirst).toBeLessThan(backlog)
+
+      // And it converges: the calls that follow finish the job.
+      for (let index = 0; index < 8; index += 1) {
+        if ((await lapsedCount(redis, expiryKey)) === 0) break
+        await issuer.issue({
+          identity,
+          operationId: randomUUID(),
+          ...knobs(50, 350),
+          permits: 1,
+          validForMs: 1_000,
+        })
+      }
+      expect(await lapsedCount(redis, expiryKey)).toBe(0)
+
+      // Selective as well as complete: the grant that never lapsed is still deduplicated.
+      const retried = await issuer.issue({
+        identity,
+        operationId: liveOperationId,
+        ...knobs(50, 350),
+        permits: 4,
+        validForMs: 60_000,
+      })
+      expect(retried).toMatchObject({ granted: 4, duplicate: true })
+    } finally {
+      await redis.del(...keys)
+    }
+  })
+
+  it("does not deduplicate a lapsed grant the drain has not reached", async () => {
+    const namespace = `serval-rate-${randomUUID()}`
+    const identity = { name: "lapsed-retry", operation: "charge", scope: "t1" }
+    const issuer = redisRateLimitGrantIssuer(client as never, { namespace })
+    const redis = client as NonNullable<typeof client>
+    const { keys, ledgerKey, expiryKey } = grantKeys(namespace, identity)
+    const lapsedOperationId = randomUUID()
+
+    // A backlog larger than one call's cleanup budget, all of it older than the lapsed
+    // grant below. The drain works oldest first, so after the issuance that triggers it the
+    // lapsed grant is still in the ledger - which is exactly the state the liveness check
+    // exists for.
+    await seedLapsedGrants(
+      redis,
+      { ledgerKey, expiryKey },
+      { count: 20_000, score: Date.now() - 60_000 },
+    )
+    await redis.hset(ledgerKey, lapsedOperationId, "4|1000")
+    await redis.zadd(expiryKey, String(Date.now() - 1_000), lapsedOperationId)
+
+    try {
+      await issuer.issue({
+        identity,
+        operationId: randomUUID(),
+        ...knobs(50, 350),
+        permits: 1,
+        validForMs: 1_000,
+      })
+
+      // The retry finds the field, but the expiry set says the grant is over: it is neither
+      // deduplicated nor served, and it is forgotten on the way past.
+      const retried = await issuer.issue({
+        identity,
+        operationId: lapsedOperationId,
+        ...knobs(50, 350),
+        permits: 1,
+        validForMs: 1_000,
+      })
+      expect(retried).toMatchObject({ granted: 1, duplicate: false })
     } finally {
       await redis.del(...keys)
     }

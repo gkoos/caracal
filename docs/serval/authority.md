@@ -153,6 +153,9 @@ horizons and no carry**:
 
 - The server holds one token bucket per identity: rate `R` permits/second, burst capacity `B`. A
   grant of `n` permits deducts `n` tokens at issuance, atomically, deduplicated by `operationId`.
+  Lapsed grants are forgotten by a bounded drain, so a retry is answered against the expiry set
+  rather than the ledger's word alone: a grant that has lapsed is neither deduplicated nor served,
+  even when the drain has not reached its ledger entry yet.
 - A grant's spend horizon is `validForMs = V`. Permits are spendable only within
   `requestStartedAt + V - margin`.
 - Unused stock simply expires; it is **never** credited back into a later accounting window, so a
@@ -444,6 +447,13 @@ carries no TTL for exactly that reason: it is the granted counter's source of tr
 expired before the next call could not decrement the counter, which would cost the fleet that capacity
 permanently. An allocation is identified by the operation that created it, so one replica cannot hold
 two allocations at once.
+
+Reclamation is therefore the drain's job, and the drain is **bounded per call**: a call prunes a fixed
+number of lapsed reservations, far above the one member a call adds, so the set converges under
+sustained load while no single call pays a cost proportional to everything that has lapsed. A backlog
+past one call's budget returns its capacity over the calls that follow rather than holding the server,
+which is the trade this bound buys: capacity arrives a call or two later, and a fleet's ceiling is
+never blocked by work proportional to a backlog.
 
 **Renew versus resize versus return:**
 

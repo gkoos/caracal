@@ -148,24 +148,37 @@ local now = t[1] * 1000 + math.floor(t[2] / 1000)
 -- A reservation ends at its expiry plus the grace period. Until then the slots are
 -- held for the replica that owns them, which is what makes a lost reply
 -- reconcilable instead of immediately reallocated.
-local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now)
-for _, member in ipairs(expired) do
-  local kind, rest = string.match(member, '^(%a)|(.*)$')
-  if kind == 'a' then
-    local replica, grantId, slots = string.match(rest, '^([^|]*)|([^|]*)|(%d+)$')
-    if replica and grantId and slots then
-      redis.call('DECRBY', KEYS[3], tonumber(slots))
-      local held = redis.call('HGET', KEYS[1], replica)
-      local heldGrant = held and string.match(held, '^([^|]*)|')
-      -- Only the allocation that owned this reservation is forgotten: a replica
-      -- that has since allocated again keeps its newer one.
-      if heldGrant == grantId then redis.call('HDEL', KEYS[1], replica) end
+--
+-- The prune is bounded per call. Each member is read and acted on individually, because a
+-- lapsed allocation has to be counted down before it is forgotten, and the reservation
+-- set carries no TTL, so this drain is what returns capacity. One call prunes at most
+-- 'maxSlices' slices, which is far above the one member a call adds, so the set converges
+-- under sustained load; a larger backlog returns its capacity over the calls that follow.
+local sliceSize = 512
+local maxSlices = 8
+for _ = 1, maxSlices do
+  local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now, 'LIMIT', 0, sliceSize)
+  if #expired == 0 then break end
+  for _, member in ipairs(expired) do
+    local kind, rest = string.match(member, '^(%a)|(.*)$')
+    if kind == 'a' then
+      local replica, grantId, slots = string.match(rest, '^([^|]*)|([^|]*)|(%d+)$')
+      if replica and grantId and slots then
+        redis.call('DECRBY', KEYS[3], tonumber(slots))
+        local held = redis.call('HGET', KEYS[1], replica)
+        local heldGrant = held and string.match(held, '^([^|]*)|')
+        -- Only the allocation that owned this reservation is forgotten: a replica
+        -- that has since allocated again keeps its newer one.
+        if heldGrant == grantId then redis.call('HDEL', KEYS[1], replica) end
+      end
+    elseif kind == 'o' then
+      redis.call('HDEL', KEYS[4], rest)
     end
-  elseif kind == 'o' then
-    redis.call('HDEL', KEYS[4], rest)
   end
+  -- Only the members this pass acted on: a bulk range delete would drop reservations the
+  -- counter has not been told about, and the fleet would lose that capacity for good.
+  redis.call('ZREM', KEYS[2], unpack(expired))
 end
-if #expired > 0 then redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now) end
 
 local function reply(status, reason, allocated, rev, expiresAt, duplicate)
   if body == '' then
@@ -426,18 +439,20 @@ local now = t[1] * 1000 + math.floor(t[2] / 1000)
 -- A grant is live while now <= its server expiry. Expired grants are neither
 -- deduplicated nor outstanding, so they are forgotten here rather than lingering.
 --
--- The drain is chunked. 'unpack' returns at most as many results as the interpreter's
--- stack holds (8000 in the Lua 5.1 that Redis and Valkey embed), so a larger backlog
--- must reach HDEL in slices: unchunked, the call fails, and because it fails before it
--- removes anything, the backlog stays put to fail every later attempt the same way.
-local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now - 1)
-if #expired > 0 then
-  local slice = 512
-  for offset = 1, #expired, slice do
-    local last = math.min(offset + slice - 1, #expired)
-    redis.call('HDEL', KEYS[2], unpack(expired, offset, last))
-  end
-  redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now - 1)
+-- The drain is bounded twice over, because it runs inside a call that holds the server.
+-- A slice is small enough for 'unpack', which returns at most as many results as the
+-- interpreter's stack holds (8000 in the Lua 5.1 that Redis and Valkey embed), and one
+-- call forgets at most 'maxSlices' of them. A backlog past that is drained by the calls
+-- that follow: a retry is answered by field and the expiry set is read for live grants
+-- only, so an unfinished drain costs nothing but time, and the keys carry the TTL of the
+-- newest grant, so whatever the drain never reaches expires with them.
+local sliceSize = 512
+local maxSlices = 8
+for _ = 1, maxSlices do
+  local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now - 1, 'LIMIT', 0, sliceSize)
+  if #expired == 0 then break end
+  redis.call('HDEL', KEYS[2], unpack(expired))
+  redis.call('ZREM', KEYS[3], unpack(expired))
 end
 
 local function reply(granted, retryAfterMs, duplicate)
@@ -449,8 +464,16 @@ end
 
 local existing = redis.call('HGET', KEYS[2], operationId)
 if existing then
-  local granted = string.match(existing, '^(%d+)|')
-  return reply(tonumber(granted), 0, 1)
+  -- Liveness is the expiry set's call, not the drain's: a lapsed grant whose field the
+  -- drain has not reached yet is neither deduplicated nor served, and a retry that finds
+  -- one forgets it on the way past.
+  local expiry = redis.call('ZSCORE', KEYS[3], operationId)
+  if expiry and tonumber(expiry) >= now then
+    local granted = string.match(existing, '^(%d+)|')
+    return reply(tonumber(granted), 0, 1)
+  end
+  redis.call('HDEL', KEYS[2], operationId)
+  redis.call('ZREM', KEYS[3], operationId)
 end
 
 local tat = tonumber(redis.call('GET', KEYS[1]) or '0')
