@@ -135,6 +135,9 @@ create -> start() -> serving -> close()
   reads the authority per admission rather than caching. Only the breaker holds a session, so only it
   reconciles a snapshot; the rate limiter and bulkhead converge through expiry and their own
   renewals and allocation replies.
+- An allocation is renewed before its validity ends, on the admission path, so traffic that never
+  empties the pool still renews. The nudge is a background modification: the admission itself is
+  served from the local pool, and repeated nudges join the renewal already in flight.
 - Serving never blocks on a notification: hints trigger a coalesced refresh, and
   periodic reconciliation, expiry and reconnect snapshots provide convergence without
   them.
