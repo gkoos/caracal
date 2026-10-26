@@ -291,6 +291,56 @@ describe("serval rate limiter boundaries", () => {
     expect(harness.coordinator.diagnostics(harness.identity)).toBeUndefined()
   })
 
+  it("reclaims a scope whose stock has expired without being touched again", async () => {
+    const harness = createRateLimitHarness({
+      burst: 4,
+      grantSize: 4,
+      validForMs: 500,
+      maximumScopes: 1,
+    })
+    expect((await command(harness)).allowed).toBe(true)
+    await harness.whenIdle()
+    expect(harness.coordinator.diagnostics(harness.identity)?.stock).toBe(3)
+
+    // The grant's window closes and nobody asks again, so nothing has expired the stock
+    // locally. It is dead all the same - the gating decision discards it on sight - so the
+    // registry must not be pinned by it.
+    harness.advanceBy(600)
+    const other = { ...TEST_RATE_IDENTITY, scope: "tenant-b" }
+    expect(await harness.coordinator.command(other, harness.params)).toEqual({
+      allowed: true,
+      retryAfterMs: 0,
+    })
+    expect(harness.coordinator.metrics().registryRefusals).toBe(0)
+    expect(harness.coordinator.metrics().scopes).toBe(1)
+    expect(harness.coordinator.diagnostics(harness.identity)).toBeUndefined()
+  })
+
+  it("reclaims a scope whose retained operation can no longer be replayed", async () => {
+    const harness = createRateLimitHarness({
+      burst: 4,
+      grantSize: 4,
+      validForMs: 500,
+      maximumScopes: 1,
+    })
+    // An ambiguous outcome: the operation is retained so that a retry is deduplicated.
+    harness.authority.failNext(1)
+    await expect(command(harness)).rejects.toThrow("unavailable")
+    expect(harness.coordinator.diagnostics(harness.identity)?.state).toBe(
+      "uncertain",
+    )
+
+    // Past the window in which its reply could still be adopted, a retry is a fresh
+    // operation anyway, so the retained one must not pin the scope either.
+    harness.advanceBy(600)
+    const other = { ...TEST_RATE_IDENTITY, scope: "tenant-b" }
+    expect(await harness.coordinator.command(other, harness.params)).toEqual({
+      allowed: true,
+      retryAfterMs: 0,
+    })
+    expect(harness.coordinator.metrics().scopes).toBe(1)
+  })
+
   it("rejects an invalid configuration", () => {
     expect(() => coordinatorWith({ grantSize: 0 })).toThrow("grantSize")
     expect(() => coordinatorWith({ validForMs: 0 })).toThrow("validForMs")

@@ -246,24 +246,59 @@ export function createServalRateLimitCoordinator(
   }
 
   /**
-   * A scope holds no accounting once its stock is gone, no issuance is in flight and
-   * no retry hint is live, so it is reclaimable. Anything else is pinned: refusing a
-   * new scope is the documented behaviour when a registry cannot hold more, and it is
-   * never a reason to drop live quota.
+   * Stock that may still be spent: permits whose validity has not passed.
+   *
+   * This is the same predicate the spend uses. A scope must never be pinned by stock the
+   * gating decision would discard on sight, which is what made an idle expired scope
+   * permanent: nothing expires stock that is never touched again.
+   */
+  function liveStock(scope: QuotaScope, now: number): number {
+    return now < scope.deadline ? scope.stock : 0
+  }
+
+  /**
+   * The instant a retained operation stops being replayable.
+   *
+   * Past it a reply cannot be adopted, so a retry is a fresh operation and the retained one
+   * holds nothing. `authority.md` retains an operation id "until the operation can no
+   * longer be replayed", which is this instant.
+   */
+  function replayableUntil(operation: GrantOperation): number {
+    return servalDeadline(
+      operation.requestStartedAt,
+      operation.validForMs,
+      safetyMarginMs,
+    )
+  }
+
+  /**
+   * A scope holds no accounting once its stock has expired, no issuance is in flight, no
+   * retry hint is live and any retained operation can no longer be replayed, so it is
+   * reclaimable. Anything else is pinned: refusing a new scope is the documented behaviour
+   * when a registry cannot hold more, and it is never a reason to drop live quota.
+   *
+   * Every reclaimable scope is dropped in one pass, so pressure settles the registry in a
+   * single scan rather than one scope per new key.
    */
   function reclaimIdle(now: number): boolean {
+    let reclaimed = false
     for (const [key, scope] of scopes) {
+      const operation = scope.operation
       if (
-        scope.stock === 0 &&
-        scope.operation === undefined &&
+        liveStock(scope, now) === 0 &&
+        (operation === undefined || now > replayableUntil(operation)) &&
         scope.issuing === undefined &&
         now >= scope.refusedUntil
       ) {
+        // The reclaim test just proved this stock is past its window, so it is discarded
+        // here rather than forgotten: conservation counts every granted permit as spent,
+        // held or discarded, and dropping a scope is a discard.
+        if (scope.stock > 0) counters.permitsExpired += scope.stock
         scopes.delete(key)
-        return true
+        reclaimed = true
       }
     }
-    return false
+    return reclaimed
   }
 
   function scopeFor(identity: Identity): QuotaScope {
@@ -343,12 +378,7 @@ export function createServalRateLimitCoordinator(
   ): GrantOperation {
     const existing = scope.operation
     if (existing !== undefined) {
-      const deadline = servalDeadline(
-        existing.requestStartedAt,
-        existing.validForMs,
-        safetyMarginMs,
-      )
-      if (now <= deadline) return existing
+      if (now <= replayableUntil(existing)) return existing
     }
 
     const operation: GrantOperation = {
@@ -523,6 +553,8 @@ export function createServalRateLimitCoordinator(
       return {
         identity: scope.identity,
         state: scope.state,
+        // The recorded stock. The deadline beside it is what decides whether any of it may
+        // still be spent, and a scope is never pinned by stock that has passed it.
         stock: scope.stock,
         deadline: scope.deadline,
         refusedUntil: scope.refusedUntil,

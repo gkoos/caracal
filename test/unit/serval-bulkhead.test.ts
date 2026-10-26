@@ -431,6 +431,66 @@ describe("serval bulkhead boundaries", () => {
     expect(harness.coordinator.metrics().registryRefusals).toBe(1)
   })
 
+  it("never reclaims a scope whose allocation is still valid", async () => {
+    const harness = createBulkheadHarness({
+      limit: 4,
+      initialSlots: 4,
+      validityMs: 60_000,
+      maximumScopes: 1,
+    })
+    await harness.acquire(harness.token(1))
+    await harness.release(harness.token(1))
+    await harness.whenIdle()
+    // No holders, but the allocation is live: those slots are this process's to spend.
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 4,
+      active: 0,
+    })
+
+    const other = { ...TEST_BULKHEAD_IDENTITY, scope: "tenant-b" }
+    await expect(
+      harness.coordinator.command(
+        other,
+        "acquire",
+        "other",
+        harness.leaseMs,
+        4,
+      ),
+    ).rejects.toBeInstanceOf(ServalRegistryPressureError)
+    expect(harness.coordinator.metrics().registryRefusals).toBe(1)
+  })
+
+  it("reclaims a scope whose allocation has lapsed without being touched again", async () => {
+    const harness = createBulkheadHarness({
+      limit: 4,
+      initialSlots: 4,
+      validityMs: 1_000,
+      graceMs: 0,
+      maximumScopes: 1,
+    })
+    await harness.acquire(harness.token(1))
+    await harness.release(harness.token(1))
+    await harness.whenIdle()
+    expect(harness.coordinator.diagnostics(harness.identity)?.allocated).toBe(4)
+
+    // The allocation lapses, and nobody asks again, so nothing has cleared it locally. The
+    // server's reservation is gone with it, so the scope holds nothing.
+    harness.advanceBy(2_000)
+    const other = { ...TEST_BULKHEAD_IDENTITY, scope: "tenant-b" }
+    await expect(
+      harness.coordinator.command(
+        other,
+        "acquire",
+        "other",
+        harness.leaseMs,
+        4,
+      ),
+    ).resolves.toMatchObject({ allowed: true })
+    expect(harness.coordinator.metrics().registryRefusals).toBe(0)
+    expect(harness.coordinator.metrics().scopes).toBe(1)
+    expect(harness.coordinator.diagnostics(harness.identity)).toBeUndefined()
+  })
+
   it("rejects invalid parameters as the strict coordinator does", async () => {
     const harness = createBulkheadHarness()
     await expect(

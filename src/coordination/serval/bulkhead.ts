@@ -318,25 +318,42 @@ export function createServalBulkheadCoordinator(
   }
 
   /**
-   * A scope holds nothing once it has no allocation, no holders and no frozen
-   * slots, so it is reclaimable. Anything else is pinned: a registry that cannot
-   * hold more refuses the new scope rather than dropping accounting for work that is
-   * still running.
+   * Whether this scope still holds an allocation the server may honour.
+   *
+   * The server keeps a reservation for the allocation's validity plus the grace window, so
+   * until that passes the slots are this process's to spend or return. Afterwards the scope
+   * holds nothing, whether or not it was touched again - which is what keeps a registry
+   * entry from being pinned by an allocation nobody asked about.
+   */
+  function holdsAllocation(scope: AllocationScope, now: number): boolean {
+    return scope.allocated > 0 && now < scope.deadline + graceMs
+  }
+
+  /**
+   * A scope holds nothing once its allocation has lapsed, it has no holders, no frozen slots
+   * and no unsettled modification, so it is reclaimable. Anything else is pinned: a registry
+   * that cannot hold more refuses the new scope rather than dropping accounting for work that
+   * is still running.
+   *
+   * Every reclaimable scope is dropped in one pass, so pressure settles the registry in a
+   * single scan rather than one scope per new key.
    */
   function reclaimIdle(): boolean {
+    const now = clock()
+    let reclaimed = false
     for (const [key, scope] of scopes) {
       if (
-        scope.allocated === 0 &&
+        !holdsAllocation(scope, now) &&
         scope.active.size === 0 &&
         scope.frozen === 0 &&
         scope.modification === undefined &&
         scope.issuing === undefined
       ) {
         scopes.delete(key)
-        return true
+        reclaimed = true
       }
     }
-    return false
+    return reclaimed
   }
 
   function scopeFor(identity: Identity, limit: number): AllocationScope {
