@@ -199,28 +199,17 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
   if (cell.profile === "serval-guarded") policies.push(localGuardrail)
   if (cell.timeoutMs > 0) policies.push(timeout({ ms: cell.timeoutMs }))
 
-  const delegated =
-    cell.profile === "serval" || cell.profile === "serval-guarded"
   let offerStartedAt = 0
   let admissionLatency = 0
   const admissionLatencies: number[] = []
   const endToEnd: number[] = []
+  let peakTracked = 0
   const op = operation({
     name: identity.operation,
     adapter: {
       capabilities: () => ({ abort: cell.abort, replay: "safe" }) as const,
       execute: async () => {
         admissionLatency = performance.now() - offerStartedAt
-        // Sampled inside the attempt, where the delegated bulkhead still holds its
-        // permit: after execute() returns, the bulkhead has released it and the peak
-        // would always read zero. The strict bulkhead keeps its leases in Redis, so
-        // its tracked occupancy is not readable from the process.
-        if (delegated) {
-          peakTracked = Math.max(
-            peakTracked,
-            capacity.diagnostics(identity)?.active ?? 0,
-          )
-        }
         const response = await fetch(cell.downstreamUrl)
         if (!response.ok) throw new Error(`downstream ${response.status}`)
         await response.text()
@@ -228,6 +217,27 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
       },
     },
     policies: policies as never,
+    // Tracked occupancy comes from the bulkhead's own report, for every profile: the local
+    // count for a delegated scope, and the number the strict coordinator returned from Redis.
+    // Reading it here costs nothing extra - it rides along with the admission the policy
+    // already made - so the column is comparable across profiles instead of reading zero
+    // wherever the leases live in Redis. Only the delegated policy is sampled; the guarded
+    // profile's local guardrail has its own name and its own count.
+    events: {
+      emit(event) {
+        if (
+          event.type !== "bulkhead.admitted" &&
+          event.type !== "bulkhead.rejected" &&
+          event.type !== "bulkhead.waited"
+        ) {
+          return
+        }
+        if (event.policyName !== identity.name) return
+        if ("occupancy" in event && typeof event.occupancy === "number") {
+          peakTracked = Math.max(peakTracked, event.occupancy)
+        }
+      },
+    },
   })
 
   await breaker.session.start()
@@ -238,7 +248,6 @@ export async function runCell(cell: RunCell): Promise<Metrics> {
   let rejectedBulkhead = 0
   let failed = 0
   let other = 0
-  let peakTracked = 0
   let okBeforeCut = 0
   let okAfterCut = 0
 

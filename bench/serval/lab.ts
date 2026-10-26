@@ -170,8 +170,23 @@ function revision(): string {
   }
 }
 
+/**
+ * How the tracked-occupancy column combines across replicas.
+ *
+ * The strict bulkhead counts one shared number in Redis, which every replica reads a view of, so
+ * the fleet figure is the largest view rather than a multiple of it. The delegated bulkheads count
+ * per process, and those are summed: the safety claim compares observed tracked occupancy against
+ * the sum of the local ceilings, so a per-replica maximum would understate it.
+ */
+function trackedAcross(profile: Profile): "sum" | "max" {
+  return profile === "strict" ? "max" : "sum"
+}
+
 /** Sums the counters and merges the samples of one cell's replicas. */
-function aggregate(runs: readonly Metrics[]): Metrics {
+function aggregate(
+  runs: readonly Metrics[],
+  tracked: "sum" | "max" = "sum",
+): Metrics {
   const endToEnd = runs.flatMap((run) => [...run.endToEnd])
   const admissionLatency = runs.flatMap((run) => [...run.admissionLatency])
   const total = (pick: (run: Metrics) => number): number =>
@@ -186,9 +201,10 @@ function aggregate(runs: readonly Metrics[]): Metrics {
     redisOps: total((run) => run.redisOps),
     okBeforeCut: total((run) => run.okBeforeCut),
     okAfterCut: total((run) => run.okAfterCut),
-    // Summed across replicas: the safety claim compares observed tracked occupancy against the
-    // sum of the local ceilings, so a per-replica maximum would understate it.
-    peakTracked: total((run) => run.peakTracked),
+    peakTracked:
+      tracked === "max"
+        ? Math.max(0, ...runs.map((run) => run.peakTracked))
+        : total((run) => run.peakTracked),
     admissionLatency,
     endToEnd,
   }
@@ -239,7 +255,10 @@ function report(
     for (const profile of PROFILES) {
       for (const replicas of config.replicaCounts) {
         const bucket = groups.get(`${cell.name}|${profile}|${replicas}`) ?? []
-        const metrics = aggregate(bucket.map((result) => result.metrics))
+        const metrics = aggregate(
+          bucket.map((result) => result.metrics),
+          trackedAcross(profile),
+        )
         const peakPhysical = Math.max(
           ...bucket.map((result) => result.physical.peak),
           0,
@@ -265,12 +284,15 @@ function report(
   for (const cell of config.cells) {
     const reference = aggregate(
       (groups.get(`${cell.name}|unprotected|1`) ?? []).map((r) => r.metrics),
+      trackedAcross("unprotected"),
     )
     const serval = aggregate(
       (groups.get(`${cell.name}|serval|1`) ?? []).map((r) => r.metrics),
+      trackedAcross("serval"),
     )
     const strict = aggregate(
       (groups.get(`${cell.name}|strict|1`) ?? []).map((r) => r.metrics),
+      trackedAcross("strict"),
     )
     const share = (value: number, base: number): string =>
       base === 0 ? "n/a" : `${Math.round((value / base) * 100)}%`
@@ -396,7 +418,7 @@ async function main(): Promise<void> {
                 replicas,
                 seed,
                 intervalMs: cell.intervalMs ?? intervalMs,
-                metrics: aggregate(usable),
+                metrics: aggregate(usable, trackedAcross(profile)),
                 physical: {
                   peak: stats.peakPhysical,
                   overshootArea: stats.overshootArea,
