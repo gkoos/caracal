@@ -23,7 +23,7 @@ behaviour that a test proves.
 | D1 | Outage behaviour claim | Fixed |
 | D2 | Warm-authority fault behaviour | Fixed |
 | D3 | Tracked-concurrency measurements | Fixed |
-| D4 | Seeded comparisons | Open |
+| D4 | Seeded comparisons | Fixed |
 | D5 | Authority and reconciliation contracts | Open |
 
 Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropped. Item 4's fix is
@@ -157,7 +157,7 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
 | Outage behaviour | Fixed | `docs/serval/benchmarks.md:91-100` now says observation and settlement failures are reported as degradation and do not fail an otherwise successful call. The quoted line is gone. |
 | Warm-authority fault behaviour | Fixed | The lab has a `warm-outage` cell: every replica is served by the healthy authority, then its own connection is cut mid-run. `docs/serval/benchmarks.md` carries the numbers — a delegated replica admitted 8 of 30 with 2 after the cut, against the strict path's 6 with 0 after it, and the cold cell from the same run admitted 0 of 24 on both paths. |
 | Tracked-concurrency measurements | Fixed | The column now comes from the bulkhead's own `bulkhead.admitted`/`bulkhead.rejected` events for the delegated policy, so it is measured for every profile: the strict row is the shared Redis count — the largest view across replicas, not a sum — instead of a structural 0, and the delegated rows stay per-process sums. `docs/serval/benchmarks.md` says what the column is and that a closed loop caps it at the replica count, so tracked and physical cannot diverge in the lab; that case stays with the composition suite. The "sampled after the operation finishes" half still does not reproduce. |
-| Seeded comparisons | Open | `bench/serval/worker.ts` contains no reference to `seed`; the seed names namespaces and labels only. |
+| Seeded comparisons | Fixed | The seed now drives the offered schedule: the waits between offers come from a seeded generator, so one seed is one arrival pattern and the same seed is the same load in every profile. The worker reports a digest of the waits it asked for and the lab prints it per cell and seed, so the pairing is visible rather than asserted, and `CARACAL_LAB_SEEDS=1,2,3` samples three patterns instead of repeating one. The peak-occupancy column also stopped summing across seeds — they are independent runs, so it takes the largest. |
 | Authority and reconciliation contracts | Open | Breaker defaults to a fixed incarnation (`breaker.ts:615-616`); the Redis rate-limit and bulkhead issuers contain no incarnation (0 matches); `unfrozenAfterReconciliation` (90, 289) and `reconciliations` (93, 292) have no other reference in the file. |
 
 ## Also open, found while validating
