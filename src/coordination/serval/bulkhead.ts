@@ -88,11 +88,8 @@ export interface ServalBulkheadMetrics {
   readonly refusals: number
   /** Replies discarded because a newer revision was already applied. */
   readonly staleReplies: number
-  /** Frozen slots restored after a reconciliation proved a non-commit. */
-  readonly unfrozenAfterReconciliation: number
   readonly modificationFailures: number
   readonly duplicates: number
-  readonly reconciliations: number
   readonly registryRefusals: number
   readonly scopes: number
   readonly frozenSlots: number
@@ -297,10 +294,8 @@ export function createServalBulkheadCoordinator(
     returns: 0,
     refusals: 0,
     staleReplies: 0,
-    unfrozenAfterReconciliation: 0,
     modificationFailures: 0,
     duplicates: 0,
-    reconciliations: 0,
     registryRefusals: 0,
   }
   const scopes = new Map<string, AllocationScope>()
