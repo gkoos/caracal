@@ -55,18 +55,18 @@ not portable; the *ratios* and the admission outcomes are the point.
 | Cell | Profile | Rep | Offered | Admitted | Rate-rej | Bulkhead-rej | Failed | Redis/offer | p95 ms | Tracked | Peak physical |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | healthy | unprotected | 1 | 20 | 20 | 0 | 0 | 0 | 0.00 | 2 | 0 | 1 |
-| healthy | strict | 1 | 20 | 20 | 0 | 0 | 0 | **5.00** | 32 | 0 | 1 |
-| healthy | serval | 1 | 20 | 20 | 0 | 0 | 0 | **1.55** | 3 | 1 | 1 |
-| healthy | strict | 4 | 80 | 25 | 55 | 0 | 0 | 2.94 | 7 | 0 | 1 |
-| healthy | serval | 4 | 80 | 24 | 56 | 0 | 0 | **1.40** | 6 | 4 | 1 |
-| downstream-slow | strict | 4 | 80 | 51 | 25 | 0 | 0 | 4.06 | 63 | 0 | 4 |
-| downstream-slow | serval | 4 | 80 | 50 | 26 | 0 | 0 | **1.99** | 60 | 4 | 4 |
+| healthy | strict | 1 | 20 | 20 | 0 | 0 | 0 | **5.00** | 6 | 1 | 1 |
+| healthy | serval | 1 | 20 | 20 | 0 | 0 | 0 | **1.50** | 6 | 1 | 1 |
+| healthy | strict | 4 | 80 | 26 | 54 | 0 | 0 | 2.98 | 11 | 4 | 1 |
+| healthy | serval | 4 | 80 | 24 | 56 | 0 | 0 | **1.45** | 6 | 4 | 1 |
+| downstream-slow | strict | 4 | 80 | 56 | 20 | 0 | 0 | 4.25 | 65 | 4 | 4 |
+| downstream-slow | serval | 4 | 80 | 49 | 25 | 0 | 0 | **2.13** | 63 | 4 | 4 |
 | redis-outage | strict | 1 | 20 | 0 | 0 | 0 | 20 | 3.00 | 1 | 0 | 0 |
 | redis-outage | serval | 1 | 20 | 0 | 0 | 0 | 20 | 3.05 | 1 | 0 | 0 |
-| slow+partition | strict | 4 | 80 | 57 | 0 | 0 | 20 | 4.50 | 61 | 0 | 3 |
-| slow+partition | serval | 4 | 80 | 57 | 0 | 0 | 20 | **1.98** | 57 | 3 | 3 |
+| slow+partition | strict | 4 | 80 | 57 | 0 | 0 | 20 | 4.50 | 64 | 3 | 3 |
+| slow+partition | serval | 4 | 80 | 57 | 0 | 0 | 20 | **1.96** | 61 | 3 | 3 |
 
-Tracked occupancy is what the delegated bulkhead accounts for locally. The strict bulkhead keeps its leases in Redis, so its column reads 0 rather than the count a server-side read would give.
+Tracked occupancy is the peak the bulkhead itself reported, taken from its own `bulkhead.admitted` and `bulkhead.rejected` events for the delegated policy in each profile. The strict path counts one shared number in Redis that every replica reads a view of, so its row is the largest view across replicas rather than a sum; the delegated profiles count per process, and their rows are summed. `unprotected` has no bulkhead, so its 0 is structural rather than measured.
 
 ## A warm outage
 
@@ -78,20 +78,20 @@ cold cell from the same run is quoted underneath for contrast.
 
 | Cell | Profile | Rep | Offered | Admitted | of which after the cut | Rate-rej | Failed | Redis/offer | Tracked | Peak physical |
 |---|---|---|---|---|---|---|---|---|---|---|
-| warm-outage | unprotected | 1 | 30 | 30 | 24 | 0 | 0 | 0.00 | 0 | 1 |
-| warm-outage | strict | 1 | 30 | 6 | **0** | 0 | 24 | 3.40 | 0 | 1 |
-| warm-outage | serval | 1 | 30 | 8 | **2** | 0 | 22 | 2.27 | 1 | 1 |
-| warm-outage | serval-guarded | 1 | 30 | 8 | **2** | 0 | 22 | 2.27 | 1 | 1 |
-| warm-outage | strict | 4 | 120 | 24 | **0** | 0 | 96 | 3.40 | 0 | 1 |
-| warm-outage | serval | 4 | 120 | 28 | **7** | 3 | 89 | 2.28 | 4 | 1 |
-| warm-outage | serval-guarded | 4 | 120 | 28 | **6** | 2 | 90 | 2.32 | 4 | 1 |
-| redis-outage | strict | 1 | 24 | 0 | 0 | 0 | 24 | 3.00 | 0 | 0 |
-| redis-outage | serval | 1 | 24 | 0 | 0 | 0 | 24 | 3.04 | 0 | 0 |
+| warm-outage | unprotected | 1 | 30 | 30 | 24 | 0 | 0 | 0.00 | 2 | 0 | 1 |
+| warm-outage | strict | 1 | 30 | 6 | **0** | 0 | 24 | 3.40 | 7 | 1 | 1 |
+| warm-outage | serval | 1 | 30 | 8 | **2** | 0 | 22 | 2.30 | 3 | 1 | 1 |
+| warm-outage | serval-guarded | 1 | 30 | 8 | **2** | 0 | 22 | 2.27 | 4 | 1 | 1 |
+| warm-outage | strict | 4 | 120 | 24 | **0** | 0 | 96 | 3.40 | 7 | 4 | 1 |
+| warm-outage | serval | 4 | 120 | 28 | **8** | 4 | 88 | 2.32 | 6 | 4 | 1 |
+| warm-outage | serval-guarded | 4 | 120 | 29 | **8** | 3 | 88 | 2.29 | 5 | 4 | 1 |
+| redis-outage | strict | 1 | 20 | 0 | 0 | 0 | 20 | 3.00 | 1 | 0 | 0 |
+| redis-outage | serval | 1 | 20 | 0 | 0 | 0 | 20 | 3.05 | 1 | 0 | 0 |
 
 What the warm numbers say:
 
 - **A warm replica keeps serving from local authority.** The delegated pipeline admitted
-  offers after the cut — two per replica with one replica, six to seven across four — while
+  offers after the cut — two per replica with one replica, eight across four — while
   the strict path admitted none, because its coordinators need Redis for every admission and
   hold nothing across an outage.
 - **What it holds is a grant, not a reservoir.** Those post-cut admits are exactly what the
@@ -100,30 +100,30 @@ What the warm numbers say:
   rather than as silent capacity — which is the honest reading of "keeps admitting from the
   authority it holds".
 - **The cost and safety claims survive the fault.** Redis commands per offer stayed below the
-  strict path (2.27 against 3.40), tracked occupancy stayed within the sum of the local
+  strict path (2.30 against 3.40), tracked occupancy stayed within the sum of the local
   ceilings, and physical concurrency stayed at 1.
 
 ## What the numbers say
 
 **The admission read really is removed, and that is most of the cost.** On a healthy
-dependency one replica pays **1.55 Redis commands per offered request** with Serval
-against **5.00** with the strict coordinators - a 69% reduction, and the same
+dependency one replica pays **1.50 Redis commands per offered request** with Serval
+against **5.00** with the strict coordinators - a 70% reduction, and the same
 admissions. The remaining cost is what the contract expects: the rate grant and
 the bulkhead allocation on their slow paths, plus the breaker's settlement on every
 call. Serval does not make settlement free, and this number is the honest measurement
 of that.
 
 **Under load the fleet ceiling is what binds, not the coordinator.** With four replicas
-and 80 offers the strict and Serval profiles admitted 25 and 24: the rate limit (50/s,
+and 80 offers the strict and Serval profiles admitted 26 and 24: the rate limit (50/s,
 burst 8) refuses the rest. Coordination strategy does not change how much work the fleet
 accepts; it changes what that costs.
 
-**A slow dependency is where the profiles diverge.** In this run Serval admitted 50 of 80
-where strict admitted 51, with 26 rate refusals against 25 and no bulkhead refusals on
+**A slow dependency is where the profiles diverge.** In this run Serval admitted 49 of 80
+where strict admitted 56, with 25 rate refusals against 20 and no bulkhead refusals on
 either path. The delegated rate limiter spends locally held stock, so it can refuse
 before the strict GCRA would, and the integration suite pins that mechanism; how much
 earlier it bites depends on the arrival pattern. What the table shows either way is the
-cost: 1.99 Redis commands per offer against 4.06, for the same protection.
+cost: 2.13 Redis commands per offer against 4.25, for the same protection.
 
 **A cold start without Redis admits nothing, on both paths.** The cold outage cells start each
 worker against an unreachable authority, so no replica holds a verdict, a grant or an
@@ -143,17 +143,21 @@ it is bounded by the local grant, not by the outage.
 
 **A partition is per replica, and the fleet carries on.** With one of four replicas cut
 off, the three healthy replicas kept admitting (57 of 80 on both paths) while the isolated
-replica's 20 offers failed. Cost stayed lower with Serval (1.98 against 4.50 per offer).
+replica's 20 offers failed. Cost stayed lower with Serval (1.96 against 4.50 per offer).
 No replica's failure was hidden: it appeared as failures, not as silent capacity.
 
 **Tracked occupancy is measured at the client, physical concurrency at the dependency.**
 In these cells the two agree - four replicas tracked 4 slots while the dependency worked
 on 4 responses, and 3 against 3 under the partition - because every admitted request is
-held until it settles. They diverge when work outlives its admission: the composition
-suite pins the abandoned-attempt case, where the permit stays held until the adapter
-settles even though the caller has gone, and the lab's adapter ignores cancellation for
-the same reason. The safety claim is about *tracked* occupancy against the sum of the
-local ceilings; the physical number is what the dependency actually did.
+held until it settles. Two things bound what the column can show. It is reported by the
+bulkhead itself, so the strict row is a shared Redis count read from one replica's view
+rather than a per-process one; and the driver is a closed loop, one offer at a time per
+replica, so the peak is capped by the replica count and the two columns *cannot* diverge
+here. They diverge when work outlives its admission: the composition suite pins the
+abandoned-attempt case, where the permit stays held until the adapter settles even though
+the caller has gone, and the lab's adapter ignores cancellation for the same reason. The
+safety claim is about *tracked* occupancy against the sum of the local ceilings; the
+physical number is what the dependency actually did.
 
 ## Recommended operating envelopes
 
@@ -177,7 +181,9 @@ local ceilings; the physical number is what the dependency actually did.
   and no network fault injector is used, so latency *distributions* are not
   representative of a real deployment.
 - The lab drives a closed loop per replica (one offer at a time), which measures
-  protection and cost but not queueing behaviour under an open-loop arrival process.
+  protection and cost but not queueing behaviour under an open-loop arrival process. It also
+  caps tracked occupancy at the replica count, so the tracked and physical columns cannot
+  diverge here; that case is pinned by the composition suite instead.
 - Grant sizes, TTLs and reclaim grace are held at the values in `bench/serval/worker.ts`
   for comparability; sweeping them is a configuration exercise, not a new measurement.
 - The cells are short: large enough to compare profiles against each other, too small to
