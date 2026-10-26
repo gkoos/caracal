@@ -102,7 +102,6 @@ export function createFakeAllocationAuthority(
   }
 
   function committed(
-    request: BulkheadAllocationRequest,
     slots: number,
     revision: number,
     expiresAt: number,
@@ -157,7 +156,7 @@ export function createFakeAllocationAuthority(
       reserve(request.replicaId, slots, expiresAt)
       granted += slots
       check()
-      return committed(request, slots, 1, expiresAt)
+      return committed(slots, 1, expiresAt)
     }
 
     if (current === undefined || now() > current.expiresAt) {
@@ -185,7 +184,7 @@ export function createFakeAllocationAuthority(
         breaches.push("a renewal changed the granted slot count")
       }
       check()
-      return committed(request, current.slots, current.revision + 1, expiresAt)
+      return committed(current.slots, current.revision + 1, expiresAt)
     }
 
     if (request.action === "resize") {
@@ -210,7 +209,7 @@ export function createFakeAllocationAuthority(
         reserve(request.replicaId, slots, current.expiresAt)
       }
       check()
-      return committed(request, slots, revision, current.expiresAt)
+      return committed(slots, revision, current.expiresAt)
     }
 
     throw new Error(`unsupported allocation action ${request.action}`)
