@@ -150,6 +150,37 @@ describe("serval bulkhead local allocation", () => {
     expect(harness.authority.violations()).toEqual([])
   })
 
+  it("renews under light traffic before the allocation lapses", async () => {
+    // One holder at a time, so a free slot is always available: the admission fast path serves
+    // every offer and the pool never empties, which is exactly the traffic that never asked for a
+    // renewal. The allocation still has to be renewed before its validity ends, or the next
+    // admission after it lapses is refused for the grace window.
+    const harness = createBulkheadHarness({
+      limit: 4,
+      initialSlots: 4,
+      validityMs: 1_000,
+      renewLeadMs: 500,
+      graceMs: 1_000,
+    })
+
+    for (let offer = 0; offer < 16; offer += 1) {
+      const token = harness.token(offer)
+      expect((await harness.acquire(token)).allowed).toBe(true)
+      await harness.release(token)
+      // 150ms steps: the offer after the deadline lands past the server's expiry too, so the
+      // renewal this traffic never asks for cannot succeed by luck.
+      harness.advanceBy(150)
+    }
+    await harness.whenIdle()
+
+    // The renewal fell due at 1475 and ran in the background rather than waiting for the lapse.
+    expect(harness.coordinator.metrics().renewals).toBeGreaterThan(0)
+    const diagnostics = harness.coordinator.diagnostics(harness.identity)
+    expect(diagnostics).toMatchObject({ state: "allocated", allocated: 4 })
+    expect(diagnostics?.deadline ?? 0).toBeGreaterThan(harness.now())
+    expect(harness.authority.violations()).toEqual([])
+  })
+
   it("keeps the deadline anchored to the renewal's send time", async () => {
     const harness = createBulkheadHarness({
       limit: 2,

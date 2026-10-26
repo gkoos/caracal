@@ -761,6 +761,13 @@ export function createServalBulkheadCoordinator(
     ) {
       if (isValid(scope, clock()) && freeSpendable(scope) > 0) {
         retryRetained(scope)
+        // Renewal is due before the validity ends, and light traffic never empties the pool, so
+        // nothing else would ask: this fast path is the only place that sees an allocation which is
+        // still valid and about to lapse. The nudge is a background one - the admission keeps its
+        // no-round-trip property - and repeated kicks join the modification already in flight.
+        if (clock() >= scope.deadline - renewLeadMs) {
+          void track(maintain(scope, false)).catch(() => undefined)
+        }
         return admit(scope, token)
       }
       await maintain(scope, true)
