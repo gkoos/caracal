@@ -183,6 +183,20 @@ export function servalDeadline(
   return requestStartedAt + validForMs - safetyMarginMs
 }
 
+/**
+ * The validity the **server** had left when it answered, floored at zero.
+ *
+ * The server's own expiry minus the server's own clock reading, so the difference needs no
+ * assumption that the two clocks agree. Every site that turns a reply into a deadline goes
+ * through here, so the subtraction lives in one place.
+ */
+export function servalRemainingValidity(
+  expiresAt: number,
+  serverTime: number,
+): number {
+  return Math.max(0, expiresAt - serverTime)
+}
+
 /** True when a reply received at `receivedAt` may still be adopted. */
 export function isServalReplyUsable(options: {
   readonly requestStartedAt: number

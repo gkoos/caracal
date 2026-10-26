@@ -7,6 +7,7 @@ import {
   isValidServalIdentity,
   isValidServalRecord,
   servalDeadline,
+  servalRemainingValidity,
   servalScopeKey,
   type ServalAuthorityRecord,
   type ServalCachedAuthority,
@@ -380,7 +381,10 @@ export function createServalAuthoritySession(
       return "ignored"
     }
 
-    const remainingMs = record.expiresAt - context.serverTime
+    const remainingMs = servalRemainingValidity(
+      record.expiresAt,
+      context.serverTime,
+    )
     if (remainingMs <= safetyMarginMs) {
       return "ignored"
     }

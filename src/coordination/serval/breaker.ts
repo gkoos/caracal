@@ -6,6 +6,7 @@ import type {
   SettleProbeResult,
 } from "../../core/circuit-breaker.js"
 import {
+  servalDeadline,
   servalScopeKey,
   type ServalAuthorityRecord,
   type ServalCachedAuthority,
@@ -280,7 +281,9 @@ export function createServalBreakerCoordinator(
       // Record timestamps are integer milliseconds: the client's monotonic clock is
       // fractional, and the session validates the wire shape of a record.
       issuedAt: Math.round(context.requestStartedAt),
-      expiresAt: Math.round(context.receivedAt) + freshnessMs,
+      // Anchored to the send time, like every other grant: a reply that arrives late must not
+      // extend the window it was granted for.
+      expiresAt: Math.round(context.requestStartedAt) + freshnessMs,
       payload: verdict,
     }
 
@@ -300,7 +303,10 @@ export function createServalBreakerCoordinator(
     const previous = local.get(key)
     local.set(key, {
       cachedAt: context.receivedAt,
-      freshUntil: context.receivedAt + freshnessMs,
+      // Measured from the send time, so a delayed reply cannot leave this replica trusting the
+      // verdict past the window it was granted. Receipt-anchored, the delay itself became extra
+      // authority, which is the one direction that matters here.
+      freshUntil: servalDeadline(context.requestStartedAt, freshnessMs),
       // A re-anchored cooldown survives a same-version refresh of the verdict.
       cooldownUntil: previous?.cooldownUntil ?? 0,
     })

@@ -399,6 +399,67 @@ describe("serval breaker settlement and degraded behaviour", () => {
     expect(failingClosed.authority.calls.readState).toBe(0)
   })
 
+  it("measures a delayed settlement's freshness from the send time", async () => {
+    // Every settlement writes the local window, and it must be measured from the request's send
+    // time. Measured from the reply's arrival instead, a delayed settlement leaves the replica
+    // trusting the verdict for longer than the authority granted, which is the direction that
+    // matters: the window is what decides whether a cached all-clear may still be served.
+    const scheduler = createDeterministicScheduler(1_000)
+    const authority = createFakeBreakerAuthority({ now: () => scheduler.now() })
+    const delay = async <T>(pending: Promise<T>): Promise<T> => {
+      await scheduler.advanceBy(50)
+      return pending
+    }
+    const harness = createBreakerHarness({
+      scheduler,
+      freshnessMs: 100,
+      staleClosed: "fail-closed",
+      authority: {
+        ...authority,
+        coordinator: {
+          ...authority.coordinator,
+          readState: (
+            ...args: Parameters<typeof authority.coordinator.readState>
+          ) => delay(authority.coordinator.readState(...args)),
+          observe: (
+            ...args: Parameters<typeof authority.coordinator.observe>
+          ) => delay(authority.coordinator.observe(...args)),
+        },
+      },
+    })
+    await harness.start()
+
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: harness.coordinator,
+      scope: () => TEST_BREAKER_IDENTITY.scope,
+    })
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => "ok",
+      },
+      policies: [policy],
+    })
+
+    // One successful operation. The admission is served from the warm verdict, and the
+    // settlement is sent at this instant and answered 50ms later.
+    const sentAt = harness.scheduler.now()
+    await expect(op.execute(undefined)).resolves.toBe("ok")
+    expect(harness.scheduler.now()).toBe(sentAt + 50)
+
+    // The settlement's window ends at sentAt + 100 - 25 = sentAt + 75. At sentAt + 100 it has
+    // lapsed, so the configured behaviour applies and nothing is read. A window measured from
+    // the reply's arrival would run to sentAt + 150 and would still be served here.
+    await harness.scheduler.advanceBy(50)
+    harness.authority.reset()
+    await expect(
+      harness.coordinator.readState(harness.identity),
+    ).rejects.toThrow("freshness allowance")
+    expect(harness.authority.calls.readState).toBe(0)
+  })
+
   it("refuses a scope the session's registry cannot hold", async () => {
     const harness = createBreakerHarness({
       freshnessMs: 1_000,

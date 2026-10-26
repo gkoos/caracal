@@ -5,7 +5,11 @@ import type {
   BulkheadAllocationIssuer,
   BulkheadAllocationReply,
 } from "../redis/bulkhead.js"
-import { SERVAL_DEFAULT_SAFETY_MARGIN_MS } from "./authority.js"
+import {
+  SERVAL_DEFAULT_SAFETY_MARGIN_MS,
+  servalDeadline,
+  servalRemainingValidity,
+} from "./authority.js"
 import { ServalRegistryPressureError } from "./cache.js"
 
 /**
@@ -384,14 +388,6 @@ export function createServalBulkheadCoordinator(
    * difference is a duration; anchoring that duration to this operation's send time
    * is what keeps a renewal from extending authority it did not have.
    */
-  function deadlineFrom(
-    reply: { readonly expiresAt: number; readonly serverTime: number },
-    requestStartedAt: number,
-  ): number {
-    const remainingMs = Math.max(0, reply.expiresAt - reply.serverTime)
-    return requestStartedAt + remainingMs - safetyMarginMs
-  }
-
   /** Slots this replica may hold: its own ceiling, never past the fleet's. */
   function maximumSlots(scope: AllocationScope): number {
     return Math.min(
@@ -501,7 +497,13 @@ export function createServalBulkheadCoordinator(
     scope.allocated = reply.slots
     scope.revision = reply.revision
     scope.deadline =
-      reply.slots === 0 ? 0 : deadlineFrom(reply, requestStartedAt)
+      reply.slots === 0
+        ? 0
+        : servalDeadline(
+            requestStartedAt,
+            servalRemainingValidity(reply.expiresAt, reply.serverTime),
+            safetyMarginMs,
+          )
     return true
   }
 
