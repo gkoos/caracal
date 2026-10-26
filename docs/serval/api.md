@@ -119,7 +119,7 @@ Every option has a default; the ones that change behaviour are listed here.
 | `maximumOutstandingPermits` | rate limiter | unset | Fleet-wide cap on issued-but-unspent permits, for high-replica fleets |
 | `validityMs` | bulkhead | `10000` | How long an allocation stays valid before it must be renewed |
 | `graceMs` | bulkhead | `10000` | How long the server holds an allocation's slots after its validity ends, so a lost reply is reconcilable |
-| `initialSlots` / `maximumSlots` | bulkhead | `1` / the policy limit | Conservative start, demand-driven growth up to this replica's own ceiling |
+| `initialSlots` / `maximumSlots` | bulkhead | `1` / the policy limit | Conservative start, demand-driven growth. The ceiling bounds every allocation, including the first, so a start above a configured ceiling is refused at construction |
 | `redistributionIntervalMs` | bulkhead | `100` | Shortest gap between two redistribution attempts for one scope |
 
 ## Lifecycle
