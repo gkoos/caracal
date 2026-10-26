@@ -40,7 +40,11 @@ The contracts below are normative. Each names the acceptance case that exercises
 - A read alone never performs OPEN to HALF_OPEN. HALF_OPEN exists only as an authoritative
   reservation. If Redis is unavailable, the process rejects rather than fabricating a probe.
 - A cached CLOSED admits only within its configured freshness allowance; after that the explicit
-  fail-open/fail-closed setting applies.
+  fail-open/fail-closed setting applies. The allowance is measured from the send time of the request
+  whose reply granted it, and only a reply that verified the cached verdict renews it: a record the
+  session applied, or one it reported as unchanged, meaning the authority answered with exactly what
+  is cached. A superseded reply leaves the deadline alone, so a settlement that raced a transition
+  cannot extend it.
 
 ### 3. Redis authority-history loss, incarnation identity, holdoff or overlap
 

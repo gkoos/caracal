@@ -7,8 +7,8 @@ behaviour that a test proves.
 - Review: `feat/serval-authority-protocol` at `d507ea8` — six implementation bugs plus
   documentation gaps.
 - Validated against: `eb6d994` plus the four commits on top of it.
-- Method: reading the cited code. Only item 3's first half, and the frozen-slot defect noted at the
-  end, were reproduced by running something.
+- Method: reading the cited code. Item 3's first half, item 3's second half, and the frozen-slot
+  defect noted at the end were reproduced by running something.
 
 ## Status
 
@@ -16,7 +16,7 @@ behaviour that a test proves.
 |---|---|---|
 | 1 | `staleClosed: "fail-closed"` admits requests through the policy | Fixed |
 | 2 | Bulkhead replacement grants rejected after the previous grant advances its revision | Fixed |
-| 3 | Breaker freshness bypasses the send-time deadline | Half fixed |
+| 3 | Breaker freshness bypasses the send-time deadline | Fixed |
 | 4 | `maximumOutstandingPermits` does not enforce a permit cap | Fixed before the reset point |
 | 5 | Relinquishment during another modification orphans frozen slots | Open |
 | 6 | Expired unused quota permanently occupies registry entries | Open |
@@ -71,10 +71,20 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
 - Half fixed by `6a22bda`: `breaker.ts:309` now uses
   `servalDeadline(context.requestStartedAt, freshnessMs)`, so the receipt-anchored second deadline
   is gone.
-- Still open: `breaker.ts:297` treats `applied` and `ignored` alike, so an ignored, superseded reply
-  still writes the local window.
-- Closes with: a window written only for a reply that verified the verdict, plus a test for the
-  superseded case.
+- The second half reproduces by running it: with `freshnessMs: 100`, a settlement at 1060 whose
+  reply the authority had already superseded still moved the deadline, and a read at 1100 — past the
+  1075 the cold-start read granted — was served from the cache instead of applying `staleClosed`.
+- Fixed: the window moves only for a reply that verified the verdict this replica holds. The session
+  now separates the two halves of the version comparison — `superseded` for a record older than what
+  we hold, `unchanged` for one that answers with exactly what we hold — where it previously reported
+  both as `stale`, and `cacheVerdict` writes the deadline for an applied record or an unchanged one
+  only. A superseded reply leaves the window where it was.
+- Tests: `test/unit/serval-breaker.test.ts` "does not move the deadline for a settlement the
+  authority has superseded", which fails before the fix with the read resolving from the cache;
+  `test/unit/serval-session.test.ts` pins both reasons.
+- The unchanged case still renews the window, and that is load-bearing: "follows the configured
+  stale-CLOSED behaviour" relies on a read that returns the cached verdict renewing the allowance, so
+  treating every ignored reply alike would have removed it.
 
 ## 4. `maximumOutstandingPermits` does not enforce a permit cap
 
