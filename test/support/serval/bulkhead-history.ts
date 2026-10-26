@@ -20,10 +20,13 @@ import {
  * - No admission beyond the capacity the server actually granted, counting the slots
  *   frozen for a return as gone: `active <= the server's allocation` always.
  * - At every admission, `active + frozenPendingReturn <= allocated`, so returned
- *   capacity is never spent and no work starts past the local allocation.
- * - The lease revision never regresses, and the server's oracle never fires: the
- *   fleet limit holds, a renewal is not capacity, and one replica holds one
- *   allocation.
+ *   capacity is never spent and no work starts past the local allocation. The check is
+ *   scoped to one grant: a replacement allocation may be smaller than the work still
+ *   running under the previous one, which is physical overshoot, not an admission.
+ * - The lease revision never regresses **within a grant**, and the server's oracle never
+ *   fires: the fleet limit holds, a renewal is not capacity, and one replica holds one
+ *   allocation. Revisions belong to a grant, so a replacement allocation starting its own
+ *   sequence at 1 is not a regression.
  * - The registry stays bounded and no modification is left in flight.
  *
  * The overshoot this contract permits is physical, not logical: a holder whose work
@@ -71,6 +74,9 @@ export async function runBulkheadHistory(
   let failures = 0
   let injections = 0
   let highestRevision = 0
+  let highestRevisionGrant = ""
+  let previousGrantId = ""
+  let carriedOvershoot = 0
 
   async function acquire(token: string): Promise<void> {
     const before = harness.coordinator.diagnostics(identity)
@@ -91,7 +97,13 @@ export async function runBulkheadHistory(
       violations.push("an admission left no diagnostics")
       return
     }
-    if (before !== undefined && after.revision < before.revision) {
+    // Only a comparison within one grant means anything: an admission that allocated a
+    // replacement grant sees the revision restart at 1.
+    if (
+      before !== undefined &&
+      before.grantId === after.grantId &&
+      after.revision < before.revision
+    ) {
       violations.push(
         `the lease revision regressed from ${before.revision} to ${after.revision}`,
       )
@@ -158,9 +170,15 @@ export async function runBulkheadHistory(
           `step ${step}: ${spendable} spendable slots against a server allocation of ${serverSlots}`,
         )
       }
+      // The mark is per grant: a replacement allocation starts its own sequence at 1, so
+      // carrying the previous grant's mark across would report a legitimate restart.
+      if (diagnostics.grantId !== highestRevisionGrant) {
+        highestRevisionGrant = diagnostics.grantId
+        highestRevision = 0
+      }
       if (diagnostics.revision < highestRevision) {
         violations.push(
-          `the lease revision regressed to ${diagnostics.revision}`,
+          `the lease revision regressed to ${diagnostics.revision} within grant ${diagnostics.grantId || "none"}`,
         )
       }
       highestRevision = Math.max(highestRevision, diagnostics.revision)
@@ -169,11 +187,22 @@ export async function runBulkheadHistory(
           `the free pool went negative: ${diagnostics.freeSpendable}`,
         )
       }
-      if (
-        diagnostics.deadline > clock.now() &&
-        diagnostics.active + diagnostics.frozenPendingReturn >
-          diagnostics.allocated
-      ) {
+      // The occupancy check belongs to the allocation that admitted these holders. When the grant
+      // changes, work admitted under the previous one keeps running and may exceed the replacement
+      // allocation - physical overshoot, which the contract permits. That allowance is recorded
+      // once and may only shrink as those holders finish, so a shortfall that appears *within* a
+      // grant, or one that grows, still fails here.
+      const overshoot =
+        diagnostics.active +
+        diagnostics.frozenPendingReturn -
+        diagnostics.allocated
+      if (diagnostics.grantId !== previousGrantId) {
+        previousGrantId = diagnostics.grantId
+        carriedOvershoot = Math.max(0, overshoot)
+      } else if (carriedOvershoot > 0) {
+        carriedOvershoot = Math.min(carriedOvershoot, Math.max(0, overshoot))
+      }
+      if (diagnostics.deadline > clock.now() && overshoot > carriedOvershoot) {
         // The numbers decide which defect this is. Frozen slots in the shortfall mean a return's
         // accounting was lost; holders alone mean work outlived its allocation, which is
         // legitimate for a replaced allocation and not for the one that admitted them.

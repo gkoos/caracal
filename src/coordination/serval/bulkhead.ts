@@ -211,6 +211,12 @@ interface AllocationScope {
   limit: number
   /** No redistribution attempt before this instant. */
   redistributionUntil: number
+  /**
+   * When the request that produced the allocation we hold was sent. Staleness is judged by this,
+   * not by the revision: the revision belongs to a single grant, and a replacement grant numbers
+   * itself from 1 again, so a lower revision means a newer grant rather than a staler reply.
+   */
+  adoptedFromRequestStartedAt: number
   /** A modification whose reply has not settled, retained for retry or reconciliation. */
   modification: Modification | undefined
   issuing: Promise<void> | undefined
@@ -354,6 +360,7 @@ export function createServalBulkheadCoordinator(
       deadline: 0,
       limit,
       redistributionUntil: 0,
+      adoptedFromRequestStartedAt: -1,
       modification: undefined,
       issuing: undefined,
     }
@@ -478,7 +485,7 @@ export function createServalBulkheadCoordinator(
     applyReply(scope, modification, reply)
   }
 
-  /** Adopts an authoritative allocation, unless it is older than what we hold. */
+  /** Adopts an authoritative allocation, unless a reply from a later request is already applied. */
   function adopt(
     scope: AllocationScope,
     reply: {
@@ -489,11 +496,17 @@ export function createServalBulkheadCoordinator(
     },
     requestStartedAt: number,
   ): boolean {
-    if (reply.revision < scope.revision) {
-      // A stale reply never restores capacity, spendability or a deadline.
+    if (requestStartedAt < scope.adoptedFromRequestStartedAt) {
+      // A stale reply never restores capacity, spendability or a deadline. Staleness is judged by
+      // when the request was sent rather than by the revision it carries: the revision is a
+      // per-grant counter, so a replacement allocation legitimately restarts at 1, and a lower
+      // number means a newer grant rather than an older reply. A tie is not stale - a retry reuses
+      // its original send time, and millisecond resolution cannot separate a same-tick update from
+      // a race.
       counters.staleReplies += 1
       return false
     }
+    scope.adoptedFromRequestStartedAt = requestStartedAt
     scope.allocated = reply.slots
     scope.revision = reply.revision
     // Frozen slots are slots this process asked the server to take back, and the modification that

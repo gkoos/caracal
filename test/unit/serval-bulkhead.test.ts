@@ -177,6 +177,37 @@ describe("serval bulkhead local allocation", () => {
       2_000 + 2_000 - 25,
     )
   })
+
+  it("adopts a replacement grant whose revision restarts at one", async () => {
+    // A replacement allocation is a new grant, and the server numbers it from 1 again: the
+    // revision is a per-grant counter. Judging staleness by it keeps the retired grant's number
+    // and rejects every reply the new grant sends, so the replica can never allocate again.
+    const harness = createBulkheadHarness({ limit: 4, initialSlots: 2 })
+    expect((await harness.acquire("token-1")).allowed).toBe(true)
+    await harness.whenIdle()
+    await harness.release("token-1")
+    await harness.whenIdle()
+
+    // Returning the whole allocation retires the grant on the server.
+    expect(
+      (await harness.coordinator.relinquish(TEST_BULKHEAD_IDENTITY)).type,
+    ).toBe("returned")
+    await harness.whenIdle()
+    expect(
+      harness.coordinator.diagnostics(TEST_BULKHEAD_IDENTITY),
+    ).toMatchObject({
+      allocated: 0,
+      active: 0,
+    })
+
+    // The next allocation is a new grant at revision 1, and it must be adopted.
+    expect((await harness.acquire("token-2")).allowed).toBe(true)
+    await harness.whenIdle()
+    expect(harness.coordinator.metrics().staleReplies).toBe(0)
+    expect(
+      harness.coordinator.diagnostics(TEST_BULKHEAD_IDENTITY)?.active,
+    ).toBe(1)
+  })
 })
 
 describe("serval bulkhead freeze-before-return", () => {
