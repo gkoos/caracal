@@ -155,7 +155,9 @@ horizons and no carry**:
   grant of `n` permits deducts `n` tokens at issuance, atomically, deduplicated by `operationId`.
   Lapsed grants are forgotten by a bounded drain, so a retry is answered against the expiry set
   rather than the ledger's word alone: a grant that has lapsed is neither deduplicated nor served,
-  even when the drain has not reached its ledger entry yet.
+  even when the drain has not reached its ledger entry yet. The ledger holds one entry per grant in
+  flight, so its size is the grant rate times `validForMs` - which is what makes a bounded drain a
+  necessity rather than a tidy-up.
 - A grant's spend horizon is `validForMs = V`. Permits are spendable only within
   `requestStartedAt + V - margin`.
 - Unused stock simply expires; it is **never** credited back into a later accounting window, so a
@@ -448,12 +450,17 @@ expired before the next call could not decrement the counter, which would cost t
 permanently. An allocation is identified by the operation that created it, so one replica cannot hold
 two allocations at once.
 
-Reclamation is therefore the drain's job, and the drain is **bounded per call**: a call prunes a fixed
-number of lapsed reservations, far above the one member a call adds, so the set converges under
-sustained load while no single call pays a cost proportional to everything that has lapsed. A backlog
-past one call's budget returns its capacity over the calls that follow rather than holding the server,
-which is the trade this bound buys: capacity arrives a call or two later, and a fleet's ceiling is
-never blocked by work proportional to a backlog.
+Reclamation is therefore the drain's job. The set is proportional to the allocations in flight rather
+than to the call rate, because the cadence is: a replica renews once per `validityMs - renewLeadMs`, so
+its markers live one reservation window and a scope holds a small multiple of the replicas holding
+allocations on it, three or four per replica at the default validity, grace and renewal lead. A caller
+that renews faster than its validity adds a marker per renewal instead, and the set then tracks the
+call rate times the window: that is misuse rather than cadence, and it is the case the bound keeps
+cheap. The drain is **bounded per call**: a call prunes a fixed number of lapsed reservations, far
+above the one member a call adds, so the set converges under sustained load while no single call pays a
+cost proportional to everything that has lapsed. A backlog past one call's budget returns its capacity
+over the calls that follow rather than holding the server, which is the trade this bound buys: capacity
+arrives a call or two later, and a fleet's ceiling is never blocked by work proportional to a backlog.
 
 **Renew versus resize versus return:**
 
