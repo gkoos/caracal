@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest"
 import { circuitBreaker, CircuitOpenError, operation } from "../../src/index.js"
 import type { BreakerIdentity, OperationEvent } from "../../src/index.js"
 import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
+import { ServalAuthorityRefusalError } from "../../src/coordination/serval/breaker.js"
 import { createDeterministicScheduler } from "../support/serval/deterministic-scheduler.js"
 import { createFakeBreakerAuthority } from "../support/serval/fake-breaker-authority.js"
 import {
@@ -469,13 +470,84 @@ describe("serval breaker settlement and degraded behaviour", () => {
     await harness.coordinator.readState(harness.identity)
 
     const second: BreakerIdentity = { ...TEST_BREAKER_IDENTITY, scope: "other" }
-    await expect(harness.coordinator.readState(second)).rejects.toBeInstanceOf(
-      ServalRegistryPressureError,
-    )
+    // The registry's refusal is a decision, so the coordinator reports it as the refusal a policy
+    // reads, keeping the registry error as the cause.
+    await expect(harness.coordinator.readState(second)).rejects.toMatchObject({
+      name: "ServalAuthorityRefusalError",
+      cause: expect.any(ServalRegistryPressureError),
+    })
   })
 })
 
 describe("serval breaker in the policy path", () => {
+  it("rejects a call after the session is closed", async () => {
+    // A closed session is a decision, not an outage: the coordinator refuses, and the policy must
+    // reject rather than apply onCoordinatorError, whose default would run the adapter.
+    const harness = createBreakerHarness({ freshnessMs: 100 })
+    await harness.start()
+    await harness.coordinator.readState(harness.identity)
+    await harness.close()
+
+    await expect(
+      harness.coordinator.readState(harness.identity),
+    ).rejects.toBeInstanceOf(ServalAuthorityRefusalError)
+
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: harness.coordinator,
+      scope: () => TEST_BREAKER_IDENTITY.scope,
+    })
+    let ran = 0
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => {
+          ran += 1
+          return "ok"
+        },
+      },
+      policies: [policy],
+    })
+
+    await expect(op.execute(undefined)).rejects.toBeInstanceOf(CircuitOpenError)
+    expect(ran).toBe(0)
+  })
+
+  it("rejects a call when the registry cannot hold the scope", async () => {
+    // The registry refuses rather than dropping live authority, and that refusal is a decision:
+    // the policy rejects instead of admitting a call the coordinator could not track.
+    const harness = createBreakerHarness({
+      freshnessMs: 100,
+      registryCapacity: 1,
+    })
+    await harness.start()
+    // Registers the first scope, so the registry has no room for a second.
+    await harness.coordinator.readState(harness.identity)
+
+    const other = { ...TEST_BREAKER_IDENTITY, scope: "tenant-b" }
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: harness.coordinator,
+      scope: () => other.scope,
+    })
+    let ran = 0
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => {
+          ran += 1
+          return "ok"
+        },
+      },
+      policies: [policy],
+    })
+
+    await expect(op.execute(undefined)).rejects.toBeInstanceOf(CircuitOpenError)
+    expect(ran).toBe(0)
+  })
+
   it("rejects a call when its read arrives after the freshness allowance", async () => {
     // A late reply is not authority: the session refuses to adopt it, so the admission must not
     // borrow its freshness. Measured from the send time, the reply below outlives the window the

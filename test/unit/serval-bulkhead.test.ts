@@ -340,6 +340,29 @@ describe("serval bulkhead freeze-before-return", () => {
     expect((await harness.acquire()).allowed).toBe(false)
   })
 
+  it("refuses an admission that was in flight when shutdown began", async () => {
+    const harness = createBulkheadHarness({ limit: 4, initialSlots: 4 })
+
+    // The allocation this offer triggers is held, so the offer is parked inside its admission
+    // when shutdown starts.
+    harness.authority.holdNext()
+    const pending = harness.acquire(harness.token(1))
+    const closing = harness.close()
+    harness.authority.release()
+
+    // Closure wins over a continuation that was already in flight.
+    await expect(pending).resolves.toMatchObject({ allowed: false })
+    await closing
+
+    // And nothing is left behind for the server to reclaim: the allocation that arrived during
+    // shutdown is returned by the pass that follows it.
+    expect(harness.authority.granted()).toBe(0)
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 0,
+      active: 0,
+    })
+  })
+
   it("submits a return frozen while another modification held the wire", async () => {
     const harness = createBulkheadHarness({
       limit: 4,

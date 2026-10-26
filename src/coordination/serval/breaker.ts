@@ -24,6 +24,7 @@ import type {
 import type { ServalScheduler } from "./scheduler.js"
 import { createServalAuthoritySession, type ServalSession } from "./session.js"
 import type { ServalAuthorityApplication } from "./session.js"
+import { ServalSessionClosedError } from "./session.js"
 
 /**
  * The cached-verdict circuit breaker.
@@ -193,11 +194,32 @@ export function createServalBreakerCoordinator(
   const registered = new Set<string>()
 
   function ensureRegistered(scope: ServalScopeIdentity): void {
+    // Closure is checked before the shortcut: an identity registered before the close would
+    // otherwise keep its local authority and never ask the session again.
+    if (session.state === "closed") {
+      throw new ServalAuthorityRefusalError("The Serval session is closed")
+    }
     const key = servalScopeKey(scope)
     if (registered.has(key)) return
-    // The session's registry is the bound on local authority: registering a scope
-    // it cannot hold throws, rather than caching accounting nobody tracks.
-    session.registerScope(scope)
+    // The session's registry is the bound on local authority: registering a scope it cannot hold
+    // throws, rather than caching accounting nobody tracks. Both answers the session can give are
+    // decisions about this call rather than evidence that it is in trouble, so they are reported as
+    // the refusal the policy reads - the shared layer must not depend on a policy module, and this
+    // is the boundary that knows which policy is asking.
+    try {
+      session.registerScope(scope)
+    } catch (error) {
+      if (
+        error instanceof ServalRegistryPressureError ||
+        error instanceof ServalSessionClosedError
+      ) {
+        throw new ServalAuthorityRefusalError(
+          "The Serval session refused to register the scope",
+          { cause: error },
+        )
+      }
+      throw error
+    }
     registered.add(key)
   }
 

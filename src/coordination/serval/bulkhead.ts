@@ -741,6 +741,15 @@ export function createServalBulkheadCoordinator(
     return { allowed: true, occupancy: scope.active.size }
   }
 
+  /** A local refusal: no authority is spent and nothing is admitted. */
+  function refuse(scope: AllocationScope): {
+    allowed: boolean
+    occupancy: number
+  } {
+    counters.localRefusals += 1
+    return { allowed: false, occupancy: scope.active.size }
+  }
+
   /**
    * One admission. The fast path is synchronous: check the local pool, take a slot.
    * Only a scope that needs authority pays a round trip.
@@ -749,16 +758,16 @@ export function createServalBulkheadCoordinator(
     scope: AllocationScope,
     token: string,
   ): Promise<{ allowed: boolean; occupancy: number }> {
-    if (closed) {
-      counters.localRefusals += 1
-      return { allowed: false, occupancy: scope.active.size }
-    }
+    if (closed) return refuse(scope)
 
     for (
       let attempt = 0;
       attempt < SERVAL_BULKHEAD_MAXIMUM_ATTEMPTS;
       attempt += 1
     ) {
+      // Closure is checked after every await: an admission that was already in flight when
+      // shutdown began must not land on capacity that arrived while it was parked.
+      if (closed) return refuse(scope)
       if (isValid(scope, clock()) && freeSpendable(scope) > 0) {
         retryRetained(scope)
         // Renewal is due before the validity ends, and light traffic never empties the pool, so
@@ -773,13 +782,13 @@ export function createServalBulkheadCoordinator(
       await maintain(scope, true)
     }
 
+    if (closed) return refuse(scope)
     if (isValid(scope, clock()) && freeSpendable(scope) > 0) {
       retryRetained(scope)
       return admit(scope, token)
     }
     retryRetained(scope)
-    counters.localRefusals += 1
-    return { allowed: false, occupancy: scope.active.size }
+    return refuse(scope)
   }
 
   /**
@@ -905,15 +914,21 @@ export function createServalBulkheadCoordinator(
     async close() {
       if (closed) return
       closed = true
-      for (const scope of [...scopes.values()]) {
-        try {
-          await relinquish(scope.identity)
-        } catch {
-          // Best effort: shutdown never depends on a clean handoff, and a slot that
-          // could not be returned is reclaimed by the server after its grace window.
+      // Two passes. The first returns what each scope held when shutdown began; the second returns
+      // what arrived while the first was in flight - an allocation request that was already on the
+      // wire when closure started, which the admission now refuses but the server still granted.
+      // Leaving it behind would hold fleet capacity until its grace window lapsed.
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const scope of [...scopes.values()]) {
+          try {
+            await relinquish(scope.identity)
+          } catch {
+            // Best effort: shutdown never depends on a clean handoff, and a slot that
+            // could not be returned is reclaimed by the server after its grace window.
+          }
         }
+        await coordinator.whenIdle()
       }
-      await coordinator.whenIdle()
     },
 
     async whenIdle() {
