@@ -33,6 +33,9 @@ export interface FakeAllocationAuthorityOptions {
   readonly graceMs?: number
 }
 
+/** A refusal the test asks the server model for. */
+type FakeRefusalReason = "limit" | "revision" | "expired" | "exists"
+
 export interface FakeAllocationAuthority {
   readonly issuer: BulkheadAllocationIssuer
   readonly calls: { modify: number; duplicates: number }
@@ -46,6 +49,8 @@ export interface FakeAllocationAuthority {
   failNext(count: number, error?: unknown): void
   /** Commits the next modification, then loses the reply. */
   commitThenFailNext(): void
+  /** Answers the next modification with a refusal, as a server whose view is ahead does. */
+  refuseNext(reason: FakeRefusalReason): void
   /** Holds the next modification until `release`. */
   holdNext(): void
   release(): void
@@ -70,6 +75,7 @@ export function createFakeAllocationAuthority(
   let failures = 0
   let failureError: unknown
   let commitBeforeFailing = false
+  let forcedRefusal: FakeRefusalReason | undefined
   let held: Promise<void> | undefined
   let releaseHeld: (() => void) | undefined
   let granted = 0
@@ -119,9 +125,7 @@ export function createFakeAllocationAuthority(
   function apply(request: BulkheadAllocationRequest): BulkheadAllocationReply {
     prune()
     const current = allocations.get(request.replicaId)
-    const refused = (
-      reason: "limit" | "revision" | "expired" | "exists",
-    ): BulkheadAllocationReply => ({
+    const refused = (reason: FakeRefusalReason): BulkheadAllocationReply => ({
       type: "refused",
       reason,
       slots: current?.slots ?? 0,
@@ -129,6 +133,14 @@ export function createFakeAllocationAuthority(
       expiresAt: current?.expiresAt ?? 0,
       serverTime: now(),
     })
+
+    if (forcedRefusal !== undefined) {
+      // A refusal the test asked for, carrying the allocation the server holds: what a
+      // server whose revision has moved on answers.
+      const reason = forcedRefusal
+      forcedRefusal = undefined
+      return refused(reason)
+    }
 
     if (request.action === "read") {
       return {
@@ -273,6 +285,10 @@ export function createFakeAllocationAuthority(
       failures = 1
       failureError = undefined
       commitBeforeFailing = true
+    },
+
+    refuseNext(reason) {
+      forcedRefusal = reason
     },
 
     holdNext() {

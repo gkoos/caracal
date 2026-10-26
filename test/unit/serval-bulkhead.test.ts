@@ -308,6 +308,105 @@ describe("serval bulkhead freeze-before-return", () => {
     // Shutdown stops admitting, whatever capacity is left.
     expect((await harness.acquire()).allowed).toBe(false)
   })
+
+  it("submits a return frozen while another modification held the wire", async () => {
+    const harness = createBulkheadHarness({
+      limit: 4,
+      initialSlots: 4,
+      validityMs: 2_000,
+      renewLeadMs: 1_000,
+    })
+    for (let index = 0; index < 4; index += 1) await harness.acquire()
+    await harness.whenIdle()
+
+    // The renewal falls due, and its reply is held so that it holds the wire.
+    harness.advanceBy(1_000)
+    harness.authority.holdNext()
+    const pending = harness.acquire(harness.token(5))
+
+    // One holder finishes, so there is a free slot to return while the renewal is in flight.
+    await harness.release(harness.token(1))
+    const returned = harness.coordinator.relinquish(harness.identity, 1)
+    harness.authority.release()
+
+    // The freeze waits for the renewal and is submitted as soon as it settles, so the slot
+    // reaches the fleet instead of being held here and unusable.
+    await expect(returned).resolves.toMatchObject({
+      type: "returned",
+      slots: 1,
+    })
+    // The demand that was waiting on the wire is served from the re-granted capacity.
+    await pending
+    await harness.whenIdle()
+
+    expect(harness.coordinator.metrics().returns).toBe(1)
+    expect(harness.coordinator.metrics().frozenSlots).toBe(0)
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      frozenPendingReturn: 0,
+    })
+    expect(harness.authority.violations()).toEqual([])
+  })
+
+  it("retries a return the authority refused instead of abandoning the freeze", async () => {
+    const harness = createBulkheadHarness({ limit: 8, initialSlots: 4 })
+    await harness.acquire()
+    await harness.whenIdle()
+
+    // The authority refuses the reduction, and the retry cannot reach it either.
+    harness.authority.refuseNext("revision")
+    harness.authority.failNext(1)
+    await expect(
+      harness.coordinator.relinquish(harness.identity, 2),
+    ).resolves.toMatchObject({ type: "frozen" })
+
+    // The intent survives both: the slots are still frozen, and the fleet still counts them.
+    expect(harness.coordinator.metrics().frozenSlots).toBe(2)
+    expect(harness.authority.granted()).toBe(4)
+
+    // The next admission nudges it, and the slots come back rather than being frozen for the
+    // life of the grant.
+    harness.advanceBy(200)
+    await harness.acquire()
+    await harness.whenIdle()
+
+    expect(harness.authority.granted()).toBe(2)
+    expect(harness.coordinator.metrics().returns).toBe(1)
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 2,
+      frozenPendingReturn: 0,
+    })
+    expect(harness.authority.violations()).toEqual([])
+  })
+
+  it("drops a frozen return when the allocation lapses", async () => {
+    const harness = createBulkheadHarness({
+      limit: 8,
+      initialSlots: 4,
+      validityMs: 1_000,
+      graceMs: 0,
+    })
+    await harness.acquire()
+    await harness.whenIdle()
+
+    // The authority is unreachable, so the return stays frozen and pending.
+    harness.authority.failNext(1)
+    await expect(
+      harness.coordinator.relinquish(harness.identity, 2),
+    ).resolves.toMatchObject({ type: "frozen" })
+    expect(harness.coordinator.metrics().frozenSlots).toBe(2)
+
+    // The allocation lapses, and the next admission takes a fresh grant. The freeze belonged to
+    // the grant that is gone, so the new one does not inherit it.
+    harness.advanceBy(3_000)
+    await harness.acquire()
+    await harness.whenIdle()
+
+    expect(harness.coordinator.metrics().frozenSlots).toBe(0)
+    expect(harness.coordinator.diagnostics(harness.identity)).toMatchObject({
+      allocated: 4,
+      frozenPendingReturn: 0,
+    })
+  })
 })
 
 describe("serval bulkhead boundaries", () => {

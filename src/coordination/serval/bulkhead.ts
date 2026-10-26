@@ -32,9 +32,11 @@ import { ServalRegistryPressureError } from "./cache.js"
  *   renewal cannot extend anything twice.
  * - **Returned capacity is frozen before it is sent.** A reduction is submitted only
  *   after the slots have left the local spendable pool, so a server-side
- *   reallocation can never precede this process's own freeze. An unknown outcome
- *   keeps them frozen; only an authoritative reconciliation that proves the
- *   modification did not commit may unfreeze them.
+ *   reallocation can never precede this process's own freeze. A freeze is an intent
+ *   the machinery settles: one made while another modification holds the wire is
+ *   submitted as soon as that one settles, an unknown outcome keeps the slots frozen
+ *   until the retry of the same operation settles them, and a freeze dies with the
+ *   grant that granted it rather than being inherited by the next one.
  *
  * Tracked occupancy is this process's accounting, not physical concurrency: a holder
  * whose downstream work ignores cancellation keeps its slot until it settles, and
@@ -156,8 +158,11 @@ export interface ServalBulkheadCoordinator extends BulkheadCoordinator {
     readonly scope: string
   }): ServalBulkheadDiagnostics | undefined
   /**
-   * Freezes free slots and returns them to the fleet. A lost reply leaves them
-   * frozen: only reconciliation can prove they were not committed.
+   * Freezes free slots and returns them to the fleet.
+   *
+   * A lost reply leaves them frozen until the retry of the same operation settles them, and a
+   * freeze made while another modification holds the wire is submitted as soon as that one
+   * settles.
    */
   relinquish(
     identity: {
@@ -404,6 +409,51 @@ export function createServalBulkheadCoordinator(
   }
 
   /**
+   * Submits a frozen return that has not reached the authority yet.
+   *
+   * A freeze is an intent to give capacity back, and the modification carrying it is what settles
+   * it. When another modification holds the wire, the intent waits for that one: the slots stay
+   * frozen, which is what freeze-before-send requires, and they are submitted as soon as it
+   * settles. Without this the freeze was recorded with nothing to submit it, and the slots stayed
+   * unavailable - and unreturned - for the life of the grant.
+   *
+   * `frozen` is either carried by the in-flight modification or wholly unsubmitted, never a mix: a
+   * second return is refused while one is in flight, so the two cannot diverge.
+   */
+  function submitPendingReturn(scope: AllocationScope): Promise<void> {
+    const issuing = scope.issuing
+    if (issuing !== undefined) {
+      // The wire is busy. Follow that operation, then submit what the freeze left pending.
+      return issuing.then(
+        () => submitPendingReturn(scope),
+        () => undefined,
+      )
+    }
+
+    if (scope.frozen <= 0) return Promise.resolve()
+    if (clock() < scope.redistributionUntil) return Promise.resolve()
+
+    if (scope.allocated === 0) {
+      // The allocation is gone, so there is nothing left to return: the intent dies with the
+      // grant rather than being inherited by the next one.
+      scope.frozen = 0
+      return Promise.resolve()
+    }
+
+    if (scope.modification !== undefined) {
+      // An unsettled operation owns the next request on the wire, and `retryRetained` retries it.
+      // Submitting now would replace it and lose the reply it is waiting for.
+      return Promise.resolve()
+    }
+
+    return startModification(scope, "resize", {
+      slots: -scope.frozen,
+      expectedRevision: scope.revision,
+      frozenSlots: scope.frozen,
+    })
+  }
+
+  /**
    * Starts one modification, or joins the one already in flight.
    *
    * A retained modification is retried with the same operation id, which is what
@@ -444,6 +494,8 @@ export function createServalBulkheadCoordinator(
     const issuing = track(applyModification(scope, modification)).finally(
       () => {
         if (scope.issuing === issuing) scope.issuing = undefined
+        // A return frozen while this operation held the wire takes it now.
+        void track(submitPendingReturn(scope)).catch(() => undefined)
       },
     )
     scope.issuing = issuing
@@ -547,7 +599,9 @@ export function createServalBulkheadCoordinator(
         // holds its reservation, so asking again before it lapses is futile - and the
         // holders stay recorded, because they are still running.
         scope.redistributionUntil = now + graceMs
-        scope.frozen = Math.max(0, scope.frozen - modification.frozenSlots)
+        // The allocation is gone, so the frozen slots are not ours to return any more: the intent
+        // dies with the grant instead of being inherited by the next one.
+        scope.frozen = 0
         scope.allocated = 0
         scope.grantId = ""
         scope.deadline = 0
@@ -648,17 +702,22 @@ export function createServalBulkheadCoordinator(
   }
 
   /**
-   * Retries a retained modification in the background.
+   * Retries a retained modification in the background, or nudges a frozen return.
    *
-   * It is idempotent, and until it settles the slots it froze cannot be spent or
-   * restored - so an admission that does not need the authority still nudges it,
-   * without waiting for the reply.
+   * Both are idempotent, and until one settles the slots it froze cannot be spent or restored - so
+   * an admission that does not need the authority still nudges it, without waiting for the reply.
    */
   function retryRetained(scope: AllocationScope): void {
-    const retained = scope.modification
-    if (retained === undefined || closed) return
+    if (closed) return
     if (clock() < scope.redistributionUntil) return
-    void track(startModification(scope, retained.action)).catch(() => undefined)
+    const retained = scope.modification
+    if (retained !== undefined) {
+      void track(startModification(scope, retained.action)).catch(
+        () => undefined,
+      )
+      return
+    }
+    void track(submitPendingReturn(scope)).catch(() => undefined)
   }
 
   function admit(
@@ -709,8 +768,9 @@ export function createServalBulkheadCoordinator(
    *
    * The freeze happens before the request is sent, so a server-side reallocation of
    * voluntarily returned slots can never precede this process's own freeze. A lost
-   * reply leaves them frozen; only a later commit or an authoritative reconciliation
-   * may retire or restore them.
+   * reply leaves them frozen until the retry of the same operation settles them, and a
+   * freeze made while another modification holds the wire is submitted as soon as that
+   * one settles.
    */
   async function relinquish(
     identity: Identity,
@@ -738,14 +798,10 @@ export function createServalBulkheadCoordinator(
 
     scope.frozen += frozen
     try {
-      await startModification(scope, "resize", {
-        slots: -frozen,
-        expectedRevision: scope.revision,
-        frozenSlots: frozen,
-      })
+      await submitPendingReturn(scope)
     } catch {
-      // The outcome is unknown, so the slots stay frozen. A retry of the same
-      // operation, or a reconciliation, is what settles it.
+      // The outcome is unknown, so the slots stay frozen. Retrying the same operation is what
+      // settles them.
       return { type: "frozen", slots: frozen, reason: "unavailable" }
     }
 
