@@ -21,6 +21,7 @@ npm run bench:serval      # the default sweep
 | `CARACAL_LAB_OFFERS` | `24` | offers per replica per cell |
 | `CARACAL_LAB_INTERVAL` | `10` | milliseconds between offers |
 | `CARACAL_LAB_TARGET` | `4` | the fleet's concurrency target |
+| `CARACAL_LAB_CELLS` | all cells | comma-separated cell names to run, for re-measuring one cell |
 
 Each run writes raw per-seed results - revision, configuration, node version, per-run
 metrics - to `bench/serval/results/`, so a claim can be re-derived from the artifacts
@@ -39,8 +40,9 @@ seeds:
 | `serval-guarded` | Serval plus a local bulkhead at the target |
 
 Cells: a healthy dependency, a slow one, Redis unavailable to every replica, the
-**critical interaction** (slow dependency *and* Redis unavailable), and a single
-partitioned replica among healthy ones. Every worker is a real process with its own
+**critical interaction** (slow dependency *and* Redis unavailable), a single
+partitioned replica among healthy ones, and a **warm outage**, where every replica is served
+by the healthy authority first and cut off afterwards. Every worker is a real process with its own
 Redis connection; the dependency is a real HTTP server that accounts for the work it
 actually does, and it ignores client disconnects on purpose.
 
@@ -66,6 +68,41 @@ not portable; the *ratios* and the admission outcomes are the point.
 
 Tracked occupancy is what the delegated bulkhead accounts for locally. The strict bulkhead keeps its leases in Redis, so its column reads 0 rather than the count a server-side read would give.
 
+## A warm outage
+
+The cold outage cells above answer what a *starting* process does without Redis. A running
+process is in the other state: it has been served, and then its path to the authority goes
+away. The warm-outage cell measures that — thirty offers per replica at 60ms, the authority
+cut after six, one and four replicas, one seed, on the same machine as the run above. The
+cold cell from the same run is quoted underneath for contrast.
+
+| Cell | Profile | Rep | Offered | Admitted | of which after the cut | Rate-rej | Failed | Redis/offer | Tracked | Peak physical |
+|---|---|---|---|---|---|---|---|---|---|---|
+| warm-outage | unprotected | 1 | 30 | 30 | 24 | 0 | 0 | 0.00 | 0 | 1 |
+| warm-outage | strict | 1 | 30 | 6 | **0** | 0 | 24 | 3.40 | 0 | 1 |
+| warm-outage | serval | 1 | 30 | 8 | **2** | 0 | 22 | 2.27 | 1 | 1 |
+| warm-outage | serval-guarded | 1 | 30 | 8 | **2** | 0 | 22 | 2.27 | 1 | 1 |
+| warm-outage | strict | 4 | 120 | 24 | **0** | 0 | 96 | 3.40 | 0 | 1 |
+| warm-outage | serval | 4 | 120 | 28 | **7** | 3 | 89 | 2.28 | 4 | 1 |
+| warm-outage | serval-guarded | 4 | 120 | 28 | **6** | 2 | 90 | 2.32 | 4 | 1 |
+| redis-outage | strict | 1 | 24 | 0 | 0 | 0 | 24 | 3.00 | 0 | 0 |
+| redis-outage | serval | 1 | 24 | 0 | 0 | 0 | 24 | 3.04 | 0 | 0 |
+
+What the warm numbers say:
+
+- **A warm replica keeps serving from local authority.** The delegated pipeline admitted
+  offers after the cut — two per replica with one replica, six to seven across four — while
+  the strict path admitted none, because its coordinators need Redis for every admission and
+  hold nothing across an outage.
+- **What it holds is a grant, not a reservoir.** Those post-cut admits are exactly what the
+  replica was holding: a four-permit grant, a four-slot allocation and a verdict with a
+  one-second freshness allowance. The rest of the outage failed, and it failed as failures
+  rather than as silent capacity — which is the honest reading of "keeps admitting from the
+  authority it holds".
+- **The cost and safety claims survive the fault.** Redis commands per offer stayed below the
+  strict path (2.27 against 3.40), tracked occupancy stayed within the sum of the local
+  ceilings, and physical concurrency stayed at 1.
+
 ## What the numbers say
 
 **The admission read really is removed, and that is most of the cost.** On a healthy
@@ -88,16 +125,21 @@ before the strict GCRA would, and the integration suite pins that mechanism; how
 earlier it bites depends on the arrival pattern. What the table shows either way is the
 cost: 1.99 Redis commands per offer against 4.06, for the same protection.
 
-**A cold start without Redis admits nothing, on both paths.** The outage cells start each
+**A cold start without Redis admits nothing, on both paths.** The cold outage cells start each
 worker against an unreachable authority, so no replica holds a verdict, a grant or an
 allocation yet and every path has to read before it can serve. The strict coordinators fail
 closed because they cannot read, and the delegated layers have nothing local to admit
 from. This is a cold-start envelope rather than a settlement effect: observation and
 settlement failures are reported as degradation and do not fail an otherwise successful
-call, and the composition suite asserts that a warm delegated pipeline keeps admitting from
-the authority it holds. If a cold start during an outage must be survivable, the answer is
+call. If a cold start during an outage must be survivable, the answer is
 a deployment choice: keep a local guardrail in front, or accept the fail-closed behaviour.
 This is recorded as an operating envelope rather than smoothed over.
+
+**A warm replica does admit from what it holds, and only while it holds it.** The warm-outage
+cell above is the same fault against a replica that has already been served: the delegated
+pipeline admitted a few offers after the cut and the strict one admitted none. That is the
+difference between a path that caches authority and a path that reads it per admission — and
+it is bounded by the local grant, not by the outage.
 
 **A partition is per replica, and the fleet carries on.** With one of four replicas cut
 off, the three healthy replicas kept admitting (57 of 80 on both paths) while the isolated
@@ -143,4 +185,11 @@ local ceilings; the physical number is what the dependency actually did.
 - The "real-process partition" cells isolate a replica by pointing it at an unreachable
   Redis, which models a partition of that replica rather than a network-level fault
   between replicas.
+- The warm-outage cell cuts a replica's own connection to Redis (`disconnect`, with no offline
+  queue and no retries) rather than stopping the server, so it models that replica losing its
+  path to the authority. The authority and the other replicas stay up, and commands already in
+  flight are not replayed.
+- The warm-outage cell's timing is its own (thirty offers at 60ms, cut after six), because a run
+  has to outlive the one-second verdict and grant windows for the lapse to appear alongside the
+  warm phase.
 

@@ -7,8 +7,8 @@ behaviour that a test proves.
 - Review: `feat/serval-authority-protocol` at `d507ea8` — six implementation bugs plus
   documentation gaps.
 - Validated against: `eb6d994` plus the four commits on top of it.
-- Method: reading the cited code. Item 3's halves, items 5 and 6, and the frozen-slot defect noted at
-  the end were reproduced by running something.
+- Method: reading the cited code. Item 3's halves, items 5 and 6, and the frozen-slot defect noted
+  at the end were reproduced by running something; D2 was closed by measuring it.
 
 ## Status
 
@@ -21,7 +21,7 @@ behaviour that a test proves.
 | 5 | Relinquishment during another modification orphans frozen slots | Fixed |
 | 6 | Expired unused quota permanently occupies registry entries | Fixed |
 | D1 | Outage behaviour claim | Fixed |
-| D2 | Warm-authority fault behaviour | Open |
+| D2 | Warm-authority fault behaviour | Fixed |
 | D3 | Tracked-concurrency measurements | Partly open |
 | D4 | Seeded comparisons | Open |
 | D5 | Authority and reconciliation contracts | Open |
@@ -155,7 +155,7 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
 | Area | Status | Evidence |
 |---|---|---|
 | Outage behaviour | Fixed | `docs/serval/benchmarks.md:91-100` now says observation and settlement failures are reported as degradation and do not fail an otherwise successful call. The quoted line is gone. |
-| Warm-authority fault behaviour | Open | `bench/serval/lab.ts` points isolated workers at `redis://127.0.0.1:1` at startup, so the outage cells are cold starts and cannot show warm-cache outage behaviour. |
+| Warm-authority fault behaviour | Fixed | The lab has a `warm-outage` cell: every replica is served by the healthy authority, then its own connection is cut mid-run. `docs/serval/benchmarks.md` carries the numbers — a delegated replica admitted 8 of 30 with 2 after the cut, against the strict path's 6 with 0 after it, and the cold cell from the same run admitted 0 of 24 on both paths. |
 | Tracked-concurrency measurements | Partly open | `bench/serval/worker.ts:190` attaches the local guardrail only for `serval-guarded`, and 209-211 samples only `if (delegated)`, so the strict column is 0 by construction. The "sampled after the operation finishes" half does not reproduce here: the sample is inside the adapter's `execute`. |
 | Seeded comparisons | Open | `bench/serval/worker.ts` contains no reference to `seed`; the seed names namespaces and labels only. |
 | Authority and reconciliation contracts | Open | Breaker defaults to a fixed incarnation (`breaker.ts:615-616`); the Redis rate-limit and bulkhead issuers contain no incarnation (0 matches); `unfrozenAfterReconciliation` (90, 289) and `reconciliations` (93, 292) have no other reference in the file. |
@@ -167,3 +167,7 @@ Provenance: fixes for 1, 2, 3, 5 and 6 existed in commits the branch reset dropp
   failed and across ten further runs, but no focused unit case pins the mechanism.
 - The two claims in the table above that need reproduction rather than reading are items 2 and 6;
   both now have one, item 2 from the reviewer and item 6 from a unit case and the property suite.
+- The warm-outage numbers cannot say *which* layer refused an offer once the cut lands: the
+  delegated rate limiter holds a four-permit grant it cannot renew, and the breaker's verdict window
+  lapses at one second with `onCoordinatorError` defaulting to fail-open. A breaker-only warm-outage
+  cell would attribute the failures; the aggregate deliberately does not guess.
