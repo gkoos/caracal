@@ -23,6 +23,7 @@ import type {
 } from "./notifications.js"
 import type { ServalScheduler } from "./scheduler.js"
 import { createServalAuthoritySession, type ServalSession } from "./session.js"
+import type { ServalAuthorityApplication } from "./session.js"
 
 /**
  * The cached-verdict circuit breaker.
@@ -258,17 +259,18 @@ export function createServalBreakerCoordinator(
       readonly receivedAt: number
       readonly revision: number
     },
-  ): void {
+  ): ServalAuthorityApplication | undefined {
     const key = servalScopeKey(scope)
 
     try {
       ensureRegistered(scope)
     } catch (error) {
       if (error instanceof ServalRegistryPressureError) {
-        // The registry is full. The verdict is not cached, so the next admission
-        // reads the authority again rather than acting on accounting nobody holds.
+        // The registry is full. The verdict is not cached, so the next admission reads the
+        // authority again rather than acting on accounting nobody holds - but the reply is still
+        // the authority's current verdict, so a caller may serve it.
         local.delete(key)
-        return
+        return undefined
       }
       throw error
     }
@@ -277,7 +279,7 @@ export function createServalBreakerCoordinator(
     if (incarnation === undefined) {
       // No authority adopted yet: nothing may be cached, so admissions keep
       // reading the authority until the first reconciliation adopts one.
-      return
+      return undefined
     }
 
     const record: ServalAuthorityRecord = {
@@ -306,7 +308,7 @@ export function createServalBreakerCoordinator(
 
     if (outcome.type === "rejected") {
       local.delete(key)
-      return
+      return outcome
     }
 
     const previous = local.get(key)
@@ -328,6 +330,49 @@ export function createServalBreakerCoordinator(
       // A re-anchored cooldown survives a same-version refresh of the verdict.
       cooldownUntil: previous?.cooldownUntil ?? 0,
     })
+
+    return outcome
+  }
+
+  /**
+   * Whether a reply is authority this process may act on.
+   *
+   * A record the session refused is not: it arrived after its window, a newer verdict supersedes
+   * it, or it was not a record this scope could use. A reply that merely failed to be *cached* -
+   * registry pressure, or no incarnation adopted yet - still carries the authority's current
+   * verdict, so it is served.
+   */
+  function adoptable(outcome: ServalAuthorityApplication): boolean {
+    if (outcome.type === "applied") return true
+    if (outcome.type === "rejected") return false
+    return (
+      outcome.reason === "unchanged" || outcome.reason === "registry-refused"
+    )
+  }
+
+  /**
+   * The admission answer when the authority's reply could not be adopted.
+   *
+   * The cached verdict still stands, so it answers: a protective OPEN or HALF_OPEN is returned as
+   * it is, and a stale CLOSED follows the configured behaviour rather than borrowing freshness
+   * from a reply that was refused. With `staleClosed: "refresh"` the read has already happened and
+   * did not produce usable authority, so refusing is the honest answer.
+   */
+  function refusedReplyVerdict(scope: ServalScopeIdentity): BreakerReadState {
+    const cached = payloadOf(session.readAuthority(scope))
+    if (cached !== undefined && cached.state !== "closed") {
+      return {
+        state: cached.state,
+        generation: cached.generation,
+        openedAt: cached.openedAt,
+      }
+    }
+    if (staleClosed === "fail-open") {
+      return { state: "closed", generation: cached?.generation ?? 0 }
+    }
+    throw new ServalAuthorityRefusalError(
+      "The authority's reply could not be adopted: it arrived after its freshness allowance, or a newer verdict supersedes it",
+    )
   }
 
   /** Reads the authority and caches what it says. Errors propagate unchanged. */
@@ -350,11 +395,19 @@ export function createServalBreakerCoordinator(
             openedAt: state.openedAt ?? 0,
           }
 
-    cacheVerdict(scope, verdict, {
+    const outcome = cacheVerdict(scope, verdict, {
       requestStartedAt,
       receivedAt,
       revision: state?.revision ?? 0,
     })
+
+    // A reply the session refused to adopt is not authority this process may admit from: it
+    // arrived after its window, or a newer verdict we already hold supersedes it. Serving it
+    // anyway is what let a superseded or late reply run the adapter, so the cached verdict
+    // answers instead.
+    if (outcome !== undefined && !adoptable(outcome)) {
+      return refusedReplyVerdict(scope)
+    }
 
     return state === null
       ? { state: "closed", generation: 0 }

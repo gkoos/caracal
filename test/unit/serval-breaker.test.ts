@@ -476,6 +476,150 @@ describe("serval breaker settlement and degraded behaviour", () => {
 })
 
 describe("serval breaker in the policy path", () => {
+  it("rejects a call when its read arrives after the freshness allowance", async () => {
+    // A late reply is not authority: the session refuses to adopt it, so the admission must not
+    // borrow its freshness. Measured from the send time, the reply below outlives the window the
+    // read was granted - and the cached verdict it would have refreshed is already stale.
+    const scheduler = createDeterministicScheduler(1_000)
+    const authority = createFakeBreakerAuthority({ now: () => scheduler.now() })
+    let reads = 0
+    const harness = createBreakerHarness({
+      scheduler,
+      freshnessMs: 100,
+      staleClosed: "refresh",
+      authority: {
+        ...authority,
+        coordinator: {
+          ...authority.coordinator,
+          readState: async (
+            ...args: Parameters<typeof authority.coordinator.readState>
+          ) => {
+            reads += 1
+            const reply = await authority.coordinator.readState(...args)
+            // Reads 1 and 2 are the start's and the warming read. The third is the one an
+            // admission needs, and it lands after the allowance has passed.
+            if (reads > 2) await scheduler.advanceBy(200)
+            return reply
+          },
+        },
+      },
+    })
+    await harness.start()
+
+    // Warm the cache, then let the window lapse so the admission has to read.
+    await harness.coordinator.readState(harness.identity)
+    await scheduler.advanceBy(2_000)
+
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: harness.coordinator,
+      scope: () => TEST_BREAKER_IDENTITY.scope,
+    })
+    let ran = 0
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => {
+          ran += 1
+          return "ok"
+        },
+      },
+      policies: [policy],
+    })
+
+    await expect(op.execute(undefined)).rejects.toBeInstanceOf(CircuitOpenError)
+    expect(ran).toBe(0)
+  })
+
+  it("rejects a call when a newer protective verdict supersedes its read", async () => {
+    // The read was in flight when the breaker opened, so the authority's answer describes a past
+    // state that a verdict this replica already holds supersedes. The session refuses to adopt it,
+    // and the admission must respect the cached OPEN rather than the reply it just rejected.
+    const scheduler = createDeterministicScheduler(1_000)
+    const authority = createFakeBreakerAuthority({ now: () => scheduler.now() })
+    const older = await authority.coordinator.readState({
+      name: TEST_BREAKER_IDENTITY.name,
+      operation: TEST_BREAKER_IDENTITY.operation,
+      scope: TEST_BREAKER_IDENTITY.scope,
+    })
+    let reads = 0
+    let readStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve
+    })
+    let release: (() => void) | undefined
+    const harness = createBreakerHarness({
+      scheduler,
+      freshnessMs: 100,
+      staleClosed: "refresh",
+      authority: {
+        ...authority,
+        coordinator: {
+          ...authority.coordinator,
+          readState: async (
+            ...args: Parameters<typeof authority.coordinator.readState>
+          ) => {
+            reads += 1
+            // Reads 1 and 2 are the start's and the warming read. The third is the one the
+            // admission needs: it is held so the opening can land while it is in flight, and it
+            // then answers with the state it was sent with.
+            if (reads <= 2) return authority.coordinator.readState(...args)
+            readStarted?.()
+            await new Promise<void>((resolve) => {
+              release = resolve
+            })
+            return older
+          },
+        },
+      },
+    })
+    await harness.start()
+
+    await harness.coordinator.readState(harness.identity)
+    await scheduler.advanceBy(2_000)
+
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: harness.coordinator,
+      scope: () => TEST_BREAKER_IDENTITY.scope,
+    })
+    let ran = 0
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => {
+          ran += 1
+          return "ok"
+        },
+      },
+      policies: [policy],
+    })
+
+    const pending = op.execute(undefined)
+    await started
+
+    // A protective update lands while the admission's read is in flight.
+    await harness.coordinator.observe(
+      harness.identity,
+      observeParams(harness.identity, 0),
+    )
+    expect(harness.coordinator.cached(harness.identity)).toMatchObject({
+      state: "open",
+      generation: 1,
+    })
+
+    release?.()
+    await expect(pending).rejects.toBeInstanceOf(CircuitOpenError)
+    expect(ran).toBe(0)
+    // The reply was superseded, so the cached verdict stands.
+    expect(harness.coordinator.cached(harness.identity)).toMatchObject({
+      state: "open",
+      generation: 1,
+    })
+  })
+
   it("does not move the deadline for a settlement the authority has superseded", async () => {
     // A settlement whose verdict is older than the one this replica holds verified nothing about
     // now, so it must not move the deadline. Extending it there is what lets a replica admit past
