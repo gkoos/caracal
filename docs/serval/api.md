@@ -132,7 +132,9 @@ create -> start() -> serving -> close()
 
 - `session.start()` subscribes to invalidations **before** the cold-start read, then
   reads a snapshot. Until it adopts an authority incarnation, a delegated coordinator
-  reads the authority per admission rather than caching.
+  reads the authority per admission rather than caching. Only the breaker holds a session, so only it
+  reconciles a snapshot; the rate limiter and bulkhead converge through expiry and their own
+  renewals and allocation replies.
 - Serving never blocks on a notification: hints trigger a coalesced refresh, and
   periodic reconciliation, expiry and reconnect snapshots provide convergence without
   them.
@@ -150,7 +152,7 @@ create -> start() -> serving -> close()
 | No admission beyond granted authority | An admission is served only from locally held, unexpired, unfrozen authority; the lab measures tracked occupancy against the sum of the local ceilings |
 | Rolling rate envelope | `admissions(L) <= R * (L + V) + B` under intact authority history |
 | Bounded local state | One registry entry per scope per policy; the registry refuses rather than evicting live accounting |
-| Convergence | A cached verdict or allocation converges through reconciliation, invalidation or expiry, with or without notifications |
+| Convergence | A cached verdict converges through reconciliation, invalidation or expiry, with or without notifications; an allocation converges through expiry and its own modifications. Only the breaker reconciles a snapshot |
 
 **Explicit deviations**, all measured in [the fault lab](benchmarks.md):
 

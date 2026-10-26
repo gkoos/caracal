@@ -66,6 +66,21 @@ Redis is **not** sufficient, and a random identifier neither orders incarnations
 Ordinary reconnect with intact history reconciles versions and live allocations; suspected rollback
 enters an explicit uncertain-authority state and emits telemetry.
 
+**What the library supplies, and what the deployment must.** The client side of that contract is
+implemented: versions are never ordered across incarnations, adoption happens only through a
+reconciliation decision, retired incarnations are remembered so their delayed messages are refused,
+and a reader reporting a new incarnation drives the change. What the shipped authorities supply is
+narrower, and the paragraph above is not a guarantee a deployment gets for free:
+
+- The strict Redis authorities carry **no** incarnation. The breaker's reader stamps a stable
+  placeholder (`SERVAL_BREAKER_AUTHORITY_INCARNATION`) so a session can adopt a version at all, and
+  its rollback protection is the generation ordering the strict protocol provides.
+- The rate-limit and bulkhead coordinators have no snapshot reader and no reconciliation path. They
+  converge through expiry, their own renewals and their own allocation replies.
+- A deployment that can name a fence supplies the identity itself, through
+  `ServalBreakerReaderOptions.authorityIncarnation`. Without a fence the unfenced
+  competing-authority deviation above is the model, and no bounded-overlap claim applies.
+
 ### 4. Configuration revision, effective time and deficit accounting
 
 - A configuration update cannot instantly revoke disconnected grants. Previously issued authority
@@ -187,9 +202,9 @@ reclamation is a distinct, explicitly approximate path that may overlap continui
 - If an old primary can keep issuing or renewing, **no finite wait suffices**; the session must use
   the unfenced competing-authority deviation model and stop claiming a bounded overlap.
 - A client adopts a new incarnation only through an authoritative reconciliation or fencing
-  decision. A late command reply or notification advertising an unfamiliar identifier never switches
-  the client. Once an incarnation is retired, no delayed message from it can switch the client back,
-  even if its numeric epoch looks higher.
+  decision, where a reader supplies one. A late command reply or notification advertising an
+  unfamiliar identifier never switches the client. Once an incarnation is retired, no delayed message
+  from it can switch the client back, even if its numeric epoch looks higher.
 - Retired-incarnation rejection knowledge is retained for the maximum late-message window. Unknown
   or unordered competing incarnations put the client into the uncertain-authority state with the
   configured conservative admission behaviour.
