@@ -342,7 +342,11 @@ Invariants over the lifecycle:
 - `expired` never transitions back to `valid`; a new issuance is a new grant with a new `grantId`.
 - A transition to `valid` carries a strictly higher `leaseRevision` than the state it replaces, or
   it is a duplicate of an already-applied revision and changes nothing.
-- `uncertain` never admits.
+- `uncertain` never admits on unknown authority: an issuance or a modification whose outcome is not
+  known cannot authorise new work. One case sits deliberately outside that rule, because the capacity
+  itself is not in question: a bulkhead admits from an intact, unexpired allocation while a
+  *modification* of it is ambiguous. See [Bulkhead allocation state
+  machine](#bulkhead-allocation-state-machine).
 
 ## Breaker verdict state machine
 
@@ -430,6 +434,14 @@ modification; each modification has its own `operationId`.
 | `uncertain` | ambiguous modification outcome; frozen slots stay frozen | `allocated` (reconciliation confirms), `draining` (conservative) |
 | `expired` | allocation validity ended | `allocating` (a new `grantId`) |
 | `retired` | voluntarily relinquished or superseded | terminal |
+
+An ambiguous **modification** does not invalidate the capacity the process already holds. A frozen
+return removes only the slots it froze, so a scope in `uncertain` keeps admitting from
+`allocated - active - frozen` while `now < deadline`; reconciliation either confirms the modification
+(`allocated`, with the new revision and deadline) or resolves conservatively (`draining`). This is the
+one deliberate exception to *`uncertain` never admits* in [Common grant
+lifecycle](#common-grant-lifecycle), and it is narrow: uncertain **authority** - an issuance whose
+outcome is unknown - never admits.
 
 Local slot accounting is explicit, and every state maintains:
 

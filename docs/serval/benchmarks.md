@@ -239,9 +239,10 @@ physical number is what the dependency actually did.
 - **Keep the fleet target and the local guardrail independent.** The composed pipeline
   is bounded by the smallest layer; a local bulkhead at the target is what makes a
   per-process ceiling hold when the fleet's accounting is stale.
-- **Expect the delegated rate limiter to refuse earlier than the strict one.** It admits
-  from local stock, so a slow dependency exhausts that stock sooner. Size `grantSize`
-  and `validForMs` for the traffic shape rather than for the peak rate.
+- **Do not expect the delegated rate limiter to refuse in a fixed order against the strict one.**
+  It admits from locally held stock, so a slow dependency exhausts that stock sooner - but which
+  path refuses first depends on the arrival pattern, and this document reports both directions.
+  Size `grantSize` and `validForMs` for the traffic shape rather than for the peak rate.
 - **Do not deploy the distributed breaker where an outage must be survivable.** Its
   settlement is awaited by design: that is what makes its evidence trustworthy and what
   makes a Redis outage visible to callers.

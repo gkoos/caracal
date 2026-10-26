@@ -38,10 +38,11 @@ strict implementations are untouched, and a policy composed around one keeps its
 ![Serval architecture: policies over a per-process session, authoritative Redis scripts, and a notification channel](architecture.svg)
 
 One **session per process** owns the connection lifecycle, the notification subscription, the bounded
-caches, refresh scheduling and cleanup. A session may serve many policy identities. The shared
-infrastructure never interprets policy semantics; it carries a small tagged protocol internally
-(`BreakerVerdict | RateGrant | BulkheadAllocation`) with policy-specific operations and lifecycle
-rules.
+caches, refresh scheduling and cleanup. It is deliberately policy-agnostic: it knows identities,
+versions, incarnations and conservative deadlines, and nothing about verdicts, quota or slots. The
+breaker is the policy that holds one today, because caching a verdict needs a snapshot and
+reconciliation; the rate limiter and bulkhead read their authority per admission and converge through
+expiry, renewal and allocation replies. See [API](api.md).
 
 ### Identity and ownership
 
