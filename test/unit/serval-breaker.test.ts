@@ -476,6 +476,65 @@ describe("serval breaker settlement and degraded behaviour", () => {
 })
 
 describe("serval breaker in the policy path", () => {
+  it("does not move the deadline for a settlement the authority has superseded", async () => {
+    // A settlement whose verdict is older than the one this replica holds verified nothing about
+    // now, so it must not move the deadline. Extending it there is what lets a replica admit past
+    // the window the authority granted.
+    const scheduler = createDeterministicScheduler(1_000)
+    const authority = createFakeBreakerAuthority({
+      now: () => scheduler.now(),
+      state: "closed",
+      generation: 1,
+    })
+    const harness = createBreakerHarness({
+      scheduler,
+      freshnessMs: 100,
+      staleClosed: "fail-closed",
+      authority: {
+        ...authority,
+        coordinator: {
+          ...authority.coordinator,
+          // This replica's view is ahead, so its own settlement reports the older generation.
+          async observe() {
+            return {
+              type: "observed",
+              generation: 0,
+              windowTotal: 1,
+              windowFailures: 0,
+            } as const
+          },
+        },
+      },
+    })
+    await harness.start()
+
+    const policy = circuitBreaker.distributed({
+      name: TEST_BREAKER_IDENTITY.name,
+      coordinator: harness.coordinator,
+      scope: () => TEST_BREAKER_IDENTITY.scope,
+    })
+    const op = operation({
+      name: TEST_BREAKER_IDENTITY.operation,
+      adapter: {
+        capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
+        execute: async () => "ok",
+      },
+      policies: [policy],
+    })
+
+    // Admitted from the warm verdict, and settled at 1060 with the superseded reply. The cold
+    // start read at 1000 earned a window ending at 1075, and the settlement must not move it.
+    await harness.scheduler.advanceBy(60)
+    await expect(op.execute(undefined)).resolves.toBe("ok")
+
+    await harness.scheduler.advanceBy(40)
+    harness.authority.reset()
+    await expect(
+      harness.coordinator.readState(harness.identity),
+    ).rejects.toThrow("freshness allowance")
+    expect(harness.authority.calls.readState).toBe(0)
+  })
+
   it("rejects the call when the cached verdict is stale and staleClosed is fail-closed", async () => {
     // The refusal is a decision, not an outage. onCoordinatorError defaults to fail-open, so
     // reading the refusal as unavailability would run the adapter the coordinator just refused -

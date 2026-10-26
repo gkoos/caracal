@@ -109,7 +109,12 @@ export type ServalAuthorityApplication =
   | { readonly type: "applied"; readonly configurationChanged: boolean }
   | {
       readonly type: "ignored"
-      readonly reason: "stale" | "unregistered" | "malformed"
+      readonly reason:
+        | "superseded"
+        | "unchanged"
+        | "registry-refused"
+        | "unregistered"
+        | "malformed"
     }
   | {
       readonly type: "rejected"
@@ -302,10 +307,23 @@ export function createServalAuthoritySession(
     reconciler.schedule("invalidation")
   }
 
-  interface RecordOutcome {
-    readonly outcome: "applied" | "ignored"
-    readonly configurationChanged: boolean
-  }
+  type RecordOutcome =
+    | {
+        readonly outcome: "applied"
+        readonly configurationChanged: boolean
+      }
+    | {
+        readonly outcome: "ignored"
+        readonly configurationChanged: boolean
+        /**
+         * Why the record was not adopted. `superseded` and `unchanged` are the two halves of the
+         * version comparison: the first means the record is older than what we hold and verified
+         * nothing, the second means the authority answered with exactly what we hold. A caller
+         * caching a verdict's freshness needs the difference, because only the second is a
+         * verification of the current verdict.
+         */
+        readonly ignored: "superseded" | "unchanged" | "registry-refused"
+      }
 
   /**
    * The one place a record enters the cache: monotonic versions, a configuration
@@ -327,7 +345,11 @@ export function createServalAuthoritySession(
     if (comparison === "older" || comparison === "same") {
       metrics.count("authorityRejected")
       metrics.observeScope(key, "rejected", appliedAt)
-      return { outcome: "ignored", configurationChanged: false }
+      return {
+        outcome: "ignored",
+        configurationChanged: false,
+        ignored: comparison === "older" ? "superseded" : "unchanged",
+      }
     }
 
     const configurationChanged =
@@ -351,7 +373,11 @@ export function createServalAuthoritySession(
       if (error instanceof ServalRegistryPressureError) {
         metrics.count("registryRefusals")
         metrics.observeScope(key, "rejected", appliedAt)
-        return { outcome: "ignored", configurationChanged: false }
+        return {
+          outcome: "ignored",
+          configurationChanged: false,
+          ignored: "registry-refused",
+        }
       }
       throw error
     }
@@ -444,7 +470,9 @@ export function createServalAuthoritySession(
 
     const applied = cacheRecord(input.record, deadline, input.receivedAt)
     if (applied.outcome === "ignored") {
-      return { type: "ignored", reason: "stale" }
+      // The reason is carried through: a caller caching freshness needs to know whether the
+      // authority confirmed what we hold or answered with something older.
+      return { type: "ignored", reason: applied.ignored }
     }
     return {
       type: "applied",

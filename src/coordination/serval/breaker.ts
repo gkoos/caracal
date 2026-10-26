@@ -304,8 +304,7 @@ export function createServalBreakerCoordinator(
       receivedAt: context.receivedAt,
     })
 
-    const cached = outcome.type === "applied" || outcome.type === "ignored"
-    if (!cached) {
+    if (outcome.type === "rejected") {
       local.delete(key)
       return
     }
@@ -316,7 +315,16 @@ export function createServalBreakerCoordinator(
       // Measured from the send time, so a delayed reply cannot leave this replica trusting the
       // verdict past the window it was granted. Receipt-anchored, the delay itself became extra
       // authority, which is the one direction that matters here.
-      freshUntil: servalDeadline(context.requestStartedAt, freshnessMs),
+      //
+      // Only a reply that verified the verdict this replica holds may move the window: one the
+      // session applied, or one it reported as unchanged, which means the authority answered with
+      // exactly what we hold. A superseded reply described a past observation and verified nothing
+      // about now, so it leaves the window where it was - moving it there pushed the deadline past
+      // the one the authority granted.
+      freshUntil:
+        outcome.type === "applied" || outcome.reason === "unchanged"
+          ? servalDeadline(context.requestStartedAt, freshnessMs)
+          : (previous?.freshUntil ?? 0),
       // A re-anchored cooldown survives a same-version refresh of the verdict.
       cooldownUntil: previous?.cooldownUntil ?? 0,
     })

@@ -348,6 +348,8 @@ describe("serval session authority application", () => {
     const cached = harness.authority.record(TEST_IDENTITY)
     const requestStartedAt = harness.scheduler.now()
 
+    // The authority answered with exactly what we hold: ignored, but a verification of the
+    // current verdict rather than a superseded reply.
     expect(
       harness.session.applyAuthority({
         record: cached as NonNullable<typeof cached>,
@@ -355,7 +357,29 @@ describe("serval session authority application", () => {
         validForMs: 100,
         receivedAt: requestStartedAt,
       }),
-    ).toEqual({ type: "ignored", reason: "stale" })
+    ).toEqual({ type: "ignored", reason: "unchanged" })
+  })
+
+  it("distinguishes a superseded record from an unchanged one", async () => {
+    const harness = await startedHarness()
+    const cached = harness.authority.record(TEST_IDENTITY) as NonNullable<
+      ReturnType<typeof harness.authority.record>
+    >
+    const requestStartedAt = harness.scheduler.now()
+
+    // An older version describes a past observation, so a caller caching freshness must be able to
+    // tell it apart from a record that confirms what we hold.
+    expect(
+      harness.session.applyAuthority({
+        record: {
+          ...cached,
+          version: { ...cached.version, version: cached.version.version - 1 },
+        },
+        requestStartedAt,
+        validForMs: 100,
+        receivedAt: requestStartedAt,
+      }),
+    ).toEqual({ type: "ignored", reason: "superseded" })
   })
 
   it("ignores a record for an unregistered identity and a malformed record", async () => {
