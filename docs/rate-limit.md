@@ -84,6 +84,26 @@ retry({
 
 A refusal is not evidence about the dependency, so an enclosing [circuit breaker](circuit-breaker.md#ignored-results) does not record a `RateLimitExceededError` as a failure; `countAdmissionRejections` on the breaker records it anyway. A coordinator failure is not this case: the policy rethrows the coordinator's own error, which a breaker counts.
 
+## Delegated quotas
+
+`rateLimit.distributed` accepts any `RateLimitCoordinator`, so a coordinator may spend
+locally held quota instead of asking Redis on every admission. Serval's delegated rate limiter
+is exactly that (`docs/serval/README.md`): Redis issues a bounded grant of permits, the
+process spends them without a round trip, and the ordinary admission path costs nothing while
+stock remains.
+
+Three properties are worth knowing before opting in:
+
+- **It is not a second budget.** A grant is taken from the *same* GCRA state this page
+  describes, so a strict call and a delegated grant draw on one bucket. Mixing the two paths
+  for one identity is therefore safe, but it does not add capacity.
+- **It is not exact GCRA.** Permits are issued in grants and spent locally, so admissions in
+  any interval of length `L` are bounded by `R * (L + V) + B`, where `V` is the grant spend
+  horizon - looser than the strict cell, and stated rather than implied.
+- **A refusal still carries `retryAfterMs`**, from the server's own hint when the bucket is
+  empty, or from a local estimate when the authority answered too late to be used. The retry
+  recipe above works unchanged.
+
 ## Failure guarantees
 
 - Failed or uncertain admission **fails closed**. No adapter call is started and no local fallback occurs. With the Redis coordinator the rejection is a `CoordinatorUnavailableError` (exported from `@gkoos/caracal/redis`, not the root); the policy rethrows whatever its coordinator threw, so a custom coordinator's own error type is what you see. There is no `onCoordinatorError` knob: rate-limit admission has no safe "fail-open", because allowing traffic when the limiter cannot be read removes the protection it exists to provide.

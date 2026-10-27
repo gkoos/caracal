@@ -3,9 +3,8 @@
  * Keeps SECURITY.md's supported-versions table in step with the released line.
  *
  * `npm run version` runs this straight after `changeset version`, so the
- * Version Packages pull request carries the update. That matters because the
- * package-contract test asserts the table and `package.json` agree - without
- * this step the release pull request fails its own Check job.
+ * Version Packages pull request carries the update: the table has to name the
+ * line that is actually released.
  */
 import { readFileSync, writeFileSync } from "node:fs"
 

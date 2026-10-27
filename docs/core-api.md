@@ -213,6 +213,7 @@ Every returned policy carries a `coordination` property (`"local"` or `"distribu
 |---|---|---|
 | `TimeoutError` | `timeout`, when the deadline expires | `timeoutMs` |
 | `CircuitOpenError` | `circuitBreaker`, when an attempt is rejected | `policyName`, `coordination`, `scope` |
+| `CoordinatorRefusalError` | a coordinator that refuses by decision, such as the delegated breaker with `staleClosed: "fail-closed"`; the policy rejects the call rather than applying `onCoordinatorError` | - |
 | `BulkheadRejectedError` | `bulkhead`, when a permit is refused or a wait times out | `coordination`, `policyName`, `scope`, `reason` |
 | `RateLimitExceededError` | `rateLimit`, when a call is rejected for exceeding the rate | `coordination`, `policyName`, `scope`, `retryAfterMs` |
 | `CoordinatorUnavailableError` | the Redis coordinators, exported from `@gkoos/caracal/redis` | `coordination` (`"distributed"`), `cause` |

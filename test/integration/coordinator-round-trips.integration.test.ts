@@ -80,6 +80,20 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
         return calls / executions
       }
 
+      /**
+       * The documented cost is a per-execution count, and this measures an average.
+       * Background work the coordinators do on their own - a lease renewal for an
+       * attempt that is still in flight, a settlement that lands after its caller
+       * returned - can add a fraction of a call to a long run, so the average is
+       * allowed to drift upward by less than half a call. A policy that adds a
+       * coordinator call to the admission path moves it by a whole call per
+       * execution and still fails here.
+       */
+      function expectPerExecution(measured: number, documented: number) {
+        expect(measured).toBeGreaterThanOrEqual(documented)
+        expect(measured).toBeLessThan(documented + 0.5)
+      }
+
       const adapter = {
         capabilities: () => ({
           abort: "unsupported" as const,
@@ -101,9 +115,10 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
         adapter,
         policies: [bulkheadPolicy],
       })
-      expect(
+      expectPerExecution(
         await callsPerExecution(() => bulkheadOp.execute(undefined), 200),
-      ).toBe(2)
+        2,
+      )
 
       // circuitBreaker.distributed, CLOSED: readState + observe.
       const closedPolicy = circuitBreaker.distributed({
@@ -119,9 +134,10 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
         adapter,
         policies: [closedPolicy],
       })
-      expect(
+      expectPerExecution(
         await callsPerExecution(() => closedOp.execute(undefined), 200),
-      ).toBe(2)
+        2,
+      )
 
       // circuitBreaker.distributed, HALF_OPEN: readState + admitProbe + settleProbe.
       // halfOpenSuccesses is unreachable, so every probe stays half-open and
@@ -154,9 +170,10 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
       await halfOpenOp.execute(undefined).catch(() => {})
       shouldFail = false
       await new Promise((resolve) => setTimeout(resolve, 2))
-      expect(
+      expectPerExecution(
         await callsPerExecution(() => halfOpenOp.execute(undefined), 200),
-      ).toBe(3)
+        3,
+      )
 
       // Both policies on one operation.
       const combinedOp = operation({
@@ -182,9 +199,10 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
           }),
         ],
       })
-      expect(
+      expectPerExecution(
         await callsPerExecution(() => combinedOp.execute(undefined), 200),
-      ).toBe(4)
+        4,
+      )
 
       // rateLimit.distributed: one atomic GCRA admission. The burst covers the
       // whole run so every call admits and the count is a pure admission path.
@@ -201,9 +219,10 @@ describe.skipIf(!url)("coordinator round trips per execution", () => {
           }),
         ],
       })
-      expect(
+      expectPerExecution(
         await callsPerExecution(() => rateOp.execute(undefined), 200),
-      ).toBe(1)
+        1,
+      )
     } finally {
       client.disconnect()
     }

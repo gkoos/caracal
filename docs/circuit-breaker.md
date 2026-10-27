@@ -37,6 +37,9 @@ Invariants verified by property tests:
 - Opening never fires before `minimumThroughput` observations.
 - A success-only trace never opens the breaker.
 - `probesInFlight ≤ halfOpenProbes` at all times.
+- At most `halfOpenProbes` probes are admitted per recovery window, and the window refills every `openMs`: the window, not the in-flight count, is the budget.
+
+The window counts observations, not time, so how long it takes to fill depends on how fast they arrive. That matters whenever another policy is shedding load: a bulkhead or rate-limiter refusal is not recorded as evidence (see the admission-refusal rule above), so the breaker may hear about only a fraction of the offered calls - 100 observations is a tenth of a second at 1,000 calls/s and about twelve seconds at 8/s. Under a sustained failure the window then still holds successes from before it, the ratio stays below the threshold, and the breaker does not open even though most calls are failing. Match the window to the rate the breaker actually sees - a lower `windowSize` or `minimumThroughput` - or set `countAdmissionRejections: true` so that refusals are recorded as failures. [Redis coordination](redis.md#keeping-the-breaker-knobs-consistent) lists the related constraints.
 
 ## Threshold resolution
 
@@ -145,7 +148,7 @@ Use stable, non-secret values, scope keys are observable in the Redis keyspace. 
 
 Three Redis key types are used per scope: the state hash, the observations sorted set, and the probe-token sorted set.
 
-**State hash** stores `state`, `generation`, `openedAt`, `probeCount`, `probeSuccesses`. It is created by the first observation of a scope, so the window's epoch is on record from the start. A missing key is treated as closed. All state transitions are atomic Lua scripts using server-side timestamps. `probeCount` is informational - every decision uses `ZCARD` on the probe token set instead - and the conformance suite asserts the two never drift apart.
+**State hash** stores `state`, `generation`, `openedAt`, `probeCount`, `probeSuccesses`, `windowProbes` and `windowStartedAt`. It is created by the first observation of a scope, so the window's epoch is on record from the start. A missing key is treated as closed. All state transitions are atomic Lua scripts using server-side timestamps. A decision reads the in-flight count from `ZCARD` on the probe token set and the recovery window's spent budget from `windowProbes`; `probeCount` is the informational mirror of `ZCARD`, and the conformance suite asserts the two never drift apart.
 
 TTL policy for the state hash:
 - **OPEN / HALF_OPEN**: no TTL (`PERSIST`). Because a missing key is treated as closed, expiring a non-closed hash would silently admit unrestricted traffic, reset the window epoch (breaking the stale-result guarantee), and orphan any in-flight probe lease tokens.
@@ -177,15 +180,35 @@ Admission uses two sequential coordinator calls — `readState` then (if non-clo
 
 `onCoordinatorError` governs only the second row: when `readState` fails and no prior read has established that the scope is non-closed. Once a scope has been seen as OPEN or HALF_OPEN that knowledge is retained in process; a subsequent coordinator outage will fail-closed for that scope regardless of this setting. There is no automatic local fallback and no sticky policy-wide degraded state.
 
+A coordinator that refuses by **decision** is a third case, and this setting does not reach it. It throws `CoordinatorRefusalError`, which says the coordinator answered and the answer was no, so the policy rejects the call with `CircuitOpenError` and emits no `breaker.degraded` — turning a decision into permission would invert the protection the coordinator just applied. A coordinator that cannot answer keeps throwing its own unavailability error, which is what `onCoordinatorError` is for.
+
 Retention is per `(operation, scope)` and covers **only non-closed states**. A CLOSED read, a probe settlement that closes the breaker, or an `admitProbe` response of `closed` discards the entry, because CLOSED and "never seen" are treated identically here. Removal is traffic-dependent: an entry only goes away when that same scope is next read or settled as CLOSED, so a scope that opens once and then goes quiet is retained for the lifetime of the process. In-process memory therefore tracks the scopes believed OPEN or HALF_OPEN - the same scopes whose Redis state hash is kept without a TTL - provided those scopes keep receiving traffic.
 
 [Operations](operations.md) covers the consequences of that retention across many scopes, the namespace lifetime rule that goes with it, and per-group coordinators.
 
+### Delegated verdicts
+
+`circuitBreaker.distributed` accepts any `BreakerCoordinator`, so a coordinator may serve the
+admission decision from locally held authority instead of reading Redis per admission. Serval's
+cached-verdict breaker is exactly that (`docs/serval/README.md`): a warm, valid cached CLOSED
+verdict admits with no round trip, a cached OPEN rejects locally until its cooldown elapses, and the
+strict coordinator stays authoritative for every transition, probe and settlement.
+
+Two reply fields exist for that: an observation that opens the breaker reports the server's
+`openedAt`, and a probe settlement that re-opens it reports the same. Both are optional, so a custom
+coordinator keeps compiling and an existing one keeps behaving identically; the policy ignores them.
+`openedAt` is a server-clock reading, which a client cannot turn into a local deadline without the
+server's clock - see the cooldown note in `docs/serval/README.md`, Contract 2, for how the delegated
+coordinator stays conservative without it.
+
 ### Half-open probe arbitration
 
-- At most `halfOpenProbes` concurrent probes are admitted globally per scope. Enforced at the Redis level, not just per-process.
-- Each probe holds a token in Redis whose sorted-set score is its deadline. A dead worker's token expires automatically, and the probe slot recovers without coordinator intervention; a result that arrives after the deadline is dropped as stale. The settlement script checks the deadline atomically, so an expired probe can neither close nor re-open the breaker, and the slot it still occupied is released.
+- At most `halfOpenProbes` probes are admitted **per recovery window**, not merely concurrently. Enforced at the Redis level, not just per-process. The window is the budget: an inconclusive result releases its in-flight slot but does not return the budget, so a fleet whose probes are refused locally (an ignored result) cannot turn every arriving request into a probe. A counting result does return it - a success is evidence the dependency is reachable, so recovery accumulates `halfOpenSuccesses` within one window.
+- The window refills every `openMs`, so the ceiling is `halfOpenProbes` probes per cooldown. A window whose probes all reported nothing therefore probes again after the cooldown rather than spinning on freed slots, and a cancelled or refused probe costs one cooldown instead of re-opening a breaker that was recovering.
+- Each probe holds a token in Redis whose sorted-set score is its deadline. A dead worker's token expires automatically, and the probe slot recovers without coordinator intervention - its window budget comes back with it. A result that arrives after the deadline is dropped as stale. The settlement script checks the deadline atomically, so an expired probe can neither close nor re-open the breaker, and the slot it still occupied is released.
 - Leaving HALF_OPEN discards the probe tokens of that recovery window, so the next window starts with full capacity and a late settle from the superseded window is dropped rather than counted.
+- The token set caps probes in flight, but the *observed* peak can be up to twice `halfOpenProbes`. A transition discards the superseded window's tokens while the probes they belong to are still running, so that work overlaps the next window's probes. With `probeLeaseTtlMs` at its default of twice `openMs`, at most two windows can overlap, which is why the ceiling on observed concurrency is `2 × halfOpenProbes` rather than `halfOpenProbes`.
+- `halfOpenProbes` means *probes per recovery window* in the distributed breaker and *probes in flight* in the in-process one. A process has only its own budget to spend, so an inconclusive result returns its slot immediately and the next attempt may probe; a fleet shares one budget between its replicas, so a result that reported nothing cannot be replaced by the next request that arrives.
 - `probeSuccesses` accumulates across all concurrent probes. The first worker to reach `halfOpenSuccesses` closes the breaker.
 - Any probe failure takes priority: it re-opens the breaker and increments the generation.
 - These dials interlock with the window counters (`minimumThroughput`, `failureThreshold`, `windowSize`, `windowTtlMs`); [Redis coordination](redis.md#keeping-the-breaker-knobs-consistent) lists the constraints and the symptoms of getting them wrong.

@@ -72,6 +72,224 @@ end
 return {1, allowed, occupancy, revision, changedAt, body}
 `
 
+/**
+ * Delegated slot allocation for one replica (decisions 7, 9 and 11).
+ *
+ * The fleet-wide limit is a **sum of allocations**, so the server keeps one
+ * counter of granted slots and updates it atomically with every commit. An
+ * allocation reserves its slots for its validity plus a grace period, which is what
+ * lets a replica reconcile after a lost reply before the capacity is handed to
+ * someone else: within the grace window the reservation exists and cannot be
+ * reallocated.
+ *
+ * Renewal is not a grant. It extends the deadline and advances `leaseRevision`
+ * without touching the counter. A resize-up reserves only the delta, a resize-down
+ * returns slots the caller has already frozen locally, and both are validated
+ * against the expected `leaseRevision` so a stale reply cannot undo a newer one.
+ *
+ * KEYS[1] = allocation hash   (:allocation)        replicaId -> grantId|revision|slots|expiresAt
+ * KEYS[2] = reservation expiry(:allocation-expiry) "a|replicaId|grantId|slots" and "o|operationId"
+ * KEYS[3] = granted counter   (:allocated)         slots granted across the fleet
+ * KEYS[4] = operation ledger  (:allocation-ops)    operationId -> status|reason|slots|revision|expiresAt
+ * KEYS[5] = configuration record
+ * ARGV[1] = action            allocate | renew | resize | read
+ * ARGV[2] = replicaId
+ * ARGV[3] = operationId       one modification, including all its retries
+ * ARGV[4] = slots             requested (allocate) or signed delta (resize)
+ * ARGV[5] = validityMs
+ * ARGV[6] = expectedRevision  -1 to skip the compare-and-swap
+ * ARGV[7] = limit             baseline fleet-wide ceiling
+ * ARGV[8] = graceMs           reservation grace after the validity deadline
+ * ARGV[9] = knownRevision     the configuration revision this caller holds
+ *
+ * Returns: {envelopeVersion, status, reason, allocated, revision, expiresAt,
+ *           serverTime, duplicate, configRevision, changedAt, body?}
+ *   status 1 = committed, 0 = refused
+ *   reason 0 none, 1 limit, 2 revision, 3 no live allocation, 4 one already exists
+ *   expiresAt is a server-clock reading; a client derives its own deadline from it
+ */
+export const bulkheadAllocationV1 = `
+local action = ARGV[1]
+local replicaId = ARGV[2]
+local operationId = ARGV[3]
+local amount = tonumber(ARGV[4])
+local validityMs = tonumber(ARGV[5])
+local expectedRevision = tonumber(ARGV[6])
+local limit = tonumber(ARGV[7])
+local graceMs = tonumber(ARGV[8])
+local knownRevision = tonumber(ARGV[9])
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[5])
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1 then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  local effective = decoded['effective']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number'
+     or type(effective) ~= 'table' or effective['policy'] ~= 'bulkhead' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  local override = tonumber(effective['limit'])
+  if not override or override < 1 or override ~= math.floor(override) then
+    return redis.error_reply('unsupported configuration record')
+  end
+  limit = override
+  if knownRevision ~= revision then body = record end
+end
+
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+
+-- A reservation ends at its expiry plus the grace period. Until then the slots are
+-- held for the replica that owns them, which is what makes a lost reply
+-- reconcilable instead of immediately reallocated.
+--
+-- The prune is bounded per call. Each member is read and acted on individually, because a
+-- lapsed allocation has to be counted down before it is forgotten, and the reservation
+-- set carries no TTL, so this drain is what returns capacity. One call prunes at most
+-- 'maxSlices' slices, which is far above the one member a call adds, so the set converges
+-- under sustained load; a larger backlog returns its capacity over the calls that follow.
+local sliceSize = 512
+local maxSlices = 8
+for _ = 1, maxSlices do
+  local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now, 'LIMIT', 0, sliceSize)
+  if #expired == 0 then break end
+  for _, member in ipairs(expired) do
+    local kind, rest = string.match(member, '^(%a)|(.*)$')
+    if kind == 'a' then
+      local replica, grantId, slots = string.match(rest, '^([^|]*)|([^|]*)|(%d+)$')
+      if replica and grantId and slots then
+        redis.call('DECRBY', KEYS[3], tonumber(slots))
+        local held = redis.call('HGET', KEYS[1], replica)
+        local heldGrant = held and string.match(held, '^([^|]*)|')
+        -- Only the allocation that owned this reservation is forgotten: a replica
+        -- that has since allocated again keeps its newer one.
+        if heldGrant == grantId then redis.call('HDEL', KEYS[1], replica) end
+      end
+    elseif kind == 'o' then
+      redis.call('HDEL', KEYS[4], rest)
+    end
+  end
+  -- Only the members this pass acted on: a bulk range delete would drop reservations the
+  -- counter has not been told about, and the fleet would lose that capacity for good.
+  redis.call('ZREM', KEYS[2], unpack(expired))
+end
+
+local function reply(status, reason, allocated, rev, expiresAt, duplicate)
+  if body == '' then
+    return {1, status, reason, allocated, rev, expiresAt, now, duplicate, revision, changedAt}
+  end
+  return {1, status, reason, allocated, rev, expiresAt, now, duplicate, revision, changedAt, body}
+end
+
+local function grantedTotal()
+  return tonumber(redis.call('GET', KEYS[3]) or '0')
+end
+
+local function remember(status, reason, allocated, rev, expiresAt)
+  local reservationEnd = math.max(expiresAt, now) + graceMs
+  redis.call('HSET', KEYS[4], operationId, status .. '|' .. reason .. '|' .. allocated .. '|' .. rev .. '|' .. expiresAt)
+  redis.call('ZADD', KEYS[2], reservationEnd, 'o|' .. operationId)
+  local ledgerTtl = redis.call('PTTL', KEYS[4])
+  if ledgerTtl < reservationEnd - now then
+    redis.call('PEXPIREAT', KEYS[4], reservationEnd)
+  end
+  -- The reservation set is deliberately not given a TTL. It is the granted counter's
+  -- source of truth: if it expired before the next call, that call could not decrement
+  -- the counter, and the fleet would lose the capacity for good. The prune below
+  -- removes members as they lapse, and Redis drops the key when the last one goes.
+  if grantedTotal() <= 0 then redis.call('DEL', KEYS[3]) end
+end
+
+local current = redis.call('HGET', KEYS[1], replicaId)
+local grantId, curRevision, curAllocated, curExpiresAt = '', 0, 0, 0
+if current then
+  local heldGrant, heldRevision, heldSlots, heldExpiresAt =
+    string.match(current, '^([^|]*)|(%d+)|(%d+)|(%d+)$')
+  if heldGrant then
+    grantId = heldGrant
+    curRevision = tonumber(heldRevision)
+    curAllocated = tonumber(heldSlots)
+    curExpiresAt = tonumber(heldExpiresAt)
+  end
+end
+
+-- A committed modification is idempotent: a retry returns its recorded result and
+-- changes nothing, so an ambiguous reply cannot be applied twice.
+local recorded = redis.call('HGET', KEYS[4], operationId)
+if recorded and action ~= 'read' then
+  local status, reason, allocated, rev, expiresAt =
+    string.match(recorded, '^(%d+)|(%d+)|(%d+)|(%d+)|(%d+)$')
+  return reply(tonumber(status), tonumber(reason), tonumber(allocated), tonumber(rev), tonumber(expiresAt), 1)
+end
+
+if action == 'read' then
+  return reply(1, 0, curAllocated, curRevision, curExpiresAt, 0)
+end
+
+if action == 'allocate' then
+  if grantId ~= '' then return reply(0, 4, curAllocated, curRevision, curExpiresAt, 0) end
+  local granted = math.min(amount, limit - grantedTotal())
+  if granted <= 0 then return reply(0, 1, 0, 0, 0, 0) end
+  local expiresAt = now + validityMs
+  -- The allocation is identified by the operation that created it, so there is no
+  -- way to create a second allocation for one replica without retiring the first.
+  redis.call('HSET', KEYS[1], replicaId, operationId .. '|1|' .. granted .. '|' .. expiresAt)
+  redis.call('ZADD', KEYS[2], expiresAt + graceMs, 'a|' .. replicaId .. '|' .. operationId .. '|' .. granted)
+  redis.call('INCRBY', KEYS[3], granted)
+  remember(1, 0, granted, 1, expiresAt)
+  return reply(1, 0, granted, 1, expiresAt, 0)
+end
+
+if grantId == '' or now > curExpiresAt then
+  return reply(0, 3, curAllocated, curRevision, curExpiresAt, 0)
+end
+if expectedRevision >= 0 and expectedRevision ~= curRevision then
+  return reply(0, 2, curAllocated, curRevision, curExpiresAt, 0)
+end
+
+if action == 'renew' then
+  local expiresAt = now + validityMs
+  local rev = curRevision + 1
+  redis.call('HSET', KEYS[1], replicaId, grantId .. '|' .. rev .. '|' .. curAllocated .. '|' .. expiresAt)
+  redis.call('ZREM', KEYS[2], 'a|' .. replicaId .. '|' .. grantId .. '|' .. curAllocated)
+  redis.call('ZADD', KEYS[2], expiresAt + graceMs, 'a|' .. replicaId .. '|' .. grantId .. '|' .. curAllocated)
+  remember(1, 0, curAllocated, rev, expiresAt)
+  return reply(1, 0, curAllocated, rev, expiresAt, 0)
+end
+
+if action == 'resize' then
+  local nextSlots = curAllocated
+  if amount > 0 then
+    local granted = math.min(amount, limit - grantedTotal())
+    if granted <= 0 then return reply(0, 1, curAllocated, curRevision, curExpiresAt, 0) end
+    nextSlots = curAllocated + granted
+  elseif amount < 0 then
+    nextSlots = curAllocated - math.min(-amount, curAllocated)
+  end
+  local rev = curRevision + 1
+  redis.call('ZREM', KEYS[2], 'a|' .. replicaId .. '|' .. grantId .. '|' .. curAllocated)
+  redis.call('INCRBY', KEYS[3], nextSlots - curAllocated)
+  if nextSlots == 0 then
+    -- Returned in full: the allocation is retired and its reservation is gone, so
+    -- the capacity is reallocatable from this commit onwards.
+    redis.call('HDEL', KEYS[1], replicaId)
+  else
+    redis.call('HSET', KEYS[1], replicaId, grantId .. '|' .. rev .. '|' .. nextSlots .. '|' .. curExpiresAt)
+    redis.call('ZADD', KEYS[2], curExpiresAt + graceMs, 'a|' .. replicaId .. '|' .. grantId .. '|' .. nextSlots)
+  end
+  remember(1, 0, nextSlots, rev, curExpiresAt)
+  return reply(1, 0, nextSlots, rev, curExpiresAt, 0)
+end
+
+return redis.error_reply('unsupported allocation action')
+`
+
 // ---------------------------------------------------------------------------
 // Rate-limit script
 //
@@ -146,6 +364,173 @@ end
 return {1, allowed, retryAfterMs, revision, changedAt, body}
 `
 
+/**
+ * Issues a bounded quota grant against the same GCRA state `rateLimitV1` uses.
+ *
+ * A grant of `n` permits is `n` arrivals taken at once, so it is admissible
+ * exactly when the bucket holds `n` tokens: the TAT advances by `n * emission`
+ * and the burst condition is unchanged. That is what makes the delegated path
+ * and the strict path share one bucket instead of counting the same budget
+ * twice.
+ *
+ * Issuance is idempotent on `operationId` for as long as the grant it produced is
+ * live, so a retry after an ambiguous reply returns the recorded grant instead of
+ * deducting the bucket again. A refusal is not recorded: it deducted nothing, and
+ * re-evaluating it is what the caller asked for.
+ *
+ * KEYS[1] = rate state key          (:rate)         shared with rateLimitV1
+ * KEYS[2] = grant ledger            (:grants)       hash: operationId -> granted|validForMs
+ * KEYS[3] = live grant expiry       (:grant-expiry) zset: operationId, score = server expiry
+ * KEYS[4] = configuration record
+ * ARGV[1] = emissionIntervalMs  min time between cells at the sustained rate
+ * ARGV[2] = burstDelayMs        how far ahead of schedule an arrival may be
+ * ARGV[3] = knownRevision       the configuration revision this caller holds
+ * ARGV[4] = operationId         one issuance operation, including all its retries
+ * ARGV[5] = requestedPermits
+ * ARGV[6] = validForMs          the grant's spend horizon, V
+ * ARGV[7] = maximumOutstanding  live permitted permits, -1 for uncapped
+ *
+ * Returns: {envelopeVersion, granted, retryAfterMs, validForMs, duplicate,
+ *           revision, changedAt, body?}
+ *   granted 0 = refused; retryAfterMs is then always > 0
+ *   duplicate 1 = a recorded grant was returned, nothing was deducted
+ *   body is the configuration record, only when ARGV[3] differs from it
+ */
+export const rateGrantV1 = `
+local emission = tonumber(ARGV[1])
+local burstDelay = tonumber(ARGV[2])
+local knownRevision = tonumber(ARGV[3])
+local operationId = ARGV[4]
+local requested = tonumber(ARGV[5])
+local validForMs = tonumber(ARGV[6])
+local maximumOutstanding = tonumber(ARGV[7])
+local revision = 0
+local changedAt = 0
+local body = ''
+local record = redis.call('GET', KEYS[4])
+if record then
+  local ok, decoded = pcall(cjson.decode, record)
+  if not ok or type(decoded) ~= 'table' or decoded['schemaVersion'] ~= 1 then
+    return redis.error_reply('unsupported configuration record')
+  end
+  revision = decoded['revision']
+  changedAt = decoded['changedAt']
+  local effective = decoded['effective']
+  if type(revision) ~= 'number' or type(changedAt) ~= 'number'
+     or type(effective) ~= 'table' or effective['policy'] ~= 'rateLimit' then
+    return redis.error_reply('unsupported configuration record')
+  end
+  local overrideEmission = tonumber(effective['emissionIntervalMs'])
+  local overrideBurst = tonumber(effective['burstDelayMs'])
+  if not overrideEmission or overrideEmission < 1
+     or overrideEmission ~= math.floor(overrideEmission)
+     or not overrideBurst or overrideBurst < 0
+     or overrideBurst ~= math.floor(overrideBurst) then
+    return redis.error_reply('unsupported configuration record')
+  end
+  emission = overrideEmission
+  burstDelay = overrideBurst
+  if knownRevision ~= revision then body = record end
+end
+
+local t = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)
+
+-- A grant is live while now <= its server expiry. Expired grants are neither
+-- deduplicated nor outstanding, so they are forgotten here rather than lingering.
+--
+-- The drain is bounded twice over, because it runs inside a call that holds the server.
+-- A slice is small enough for 'unpack', which returns at most as many results as the
+-- interpreter's stack holds (8000 in the Lua 5.1 that Redis and Valkey embed), and one
+-- call forgets at most 'maxSlices' of them. A backlog past that is drained by the calls
+-- that follow: a retry is answered by field and the expiry set is read for live grants
+-- only, so an unfinished drain costs nothing but time, and the keys carry the TTL of the
+-- newest grant, so whatever the drain never reaches expires with them.
+local sliceSize = 512
+local maxSlices = 8
+for _ = 1, maxSlices do
+  local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now - 1, 'LIMIT', 0, sliceSize)
+  if #expired == 0 then break end
+  redis.call('HDEL', KEYS[2], unpack(expired))
+  redis.call('ZREM', KEYS[3], unpack(expired))
+end
+
+local function reply(granted, retryAfterMs, duplicate)
+  if body == '' then
+    return {1, granted, retryAfterMs, validForMs, duplicate, revision, changedAt}
+  end
+  return {1, granted, retryAfterMs, validForMs, duplicate, revision, changedAt, body}
+end
+
+local existing = redis.call('HGET', KEYS[2], operationId)
+if existing then
+  -- Liveness is the expiry set's call, not the drain's: a lapsed grant whose field the
+  -- drain has not reached yet is neither deduplicated nor served, and a retry that finds
+  -- one forgets it on the way past.
+  local expiry = redis.call('ZSCORE', KEYS[3], operationId)
+  if expiry and tonumber(expiry) >= now then
+    local granted = string.match(existing, '^(%d+)|')
+    return reply(tonumber(granted), 0, 1)
+  end
+  redis.call('HDEL', KEYS[2], operationId)
+  redis.call('ZREM', KEYS[3], operationId)
+end
+
+local tat = tonumber(redis.call('GET', KEYS[1]) or '0')
+local anchored = math.max(tat, now)
+local available = math.floor((now + burstDelay - anchored) / emission) + 1
+local granted = math.min(requested, available)
+
+-- A permit cap bounds live permits, not live grants: callers ask for different
+-- sizes, so a grant count derived from one caller's request cannot bound the
+-- fleet's outstanding stock. Sum what the live grants actually hold.
+local function liveGrantedPermits()
+  local total = 0
+  local live = redis.call('ZRANGEBYSCORE', KEYS[3], now, '+inf')
+  for index = 1, #live do
+    local entry = redis.call('HGET', KEYS[2], live[index])
+    local permits = entry and string.match(entry, '^(%d+)|')
+    if permits then total = total + tonumber(permits) end
+  end
+  return total
+end
+
+if granted > 0 and maximumOutstanding >= 0
+   and liveGrantedPermits() + granted > maximumOutstanding then
+  -- The configured maximum outstanding stock is reached. Refuse, and hint at the
+  -- earliest expiry that frees capacity.
+  granted = 0
+  local earliest = redis.call('ZRANGE', KEYS[3], 0, 0, 'WITHSCORES')
+  local retryAfterMs = validForMs
+  if earliest[2] then retryAfterMs = tonumber(earliest[2]) - now end
+  if retryAfterMs < 1 then retryAfterMs = 1 end
+  return reply(0, retryAfterMs, 0)
+end
+
+if granted <= 0 then
+  return reply(0, anchored - burstDelay - now, 0)
+end
+
+local nextTat = anchored + granted * emission
+redis.call('SET', KEYS[1], nextTat)
+redis.call('PEXPIREAT', KEYS[1], nextTat)
+
+-- Retained until the grant can no longer be adopted: a client's send-time-anchored
+-- deadline is at or before the server expiry it was derived from.
+local expiresAt = now + validForMs
+redis.call('HSET', KEYS[2], operationId, granted .. '|' .. validForMs)
+redis.call('ZADD', KEYS[3], expiresAt, operationId)
+local ledgerTtl = redis.call('PTTL', KEYS[2])
+if ledgerTtl < expiresAt - now then
+  redis.call('PEXPIREAT', KEYS[2], expiresAt)
+end
+local expiryTtl = redis.call('PTTL', KEYS[3])
+if expiryTtl < expiresAt - now then
+  redis.call('PEXPIREAT', KEYS[3], expiresAt)
+end
+return reply(granted, 0, 0)
+`
+
 // ---------------------------------------------------------------------------
 // Circuit-breaker scripts
 //
@@ -174,10 +559,15 @@ return {1, allowed, retryAfterMs, revision, changedAt, body}
  * ARGV[7] = openMs                how long to stay OPEN; closed hash TTL = openMs×2
  * ARGV[8] = uuid                  unique string for member deduplication
  *
- * Returns: {status, stateCode, generation, windowTotal, windowFailures}
+ * Returns: {status, stateCode, generation, windowTotal, windowFailures, openedAt}
  *   status 0 = stale  (dropped; generation or state mismatch)
  *   status 1 = observed, no transition  (remained closed)
  *   status 2 = observed, breaker opened (stateCode=1, generation incremented)
+ *
+ * `openedAt` is the server's clock reading at which the breaker opened, or 0 when
+ * the reply is not about an open breaker.  It is the authoritative origin of the
+ * recovery cooldown, so a replica that saw the transition can compute its own
+ * cooldown from the server's time instead of guessing from the receipt time.
  *
  * TTL policy:
  *   OPEN state  → PERSIST (no expiry).  A missing key is treated as closed by
@@ -268,19 +658,20 @@ end
 local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
-local f   = redis.call('HMGET', KEYS[1], 'state', 'generation')
+local f   = redis.call('HMGET', KEYS[1], 'state', 'generation', 'openedAt')
 local state = f[1] or 'closed'
 local gen   = tonumber(f[2]) or 0
+local openedAt = tonumber(f[3]) or 0
 if state ~= 'closed' then
   local sc = (state == 'open' and 1) or (state == 'half-open' and 2) or 0
-  return {0, sc, gen, 0, 0}
+  return {0, sc, gen, 0, 0, openedAt}
 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
   -- No live state hash: a scope we have never seen, or a hash that was lost
   -- while its window survived.
   if expectGen ~= 0 then
     -- The caller holds a generation this key cannot confirm.
-    return {0, 0, 0, 0, 0}
+    return {0, 0, 0, 0, 0, 0}
   end
   if redis.call('EXISTS', KEYS[2]) == 1 then
     -- Members from a superseded epoch are still here.  Mint an epoch that has
@@ -301,7 +692,7 @@ if redis.call('EXISTS', KEYS[1]) == 0 then
   redis.call('HSET', KEYS[1], 'state', 'closed', 'generation', gen,
              'openedAt', 0, 'probeCount', 0, 'probeSuccesses', 0)
 elseif gen ~= expectGen then
-  return {0, 0, gen, 0, 0}
+  return {0, 0, gen, 0, 0, 0}
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - windowTtl)
 local member = tostring(gen) .. ':' .. uuid .. ':' .. outcome
@@ -328,14 +719,14 @@ if wTotal >= minTP and wFail * 1000 >= threshNum * wTotal then
   -- OPEN state must never expire: a missing key is treated as closed,
   -- which would silently admit unrestricted traffic and reset the generation.
   redis.call('PERSIST', KEYS[1])
-  return {2, 1, gen, wTotal, wFail}
+  return {2, 1, gen, wTotal, wFail, now}
 end
 if redis.call('EXISTS', KEYS[1]) == 1 then
   -- Still CLOSED.  The cleanup TTL must not expire the state before the window
   -- it governs, otherwise retained members would survive their epoch.
   redis.call('PEXPIRE', KEYS[1], math.max(closedCleanup, windowTtl))
 end
-return {1, 0, gen, wTotal, wFail}
+return {1, 0, gen, wTotal, wFail, 0}
 end
 local result = decide()
 local out = {1, revision, changedAt}
@@ -384,10 +775,13 @@ local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'openedAt',
-                     'probeCount', 'probeSuccesses')
+                     'probeCount', 'probeSuccesses', 'windowProbes',
+                     'windowStartedAt')
 local state     = f[1] or 'closed'
 local gen       = tonumber(f[2]) or 0
 local openedAt  = tonumber(f[3]) or 0
+local windowProbes   = tonumber(f[6]) or 0
+local windowStartedAt = tonumber(f[7]) or 0
 local transitioned = 0
 if state == 'closed' then
   return {0, 0, gen, 0, 0}
@@ -398,7 +792,10 @@ if state == 'open' then
   end
   state = 'half-open'
   transitioned = 1
-  redis.call('HSET', KEYS[1], 'state', 'half-open', 'probeSuccesses', 0, 'probeCount', 0)
+  windowProbes = 0
+  windowStartedAt = now
+  redis.call('HSET', KEYS[1], 'state', 'half-open', 'probeSuccesses', 0,
+             'probeCount', 0, 'windowProbes', 0, 'windowStartedAt', now)
   -- OPEN/HALF_OPEN must never expire; PERSIST removes any prior cleanup TTL.
   redis.call('PERSIST', KEYS[1])
   -- Tokens from the superseded recovery window must not consume slots in this
@@ -406,14 +803,42 @@ if state == 'open' then
   -- same window are dropped by the epoch-scoped window instead.
   redis.call('DEL', KEYS[2])
 end
-redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+-- Prune expired tokens before judging the window: a token whose lease elapsed
+-- belongs to a probe that will never report, so its in-flight slot is recoverable
+-- and its window budget goes back with it. A crashed worker cannot consume the
+-- window for good.
+local expired = redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+if expired > 0 then
+  local live = redis.call('ZCARD', KEYS[2])
+  if windowProbes > 0 then
+    windowProbes = math.max(0, windowProbes - expired)
+    redis.call('HSET', KEYS[1], 'windowProbes', windowProbes)
+  end
+  -- probeCount is informational, but it is asserted to match the token set.
+  redis.call('HSET', KEYS[1], 'probeCount', live)
+end
 local activeProbes = redis.call('ZCARD', KEYS[2])
-if activeProbes >= maxProbes then
+-- The recovery window is a rolling budget: halfOpenProbes probes per openMs. It
+-- refills on time rather than on an outcome, because an inconclusive result
+-- releases its in-flight slot but does not return its window budget. Otherwise a
+-- fleet whose probes are refused locally (an ignored result: the bulkhead, the
+-- timeout, a cancellation) turns every arriving request into a probe, and the
+-- breaker never reaches the successes it needs to close.
+if now - windowStartedAt >= openMs then
+  windowProbes = 0
+  windowStartedAt = now
+  redis.call('HSET', KEYS[1], 'windowProbes', 0, 'windowStartedAt', now)
+end
+if activeProbes >= maxProbes or windowProbes >= maxProbes then
+  -- probeCount is informational, but the conformance suite asserts it matches the
+  -- token set, and a rejection is exactly when a prune may have changed the set.
+  redis.call('HSET', KEYS[1], 'probeCount', activeProbes)
   return {0, 2, gen, activeProbes, transitioned}
 end
 redis.call('ZADD', KEYS[2], 'NX', now + probeLeaseTtl, probeToken)
 activeProbes = activeProbes + 1
-redis.call('HSET', KEYS[1], 'probeCount', activeProbes)
+windowProbes = windowProbes + 1
+redis.call('HSET', KEYS[1], 'probeCount', activeProbes, 'windowProbes', windowProbes)
 -- State hash must not expire while recovery probes are in flight.
 redis.call('PERSIST', KEYS[1])
 -- Probes sorted set expires naturally once the last lease elapses.
@@ -444,7 +869,7 @@ return out
  * ARGV[6] = windowTtlMs         observation retention (TTL floor): the CLOSED
  *                               hash must outlive the window it governs
  *
- * Returns: {status, stateCode, generation}
+ * Returns: {status, stateCode, generation, openedAt}
  *   status 0 = stale  (token missing, lease elapsed, or generation mismatch;
  *              the result is dropped and any consumed token is released)
  *   status 1 = settled, no state transition  (still HALF_OPEN; an "ignored"
@@ -452,6 +877,10 @@ return out
  *   status 2 = settled, state transition occurred
  *     stateCode 0 = transitioned to CLOSED
  *     stateCode 1 = transitioned back to OPEN  (probe failure)
+ *
+ * `openedAt` is the server's clock reading at which the breaker re-opened, or 0
+ * when this settle did not open it.  It is the authoritative origin of the
+ * recovery cooldown for the replica that observed the transition.
  *
  * A token carries its own deadline as its sorted-set score.  When the lease has
  * elapsed the slot is already recoverable - admitProbe prunes expired tokens
@@ -475,69 +904,81 @@ end
 local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
-local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'probeSuccesses', 'probeCount')
+local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'probeSuccesses', 'probeCount',
+                     'windowProbes')
 local state     = f[1] or 'closed'
 local gen       = tonumber(f[2]) or 0
 local probeSucc = tonumber(f[3]) or 0
 local probeCnt  = tonumber(f[4]) or 0
+local windowProbes = tonumber(f[5]) or 0
 local sc = (state == 'open' and 1) or (state == 'half-open' and 2) or 0
 local deadline = redis.call('ZSCORE', KEYS[2], probeToken)
 if not deadline then
   -- Never admitted, already settled, or dropped with its recovery window.
-  return {0, sc, gen}
+  return {0, sc, gen, 0}
 end
 redis.call('ZREM', KEYS[2], probeToken)
 if tonumber(deadline) <= now then
   -- The lease elapsed while the probe was still running: its slot was
   -- recoverable, so the result cannot be counted.  Release the slot it still
-  -- occupied so the probe count keeps matching the token set.
+  -- occupied so the probe count keeps matching the token set, and return its
+  -- window budget - a probe that will never report is not evidence of anything.
   probeCnt = math.max(0, probeCnt - 1)
-  redis.call('HSET', KEYS[1], 'probeCount', probeCnt)
-  return {0, sc, gen}
+  windowProbes = math.max(0, windowProbes - 1)
+  redis.call('HSET', KEYS[1], 'probeCount', probeCnt, 'windowProbes', windowProbes)
+  return {0, sc, gen, 0}
 end
 if state ~= 'half-open' or gen ~= expectGen then
   -- Unreachable while every generation change also discards the probe set: a
   -- token from another generation is already gone by the time it is looked up
   -- above. Kept as a guard in case that invariant is ever broken.
-  return {0, sc, gen}
+  return {0, sc, gen, 0}
 end
 probeCnt = math.max(0, probeCnt - 1)
 if outcome == 'ignored' then
-  -- The result was not recorded (the classifier ignored it), but the slot the
-  -- probe held must still be released: otherwise the recovery window stalls
-  -- until the probe lease elapses instead of letting the next probe through.
-  -- The local breaker releases its slot immediately, and this matches it: no
-  -- success counter advances and the state does not transition.
+  -- The result was not recorded (the classifier ignored it): no success counter
+  -- advances and the state does not transition. The in-flight slot is released,
+  -- but the window's probe budget is deliberately not returned to it. An
+  -- inconclusive result is not evidence that the dependency is reachable, and
+  -- recycling it would let the fleet turn every request into a probe - the
+  -- recovery window admits halfOpenProbes probes, not one per settlement.
   redis.call('HSET', KEYS[1], 'probeCount', probeCnt)
   -- Still HALF_OPEN: must not expire while recovery is in progress.
   redis.call('PERSIST', KEYS[1])
-  return {1, 2, gen}
+  return {1, 2, gen, 0}
 end
 if outcome == 'failure' then
   gen = gen + 1
   redis.call('HSET', KEYS[1], 'state', 'open', 'generation', gen,
-             'openedAt', now, 'probeCount', 0, 'probeSuccesses', 0)
+             'openedAt', now, 'probeCount', 0, 'probeSuccesses', 0,
+             'windowProbes', 0, 'windowStartedAt', 0)
   -- Re-opened: OPEN must not expire (see breakerObserveV1 TTL policy).
   redis.call('PERSIST', KEYS[1])
   -- In-flight probes belong to the dead generation; free their slots so the
   -- next recovery window starts with full capacity.
   redis.call('DEL', KEYS[2])
-  return {2, 1, gen}
+  return {2, 1, gen, now}
 end
 probeSucc = probeSucc + 1
 if probeSucc >= halfOpenSucc then
   gen = gen + 1
   redis.call('HSET', KEYS[1], 'state', 'closed', 'generation', gen,
-             'probeCount', 0, 'probeSuccesses', 0)
+             'probeCount', 0, 'probeSuccesses', 0,
+             'windowProbes', 0, 'windowStartedAt', 0)
   -- Newly CLOSED: expire for cleanup, but never before the window it governs.
   redis.call('PEXPIRE', KEYS[1], math.max(closedCleanup, windowTtl))
   redis.call('DEL', KEYS[2])
-  return {2, 0, gen}
+  return {2, 0, gen, 0}
 end
-redis.call('HSET', KEYS[1], 'probeSuccesses', probeSucc, 'probeCount', probeCnt)
+-- A counting outcome returns its slot to the window: a success is evidence the
+-- dependency is reachable, so further probes are safe, and recovery has to be
+-- able to accumulate halfOpenSuccesses within the window.
+windowProbes = math.max(0, windowProbes - 1)
+redis.call('HSET', KEYS[1], 'probeSuccesses', probeSucc, 'probeCount', probeCnt,
+           'windowProbes', windowProbes)
 -- Still HALF_OPEN: must not expire while recovery is in progress.
 redis.call('PERSIST', KEYS[1])
-return {1, 2, gen}
+return {1, 2, gen, 0}
 end
 local result = decide()
 local out = {1, revision, changedAt}

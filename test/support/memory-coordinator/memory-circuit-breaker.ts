@@ -28,6 +28,10 @@ type ScopeRecord = {
   observations: Observation[]
   /** token → expiresAt (ms) */
   probeTokens: Map<string, number>
+  /** Probes admitted in the current recovery window. */
+  windowProbes: number
+  /** When the current recovery window's budget started. */
+  windowStartedAt: number
 }
 
 function scopeKey(identity: BreakerIdentity): string {
@@ -57,6 +61,8 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
         probeSuccesses: 0,
         observations: [],
         probeTokens: new Map(),
+        windowProbes: 0,
+        windowStartedAt: 0,
       }
       scopes.set(key, rec)
     }
@@ -136,6 +142,7 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
           newGeneration: rec.generation,
           windowTotal: wTotal,
           windowFailures: wFail,
+          openedAt: now,
         } satisfies ObserveResult
       }
 
@@ -170,17 +177,41 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
             generation: rec.generation,
           } satisfies AdmitProbeResult
         }
-        // Transition OPEN → HALF_OPEN
+        // Transition OPEN → HALF_OPEN, opening a fresh recovery window.
         rec.state = "half-open"
         rec.probeSuccesses = 0
         rec.probeTokens.clear()
+        rec.windowProbes = 0
+        rec.windowStartedAt = now
         stateChanged = true
       }
 
-      // Prune expired probe tokens
+      // Prune expired probe tokens first. A token whose lease elapsed belongs to a
+      // probe that will never report, so its slot and its window budget both come
+      // back before the window is judged - a crashed worker cannot consume the
+      // window for good.
+      const before = rec.probeTokens.size
       pruneProbes(rec, now)
+      rec.windowProbes = Math.max(
+        0,
+        rec.windowProbes - (before - rec.probeTokens.size),
+      )
 
-      if (rec.probeTokens.size >= halfOpenProbes) {
+      // The recovery window is a rolling budget: halfOpenProbes probes per openMs.
+      // It refills on time rather than on an outcome, because an inconclusive
+      // result releases its in-flight slot but does not return its window budget.
+      if (now - rec.windowStartedAt >= openMs) {
+        rec.windowProbes = 0
+        rec.windowStartedAt = now
+      }
+
+      // The window is the budget, not the in-flight count: halfOpenProbes probes
+      // per recovery window, so an inconclusive result cannot be replaced by the
+      // next request that arrives.
+      if (
+        rec.probeTokens.size >= halfOpenProbes ||
+        rec.windowProbes >= halfOpenProbes
+      ) {
         return {
           type: "rejected",
           reason: "probe-limit",
@@ -189,6 +220,7 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
       }
 
       rec.probeTokens.set(probeToken, now + probeLeaseTtlMs)
+      rec.windowProbes += 1
       return {
         type: "admitted",
         generation: rec.generation,
@@ -218,6 +250,9 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
       // even when the lease has already elapsed.
       rec.probeTokens.delete(probeToken)
       if (expiresAt <= now) {
+        // The lease elapsed while the probe was still running: its slot is
+        // recoverable and its window budget goes back with it.
+        rec.windowProbes = Math.max(0, rec.windowProbes - 1)
         return {
           type: "stale",
           generation: rec.generation,
@@ -232,8 +267,10 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
       }
 
       if (outcome === "ignored") {
-        // Release only: the result is not recorded, no success counter advances
-        // and the state does not transition (matches the Lua script).
+        // Release only: the result is not recorded, no success counter advances and
+        // the state does not transition. The window's probe budget is deliberately
+        // not returned - an inconclusive result is not evidence the dependency is
+        // reachable (matches the Lua script).
         return {
           type: "settled",
           state: "half-open",
@@ -247,11 +284,14 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
         rec.openedAt = now
         rec.probeSuccesses = 0
         rec.probeTokens.clear()
+        rec.windowProbes = 0
+        rec.windowStartedAt = 0
         return {
           type: "transitioned",
           newState: "open",
           newGeneration: rec.generation,
           previousState: "half-open",
+          openedAt: now,
         } satisfies SettleProbeResult
       }
 
@@ -261,6 +301,8 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
         rec.state = "closed"
         rec.probeSuccesses = 0
         rec.probeTokens.clear()
+        rec.windowProbes = 0
+        rec.windowStartedAt = 0
         return {
           type: "transitioned",
           newState: "closed",
@@ -269,6 +311,10 @@ export function memoryBreakerCoordinator(): BreakerCoordinator & {
         } satisfies SettleProbeResult
       }
 
+      // A counting outcome returns its slot to the window: a success is evidence
+      // the dependency is reachable, and recovery has to be able to accumulate
+      // halfOpenSuccesses within the window.
+      rec.windowProbes = Math.max(0, rec.windowProbes - 1)
       return {
         type: "settled",
         state: "half-open",

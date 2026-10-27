@@ -1,0 +1,70 @@
+name: Serval fault lab
+
+# The fault lab is a research tool, not a gate: it spawns real processes, needs
+# Redis and takes minutes. Running it on a schedule keeps the published
+# trade-off curves honest - a regression in cost or admission behaviour shows up
+# as a changed table rather than as a claim nobody re-measured.
+on:
+  schedule:
+    # 04:23 UTC, after the nightly generated suites.
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      replicas:
+        description: Replica counts to sweep (CARACAL_LAB_REPLICAS)
+        required: false
+        default: "1,4"
+      seeds:
+        description: Paired seeds per cell (CARACAL_LAB_SEEDS)
+        required: false
+        default: "1,2,3"
+
+permissions: read-all
+
+concurrency:
+  group: serval-lab
+  cancel-in-progress: false
+
+jobs:
+  fault-lab:
+    name: Fault lab
+    runs-on: ubuntu-latest
+    services:
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The lab imports the strategy from src through tsx, so no build is needed.
+      - name: Run the sweep
+        run: npm run bench:serval
+        env:
+          CARACAL_REDIS_URL: redis://127.0.0.1:6379
+          CARACAL_LAB_REPLICAS: ${{ github.event.inputs.replicas || '1,4' }}
+          CARACAL_LAB_SEEDS: ${{ github.event.inputs.seeds || '1,2,3' }}
+
+      # Raw per-seed results, so a claim in the docs can be re-derived from the
+      # artifacts of the run that produced it.
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: serval-lab-results
+          path: bench/serval/results/
+          if-no-files-found: warn
+          retention-days: 30

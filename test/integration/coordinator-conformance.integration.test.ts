@@ -255,7 +255,7 @@ describe.skipIf(!url)("coordinator conformance — Lua edge cases", () => {
     expect(await client.pttl(hashKey)).toBeGreaterThan(0)
   })
 
-  it("releases an ignored probe without recording an outcome", async () => {
+  it("releases an ignored probe's slot without returning its window budget", async () => {
     const { coordinator, keys } = coordinatorFor()
     const [hashKey, , probeKey] = keys
     const generation = await openBreaker(coordinator)
@@ -286,7 +286,12 @@ describe.skipIf(!url)("coordinator conformance — Lua edge cases", () => {
     // Still HALF_OPEN, so the state hash stays persistent.
     expect(await client.pttl(hashKey)).toBe(-1)
 
-    // The released slot is immediately reusable.
+    // The slot is free, but the window's budget is not returned: an inconclusive
+    // result must not be recycled into another probe, or a fleet whose probes are
+    // all refused locally turns every arriving request into a probe. The budget
+    // refills on the cooldown instead, and ADMIT_OPEN_MS is zero here, so the next
+    // admission gets a fresh budget.
+    expect(Number(await client.hget(hashKey, "windowProbes"))).toBe(1)
     const readmitted = await coordinator.admitProbe(IDENTITY, {
       probeToken: randomUUID(),
       openMs: ADMIT_OPEN_MS,

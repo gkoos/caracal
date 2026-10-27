@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     redis: "src/redis.ts",
+    serval: "src/serval.ts",
     fetch: "src/fetch.ts",
     postgres: "src/postgres.ts",
     "aws-sdk": "src/aws-sdk.ts",
