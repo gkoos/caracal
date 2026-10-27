@@ -216,11 +216,20 @@ describe.skipIf(!url)("serval composition", () => {
     const held = new Promise<void>((resolve) => {
       release = resolve
     })
+    let entered: (() => void) | undefined
+    const reachedAdapter = new Promise<void>((resolve) => {
+      entered = resolve
+    })
     // A local bulkhead of one is the tighter bound; the delegated allocation is four.
     const op = composedOperation({
       namespace,
       replica: replicaSet,
       execute: async () => {
+        // Reaching the adapter means every layer's permit is held. Waiting for that is what
+        // makes the second execution a deterministic refusal instead of a race: it has to
+        // pass the delegated layers before it can meet the local guardrail, so starting it
+        // earlier can let it take the only local permit and deadlock the case.
+        entered?.()
         await held
         return "ok"
       },
@@ -231,8 +240,8 @@ describe.skipIf(!url)("serval composition", () => {
     })
 
     const first = op.execute(undefined)
+    await reachedAdapter
     const second = op.execute(undefined)
-    await new Promise((resolve) => setTimeout(resolve, 0))
 
     // The local guardrail refuses what the delegated layer would have admitted.
     const rejected = await second.catch((error) => error)

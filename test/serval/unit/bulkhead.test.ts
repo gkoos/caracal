@@ -644,11 +644,18 @@ describe("serval bulkhead in the policy path", () => {
     const held = new Promise<void>((resolve) => {
       release = resolve
     })
+    let entered = 0
+    let bothEntered: (() => void) | undefined
+    const holding = new Promise<void>((resolve) => {
+      bothEntered = resolve
+    })
     const slow = operation({
       name: TEST_BULKHEAD_IDENTITY.operation,
       adapter: {
         capabilities: () => ({ abort: "supported", replay: "safe" }) as const,
         execute: async () => {
+          entered += 1
+          if (entered === 2) bothEntered?.()
           await held
           return "ok"
         },
@@ -664,10 +671,12 @@ describe("serval bulkhead in the policy path", () => {
       policies: [policy],
     })
 
-    // Two executions hold both slots until they settle.
+    // Two executions hold both slots until they settle. Waiting until both have reached the
+    // adapter is what makes the third a deterministic refusal: reaching it means each is
+    // holding its slot, so this cannot depend on how quickly the first two get there.
     const first = slow.execute(undefined)
     const second = slow.execute(undefined)
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await holding
 
     const rejected = await quick.execute(undefined).catch((error) => error)
     expect(rejected).toBeInstanceOf(BulkheadRejectedError)
