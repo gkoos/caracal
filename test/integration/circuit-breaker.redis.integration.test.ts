@@ -751,4 +751,83 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
     await makeOp(ignoring, work, events).execute(undefined)
     expect(ran).toBe(1)
   })
+
+  it("bounds probes in flight, not probes per recovery window", async () => {
+    // Pinned defect. `halfOpenProbes` is enforced as ZCARD over the probe token set,
+    // and every settle removes its token - so a probe that fails in a millisecond
+    // frees its slot immediately and the next admission takes it. The budget bounds
+    // probes *in flight*, not probes per recovery window.
+    //
+    // That is invisible while the breaker is OPEN, because the cooldown refuses every
+    // admission. It is a storm while the breaker is HALF_OPEN and the dependency is
+    // failing - which is where the delegated topology sits during a failure: it
+    // forwards every admission to the authority in that state, the core counts each
+    // admitted one as a probe in flight, and the breaker never closes.
+    //
+    // When the budget becomes per window, this test should assert
+    // `admissions <= halfOpenProbes` and this comment should go.
+    const namespace = `test-${randomUUID()}`
+    track(namespace)
+    const coordinator = makeCoordinator(namespace)
+    const identity = { name: "breaker", operation: "work", scope: "shared" }
+    const probeLeaseTtlMs = 60_000
+    const halfOpenProbes = 3
+
+    // Open it: one failure against a threshold of one.
+    const opened = await coordinator.observe(identity, {
+      generation: 0,
+      outcome: "failure",
+      uuid: randomUUID(),
+      windowTtlMs: 60_000,
+      minimumThroughput: 1,
+      failureThresholdNumerator: 500,
+      windowSize: 20,
+      openMs: 60_000,
+      closedCleanupMs: 60_000,
+    })
+    expect(opened).toMatchObject({ type: "opened" })
+
+    // Phase A - OPEN and cooling. The same loop admits nothing, which is what keeps
+    // the strict path safe: it stays OPEN for the whole failure.
+    let coolingReason = ""
+    for (let index = 0; index < 20; index += 1) {
+      const refused = await coordinator.admitProbe(identity, {
+        probeToken: randomUUID(),
+        openMs: 60_000,
+        halfOpenProbes,
+        probeLeaseTtlMs,
+      })
+      if (refused.type !== "rejected") break
+      coolingReason = refused.reason
+    }
+    expect(coolingReason).toBe("open")
+
+    // Phase B - the cooldown has elapsed, so the first attempt transitions to
+    // HALF_OPEN and every later attempt is admitted as fast as the previous probe
+    // settles. 200 attempts, 200 admissions.
+    let admissions = 0
+    for (let index = 0; index < 200; index += 1) {
+      const token = randomUUID()
+      const admitted = await coordinator.admitProbe(identity, {
+        probeToken: token,
+        openMs: 0,
+        halfOpenProbes,
+        probeLeaseTtlMs,
+      })
+      if (admitted.type !== "admitted") break
+      admissions += 1
+      const settled = await coordinator.settleProbe(identity, {
+        probeToken: token,
+        outcome: "failure",
+        generation: admitted.generation,
+        halfOpenSuccesses: 1,
+        openMs: 0,
+        closedCleanupMs: 60_000,
+        windowTtlMs: 60_000,
+      })
+      if (settled.type !== "transitioned") break
+    }
+
+    expect(admissions).toBe(200)
+  })
 })
