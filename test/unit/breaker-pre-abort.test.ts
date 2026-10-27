@@ -370,9 +370,12 @@ describe.each(["local", "distributed"] as const)(
         })
         expect(state?.state).toBe("half-open")
 
-        // The slot is free again, so recovery is not stalled behind the
-        // cancelled call: the next probe runs and closes the breaker.
+        // The cancelled probe released its slot but consumed the window's budget:
+        // it produced no evidence. The budget refills on the cooldown, so recovery
+        // resumes once it has passed - which is what keeps a fleet of refused
+        // probes from turning every request into a probe.
         failure = false
+        await new Promise((resolve) => setTimeout(resolve, 20))
         await expect(op.execute(undefined)).resolves.toBe("ok")
         expect(observed(events)).toEqual(["failure", "success"])
         expect(stateChanges(events)).toEqual(["open", "half-open", "closed"])

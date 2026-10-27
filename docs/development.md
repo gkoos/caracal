@@ -45,7 +45,7 @@ npm run check
 | `npm run test:integration:redis` | Starts Valkey unless `CARACAL_REDIS_URL` is set, runs the Redis integration files, and leaves the service running. |
 | `npm run postgres:up` | Starts the PostgreSQL container and waits for readiness. |
 | `npm run postgres:down` | Stops the Compose services. |
-| `npm run test:integration:postgres` | Starts PostgreSQL, sets `CARACAL_POSTGRES_URL`, and runs the full integration suite. |
+| `npm run test:integration:postgres` | Starts PostgreSQL, sets `CARACAL_POSTGRES_URL`, and runs the PostgreSQL and fetch suites. |
 | `npm run test:integration:cluster` | Starts a three-master Valkey cluster, sets `CARACAL_REDIS_CLUSTER_URLS`, and runs the cluster suite. |
 | `npm run test:integration:soak` | Starts Valkey unless `CARACAL_REDIS_URL` is set, then runs the soak and chaos suite. |
 | `npm run bench:gate` | Builds, then runs the benchmark and fails on a machine-independent regression. |
@@ -122,7 +122,7 @@ npm run test:integration:postgres
 npm run postgres:down
 ```
 
-`npm run test:integration:postgres` starts PostgreSQL with Compose, sets `CARACAL_POSTGRES_URL` (default `postgresql://caracal:caracal@127.0.0.1:5432/caracal`), and runs the full integration suite. Redis-dependent tests inside that suite still need `CARACAL_REDIS_URL`; set it to include them. The helper leaves the service running for inspection.
+`npm run test:integration:postgres` starts PostgreSQL with Compose, sets `CARACAL_POSTGRES_URL` (default `postgresql://caracal:caracal@127.0.0.1:5432/caracal`), and runs the PostgreSQL and fetch suites. Redis-dependent tests inside those suites still need `CARACAL_REDIS_URL`; set it to include them. The helper leaves the service running for inspection.
 
 `CARACAL_POSTGRES_URL` overrides the connection string, but the helper still starts the local Compose service. To run against an existing instance without Compose, export the URL and use `npm run test:integration` directly.
 
@@ -169,19 +169,6 @@ npm run bench
 Runs the baseline local-policy benchmark after a fresh build. Output shows median and p99 latency in µs and throughput in operations/second for each policy combination. These numbers are a floor for performance regression detection, not load benchmarks.
 
 It then compares `EVAL` against `EVALSHA` for the Lua scripts the coordinators actually ship. The Lua bodies are captured from the wire through a byte-counting proxy, so the benchmark cannot drift from the implementation; it reports request bytes per call (measured from the socket), sequential and burst throughput, and server `usec_per_call` from `INFO commandstats`. This section needs a reachable Redis - start one with `npm run redis:up`, or point it elsewhere with `CARACAL_REDIS_URL` or `--redis-url=redis://host:6379`. Without one it prints a skip notice and the local numbers are unaffected. See [Redis coordination](redis.md) for the transport trade-off it quantifies.
-
-## Executable claims
-
-Prose is only a contract while something fails when it stops being true, so the documentation and the public surface are guarded by tests that derive their expectations from the code rather than restating it:
-
-| Guard | Checks |
-|---|---|
-| `test/unit/package-contract.test.ts` | every document's Node-floor mention states the `engines` floor (including the `(>= x)` phrasing), `engines` matches the runtime features, each entry point's source is published, and `SECURITY.md` tracks the package version |
-| `test/unit/event-surface.test.ts` | every member of the `OperationEvent` union has an emitting source, a reference-table row, and a place in each page's "Relevant events" list - and no page lists an event that no longer exists |
-| `test/unit/type-surface.test.ts` | every type the documentation names is importable from a build entry, following name-scoped re-export chains |
-| `test/unit/docs-claims.test.ts` | the `Retry-After` worst case, `node:check`'s floor against `engines`, every exported value being named in the docs, the shape of each policy object, and the error reference |
-
-Adding an event, an export or a documented number without updating these is a red test, not a review comment. `test/support/package-surface.ts` holds the entry and documentation readers they share.
 
 ## Soak and chaos
 

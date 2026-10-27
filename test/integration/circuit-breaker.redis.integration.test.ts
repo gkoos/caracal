@@ -712,19 +712,31 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
       "probes",
     )
 
-    // Open the breaker, then let the OPEN window elapse (openMs: 1).
-    await drive(
-      makeOp(makePolicy(namespace, { minimumThroughput: 5, openMs: 1 }), () =>
-        Promise.reject(new Error("boom")),
-      ),
-      5,
+    // Seed a live HALF_OPEN recovery window: the OPEN window has long elapsed, and
+    // the window itself still has time left, so the ignored result is the only
+    // thing under test.
+    await client.hset(
+      hashKey,
+      "state",
+      "half-open",
+      "generation",
+      "1",
+      "openedAt",
+      String(Date.now() - 60_000),
+      "probeCount",
+      "0",
+      "probeSuccesses",
+      "0",
+      "windowProbes",
+      "0",
+      "windowOpenedAt",
+      String(Date.now()),
     )
-    await new Promise((resolve) => setTimeout(resolve, 30))
 
     // The probe is admitted, runs, and its result is ignored.
     const ignoring = makePolicy(namespace, {
       minimumThroughput: 5,
-      openMs: 1,
+      openMs: 30_000,
       classify: () => "ignored" as const,
     })
     const events: OperationEvent[] = []
@@ -741,14 +753,191 @@ describe.skipIf(!url)("distributed circuit breaker — Redis integration", () =>
     expect(Number(await client.hget(hashKey, "probeCount"))).toBe(0)
     expect(Number(await client.hget(hashKey, "probeSuccesses"))).toBe(0)
     expect(await client.zcard(probesKey)).toBe(0)
+    // The in-flight slot is released, but the window's probe budget is not: an
+    // inconclusive result must not be recycled into another probe.
+    expect(Number(await client.hget(hashKey, "windowProbes"))).toBe(1)
     expect(events.filter((e) => e.type === "breaker.observation")).toHaveLength(
       0,
     )
 
-    // The released slot means the next call is admitted immediately rather than
-    // rejected until the probe lease elapses.
+    // The next probe is admitted because the window still has budget - the default
+    // halfOpenProbes is 2 - rather than because the slot came back.
     ran = 0
     await makeOp(ignoring, work, events).execute(undefined)
     expect(ran).toBe(1)
+    expect(Number(await client.hget(hashKey, "windowProbes"))).toBe(2)
+  })
+
+  it("admits at most halfOpenProbes probes per recovery window", async () => {
+    // Desired behaviour. `halfOpenProbes` currently bounds probes *in flight*:
+    // every settle removes its token, so a probe that produces no result frees its
+    // slot instantly - without re-opening the breaker and without starting a
+    // cooldown. An "ignored" result is exactly that (the classifier ignores
+    // admission refusals, cancellations and superseded attempts), so the recovery
+    // window admits one probe per settlement rather than three.
+    //
+    // That is invisible while the breaker is OPEN, because the cooldown refuses
+    // every admission. It is a storm while it is HALF_OPEN - which is where the
+    // delegated topology sits during a failure, because a replica holding a cached
+    // HALF_OPEN verdict forwards every admission to the authority. The fleet turns
+    // every request into a probe (study 23: 512 probes against a configured 3, and
+    // no CLOSED transition), while the strict path stays OPEN and never spends the
+    // budget: 3 probes, then closed.
+    //
+    // The recovery window, not the in-flight count, is the budget: three probes are
+    // admitted while the window lasts, and an inconclusive result does not return a
+    // slot to it.
+    const namespace = `test-${randomUUID()}`
+    track(namespace)
+    const coordinator = makeCoordinator(namespace)
+    const identity = { name: "breaker", operation: "work", scope: "shared" }
+    const probeLeaseTtlMs = 60_000
+    const halfOpenProbes = 3
+    const openMs = 5_000
+
+    // Open it: one failure against a threshold of one.
+    const opened = await coordinator.observe(identity, {
+      generation: 0,
+      outcome: "failure",
+      uuid: randomUUID(),
+      windowTtlMs: 60_000,
+      minimumThroughput: 1,
+      failureThresholdNumerator: 500,
+      windowSize: 20,
+      openMs: 60_000,
+      closedCleanupMs: 60_000,
+    })
+    expect(opened).toMatchObject({ type: "opened" })
+
+    // Phase A - OPEN and cooling. The same loop admits nothing, which is what keeps
+    // the strict path safe: it stays OPEN for the whole failure.
+    let coolingReason = ""
+    for (let index = 0; index < 20; index += 1) {
+      const refused = await coordinator.admitProbe(identity, {
+        probeToken: randomUUID(),
+        openMs: 60_000,
+        halfOpenProbes,
+        probeLeaseTtlMs,
+      })
+      if (refused.type !== "rejected") break
+      coolingReason = refused.reason
+    }
+    expect(coolingReason).toBe("open")
+
+    // Phase B - the cooldown has elapsed, so this attempt enters the recovery
+    // window. Every later attempt is fed an inconclusive result: the probe runs,
+    // reports nothing usable, and settles as "ignored" while the breaker stays
+    // HALF_OPEN.
+    const first = await coordinator.admitProbe(identity, {
+      probeToken: randomUUID(),
+      openMs: 0,
+      halfOpenProbes,
+      probeLeaseTtlMs,
+    })
+    expect(first).toMatchObject({ type: "admitted" })
+
+    let admissions = 0
+    for (let index = 0; index < 200; index += 1) {
+      const token = randomUUID()
+      const admitted = await coordinator.admitProbe(identity, {
+        probeToken: token,
+        openMs,
+        halfOpenProbes,
+        probeLeaseTtlMs,
+      })
+      if (admitted.type !== "admitted") break
+      admissions += 1
+      const settled = await coordinator.settleProbe(identity, {
+        probeToken: token,
+        outcome: "ignored",
+        generation: admitted.generation,
+        halfOpenSuccesses: 1,
+        openMs,
+        closedCleanupMs: 60_000,
+        windowTtlMs: 60_000,
+      })
+      if (settled.type !== "settled") break
+    }
+
+    // Three probes per recovery window - not one per settlement.
+    expect(admissions).toBeLessThanOrEqual(halfOpenProbes)
+  })
+
+  it("refills the probe budget on the cooldown, not on an outcome", async () => {
+    // Liveness for the window budget. A window whose probes all report nothing
+    // spends its budget without reaching a verdict, so it must not stay HALF_OPEN
+    // forever: after its own cooldown it re-opens, and the next window starts with
+    // full capacity.
+    const namespace = `test-${randomUUID()}`
+    track(namespace)
+    const coordinator = makeCoordinator(namespace)
+    const identity = { name: "breaker", operation: "work", scope: "shared" }
+    const hashKey = coordinationKey(
+      namespace,
+      "breaker:breaker",
+      "work",
+      "shared",
+      "breaker",
+    )
+    const openMs = 300
+    const halfOpenProbes = 1
+    const probeLeaseTtlMs = 300
+
+    const opened = await coordinator.observe(identity, {
+      generation: 0,
+      outcome: "failure",
+      uuid: randomUUID(),
+      windowTtlMs: 60_000,
+      minimumThroughput: 1,
+      failureThresholdNumerator: 500,
+      windowSize: 20,
+      openMs: 60_000,
+      closedCleanupMs: 60_000,
+    })
+    expect(opened).toMatchObject({ type: "opened" })
+
+    // Enter the window and spend its single probe on an inconclusive result.
+    const token = randomUUID()
+    const admitted = await coordinator.admitProbe(identity, {
+      probeToken: token,
+      openMs: 0,
+      halfOpenProbes,
+      probeLeaseTtlMs,
+    })
+    expect(admitted).toMatchObject({ type: "admitted" })
+    await coordinator.settleProbe(identity, {
+      probeToken: token,
+      outcome: "ignored",
+      generation: admitted.type === "admitted" ? admitted.generation : 0,
+      halfOpenSuccesses: 1,
+      openMs,
+      closedCleanupMs: 60_000,
+      windowTtlMs: 60_000,
+    })
+    expect(await client.hget(hashKey, "state")).toBe("half-open")
+
+    // Budget spent, and it does not come back because the result was inconclusive:
+    // the next admission inside the cooldown is refused.
+    const spent = await coordinator.admitProbe(identity, {
+      probeToken: randomUUID(),
+      openMs,
+      halfOpenProbes,
+      probeLeaseTtlMs,
+    })
+    expect(spent).toMatchObject({ type: "rejected", reason: "probe-limit" })
+
+    await new Promise((resolve) => setTimeout(resolve, openMs + 100))
+
+    // The cooldown has passed: the window refills on time, so recovery is not
+    // stuck behind an inconclusive result.
+    const refilled = await coordinator.admitProbe(identity, {
+      probeToken: randomUUID(),
+      openMs,
+      halfOpenProbes,
+      probeLeaseTtlMs,
+    })
+    expect(refilled).toMatchObject({ type: "admitted" })
+    expect(Number(await client.hget(hashKey, "windowProbes"))).toBe(1)
+    expect(await client.hget(hashKey, "state")).toBe("half-open")
   })
 })

@@ -14,9 +14,11 @@ export function readSource(relative: string): string {
 }
 
 export function docsPages(): string[] {
-  return readdirSync(new URL("../../docs", import.meta.url))
-    .filter((name) => name.endsWith(".md"))
-    .map((name) => `docs/${name}`)
+  return readdirSync(new URL("../../docs", import.meta.url), {
+    recursive: true,
+  })
+    .map((name) => `docs/${String(name).replaceAll("\\", "/")}`)
+    .filter((file) => file.endsWith(".md"))
 }
 
 /** Every TypeScript file the package builds or ships, as repo-relative paths. */

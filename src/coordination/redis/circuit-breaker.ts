@@ -226,11 +226,12 @@ export function redisCircuitBreakerCoordinator(
           uuid,
           revisions.get(configurationKey),
         )
-        const envelope = decodeEnvelope(reply, 5, "breakerObserveV1")
+        const envelope = decodeEnvelope(reply, 6, "breakerObserveV1")
         if (envelope.revision > 0)
           revisions.set(configurationKey, envelope.revision)
         assertBody(envelope.body)
-        const [status, , newGen, windowTotal, windowFailures] = envelope.values
+        const [status, , newGen, windowTotal, windowFailures, openedAt] =
+          envelope.values
         if (status === 0) {
           return {
             type: "stale",
@@ -243,6 +244,8 @@ export function redisCircuitBreakerCoordinator(
             newGeneration: newGen,
             windowTotal,
             windowFailures,
+            openedAt,
+            revision: envelope.revision,
           } satisfies ObserveResult
         }
         return {
@@ -334,11 +337,11 @@ export function redisCircuitBreakerCoordinator(
           windowTtlMs ?? cleanup,
           revisions.get(configurationKey),
         )
-        const envelope = decodeEnvelope(reply, 3, "breakerSettleProbeV1")
+        const envelope = decodeEnvelope(reply, 4, "breakerSettleProbeV1")
         if (envelope.revision > 0)
           revisions.set(configurationKey, envelope.revision)
         assertBody(envelope.body)
-        const [status, stateCode, newGen] = envelope.values
+        const [status, stateCode, newGen, openedAt] = envelope.values
         if (status === 0) {
           return {
             type: "stale",
@@ -352,6 +355,9 @@ export function redisCircuitBreakerCoordinator(
             newState: state,
             newGeneration: newGen,
             previousState: "half-open",
+            // A transition to CLOSED has no cooldown, so it carries no open time.
+            ...(state === "open" ? { openedAt } : {}),
+            revision: envelope.revision,
           } satisfies SettleProbeResult
         }
         return {

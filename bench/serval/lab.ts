@@ -1,0 +1,583 @@
+import { execFileSync, fork } from "node:child_process"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+import { startDownstream, type DownstreamMode } from "./downstream.js"
+import {
+  percentile,
+  type Metrics,
+  type Profile,
+  type RunCell,
+} from "./worker.js"
+
+/**
+ * The Serval fault lab.
+ *
+ * It runs the same offered workload through real worker processes, a real Redis and a
+ * controlled downstream, and compares four profiles: unprotected, the existing strict
+ * Redis coordinators, Serval, and Serval with a local guardrail. Nothing here is part
+ * of `npm test`: the point is to measure trade-offs, not to gate a commit.
+ *
+ * What it is careful about, deliberately:
+ *
+ * - **Paired, seeded runs.** The offered schedule is derived from the seed - the waits between
+ *   offers come from a seeded generator - so every profile sees the same cells, the same load and
+ *   the same seeds, and a difference between profiles is attributable.
+ * - **Physical work is measured at the dependency**, not inferred from any
+ *   coordinator's accounting: a client that walks away does not stop the server, and
+ *   the overshoot area is integrated from the server's own concurrency.
+ * - **The critical interaction is its own cell**: the dependency slows *while* Redis
+ *   is unavailable, which is where redistributed capacity could amplify a stressed
+ *   dependency.
+ *
+ *   npm run bench:serval
+ */
+
+interface CellSpec {
+  readonly name: string
+  readonly mode: DownstreamMode
+  /** True when every replica loses Redis; `partition` isolates a subset instead. */
+  readonly redisOutage: boolean
+  /** How many replicas are partitioned from Redis while the rest stay healthy. */
+  readonly partition: number
+  /**
+   * Offers served against the healthy authority before that replica's connection is cut.
+   * Present only for a warm-outage cell: the replica is served first, so it holds a verdict,
+   * a grant and an allocation when the authority goes away.
+   */
+  readonly warmUpOffers?: number
+  /** Per-cell overrides, so a warm-outage cell can outlive the windows it is holding. */
+  readonly offers?: number
+  readonly intervalMs?: number
+  /** The failure rate for an `intermittent` cell. Default `1/3`. */
+  readonly failureRate?: number
+  /** Breaker thresholds, so a fault cell decides when the breaker may open. */
+  readonly breaker?: {
+    readonly minimumThroughput: number
+    readonly failureThreshold: number
+  }
+}
+
+const PROFILES: readonly Profile[] = [
+  "unprotected",
+  "strict",
+  "serval",
+  "serval-guarded",
+]
+
+const CELLS: readonly CellSpec[] = [
+  { name: "healthy", mode: "healthy", redisOutage: false, partition: 0 },
+  { name: "downstream-slow", mode: "slow", redisOutage: false, partition: 0 },
+  { name: "redis-outage", mode: "healthy", redisOutage: true, partition: 0 },
+  // The critical interaction: a stressed dependency while coordination is gone.
+  { name: "slow+outage", mode: "slow", redisOutage: true, partition: 0 },
+  { name: "slow+partition", mode: "slow", redisOutage: false, partition: 1 },
+  // The warm counterpart of the outage cells: every replica starts against the healthy
+  // authority, is cut off mid-run, and keeps serving from what it already holds. The longer
+  // interval is deliberate - the run has to outlive the windows (1s for the verdict and the
+  // grant, 5s for the allocation) for the lapse to appear in the same cell.
+  {
+    name: "warm-outage",
+    mode: "healthy",
+    redisOutage: true,
+    partition: 0,
+    warmUpOffers: 6,
+    offers: 30,
+    intervalMs: 60,
+  },
+  // The dependency is down. The thresholds are the cell's rather than the distributed default,
+  // which needs twenty observations before it may open at all; the run is long enough to leave
+  // the open window (openMs is 500) and show the half-open probes.
+  {
+    name: "downstream-failing",
+    mode: "failing",
+    redisOutage: false,
+    partition: 0,
+    offers: 40,
+    intervalMs: 25,
+    breaker: { minimumThroughput: 5, failureThreshold: 0.5 },
+  },
+  // A dependency that is up sometimes: a third of responses fail, and the threshold sits below
+  // that rate so the breaker still opens. The pattern is seeded, so every profile meets the same
+  // schedule of failures rather than whichever third the timing happened to land on.
+  {
+    name: "downstream-intermittent",
+    mode: "intermittent",
+    redisOutage: false,
+    partition: 0,
+    offers: 40,
+    intervalMs: 25,
+    failureRate: 1 / 3,
+    breaker: { minimumThroughput: 5, failureThreshold: 0.3 },
+  },
+]
+
+interface RunResult {
+  readonly profile: Profile
+  readonly cell: string
+  readonly replicas: number
+  readonly seed: number
+  readonly intervalMs: number
+  readonly metrics: Metrics
+  readonly physical: {
+    readonly peak: number
+    readonly overshootArea: number
+    readonly aboveTargetMs: number
+    /** What the dependency itself worked on, and how much of it failed. */
+    readonly started: number
+    readonly failed: number
+  }
+  readonly error?: string
+}
+
+interface WorkerHandle {
+  readonly child: ReturnType<typeof fork>
+  send(cell: RunCell): Promise<Metrics>
+  stop(): void
+}
+
+function spawnWorker(redisUrl: string): WorkerHandle {
+  const child = fork(
+    fileURLToPath(new URL("./worker.ts", import.meta.url)),
+    [],
+    {
+      execArgv: ["--import", "tsx"],
+      env: { ...process.env, CARACAL_REDIS_URL: redisUrl },
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    },
+  )
+  let pending:
+    | { resolve(metrics: Metrics): void; reject(error: Error): void }
+    | undefined
+  child.on("message", (message: { metrics?: Metrics; error?: string }) => {
+    // The worker announces itself before any run; only a run result settles one.
+    if (message.metrics === undefined && message.error === undefined) return
+    const current = pending
+    pending = undefined
+    if (current === undefined) return
+    if (message.error !== undefined) current.reject(new Error(message.error))
+    else if (message.metrics !== undefined) current.resolve(message.metrics)
+  })
+  child.on("exit", (code) => {
+    const current = pending
+    pending = undefined
+    current?.reject(new Error(`a worker exited with code ${code}`))
+  })
+  return {
+    child,
+    send(cell) {
+      return new Promise<Metrics>((resolve, reject) => {
+        pending = { resolve, reject }
+        child.send({ action: "run", cell })
+      })
+    },
+    stop() {
+      if (child.exitCode === null) {
+        try {
+          child.send({ action: "stop" })
+        } catch {
+          // The worker is already gone.
+        }
+        // A worker that cannot shut down cleanly must not keep the run alive.
+        setTimeout(() => {
+          if (child.exitCode === null) child.kill("SIGKILL")
+        }, 500).unref()
+      }
+    },
+  }
+}
+
+function numbers(environment: string, fallback: readonly number[]): number[] {
+  const configured = process.env[environment]
+  if (configured === undefined || configured === "") return [...fallback]
+  return configured
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value > 0)
+}
+
+function revision(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim()
+  } catch {
+    return "unknown"
+  }
+}
+
+/**
+ * How the shared-count columns combine across replicas.
+ *
+ * The strict path keeps one number in Redis - the bulkhead's occupancy, the breaker's state and
+ * observations - which every replica reads a view of, so the fleet figure is the largest view
+ * rather than a multiple of it. The delegated profiles count per process, and those are summed:
+ * the safety claim compares observed tracked occupancy against the sum of the local ceilings, so a
+ * per-replica maximum would understate it. Refusal counts are per-call totals either way and are
+ * summed for every profile.
+ */
+function sharedAcross(profile: Profile): "sum" | "max" {
+  return profile === "strict" ? "max" : "sum"
+}
+
+/** Sums the counters and merges the samples of one cell's replicas. */
+function aggregate(
+  runs: readonly Metrics[],
+  shared: "sum" | "max" = "sum",
+): Metrics {
+  const endToEnd = runs.flatMap((run) => [...run.endToEnd])
+  const admissionLatency = runs.flatMap((run) => [...run.admissionLatency])
+  const total = (pick: (run: Metrics) => number): number =>
+    runs.reduce((sum, run) => sum + pick(run), 0)
+  return {
+    offered: total((run) => run.offered),
+    ok: total((run) => run.ok),
+    rejectedRate: total((run) => run.rejectedRate),
+    rejectedBulkhead: total((run) => run.rejectedBulkhead),
+    failed: total((run) => run.failed),
+    other: total((run) => run.other),
+    redisOps: total((run) => run.redisOps),
+    okBeforeCut: total((run) => run.okBeforeCut),
+    okAfterCut: total((run) => run.okAfterCut),
+    rejectedBreaker: total((run) => run.rejectedBreaker),
+    peakTracked:
+      shared === "max"
+        ? Math.max(0, ...runs.map((run) => run.peakTracked))
+        : total((run) => run.peakTracked),
+    breakerOpens:
+      shared === "max"
+        ? Math.max(0, ...runs.map((run) => run.breakerOpens))
+        : total((run) => run.breakerOpens),
+    breakerHalfOpens:
+      shared === "max"
+        ? Math.max(0, ...runs.map((run) => run.breakerHalfOpens))
+        : total((run) => run.breakerHalfOpens),
+    breakerProbes:
+      shared === "max"
+        ? Math.max(0, ...runs.map((run) => run.breakerProbes))
+        : total((run) => run.breakerProbes),
+    // Not a counter: every replica of a profile ran the same seeded schedule, so the digest is
+    // the same in each and the first is the profile's.
+    scheduleDigest: runs[0]?.scheduleDigest ?? 0,
+    admissionLatency,
+    endToEnd,
+  }
+}
+
+/**
+ * One cell/profile/replica-count group.
+ *
+ * Peak occupancy is a peak, not a total, and it combines on two axes: the replicas of one seed are
+ * combined by that profile's accounting (summed per process, largest view for the shared strict
+ * count), and the seeds are independent runs, so the fleet figure is the largest of them rather
+ * than their sum. The counters are totals over every run either way.
+ */
+function groupMetrics(bucket: readonly RunResult[], profile: Profile): Metrics {
+  const bySeed = new Map<number, Metrics[]>()
+  for (const result of bucket) {
+    const runs = bySeed.get(result.seed) ?? []
+    runs.push(result.metrics)
+    bySeed.set(result.seed, runs)
+  }
+  return aggregate(
+    [...bySeed.values()].map((runs) => aggregate(runs, sharedAcross(profile))),
+    "max",
+  )
+}
+
+function report(
+  results: readonly RunResult[],
+  config: {
+    readonly redisUrl: string
+    readonly replicaCounts: readonly number[]
+    readonly seeds: readonly number[]
+    readonly offers: number
+    readonly intervalMs: number
+    readonly target: number
+    readonly cells: readonly CellSpec[]
+  },
+): void {
+  const groups = new Map<string, RunResult[]>()
+  for (const result of results) {
+    const key = `${result.cell}|${result.profile}|${result.replicas}`
+    const bucket = groups.get(key) ?? []
+    bucket.push(result)
+    groups.set(key, bucket)
+  }
+
+  console.log(
+    `\nServal fault lab - ${config.offers} offers per replica at ${config.intervalMs}ms, target ${config.target}, revision ${revision()}`,
+  )
+  console.log(
+    `profiles ${PROFILES.join(", ")} | replicas ${config.replicaCounts.join(", ")} | seeds ${config.seeds.join(", ")}\n`,
+  )
+
+  for (const cell of config.cells) {
+    const cellOffers = cell.offers ?? config.offers
+    const cellInterval = cell.intervalMs ?? config.intervalMs
+    const fault =
+      cell.warmUpOffers !== undefined
+        ? ` - Redis cut after ${cell.warmUpOffers} offers`
+        : cell.mode === "failing"
+          ? " - the dependency answers 503"
+          : cell.mode === "intermittent"
+            ? ` - the dependency fails ${Math.round((cell.failureRate ?? 1 / 3) * 100)}% of responses`
+            : cell.redisOutage
+              ? " - Redis unavailable"
+              : ""
+    console.log(
+      `cell ${cell.name} - ${cellOffers} offers at ${cellInterval}ms +/-50%${fault}${cell.partition > 0 ? ` - ${cell.partition} replica partitioned` : ""}`,
+    )
+    console.log(
+      "  profile         rep  offered   ok  ok-post  rej-rate  rej-bulk  rej-break  failed  redis/off  p95-ms  peak-tracked  peak-physical  overshoot-area",
+    )
+    for (const profile of PROFILES) {
+      for (const replicas of config.replicaCounts) {
+        const bucket = groups.get(`${cell.name}|${profile}|${replicas}`) ?? []
+        const metrics = groupMetrics(bucket, profile)
+        const peakPhysical = Math.max(
+          ...bucket.map((result) => result.physical.peak),
+          0,
+        )
+        const overshootArea = bucket.reduce(
+          (sum, result) => sum + result.physical.overshootArea,
+          0,
+        )
+        const redisPerOffer =
+          metrics.offered === 0 ? 0 : metrics.redisOps / metrics.offered
+        console.log(
+          `  ${profile.padEnd(15)}${String(replicas).padStart(3)}  ${String(metrics.offered).padStart(7)}  ${String(metrics.ok).padStart(4)}  ${String(metrics.okAfterCut).padStart(8)}  ${String(metrics.rejectedRate).padStart(8)}  ${String(metrics.rejectedBulkhead).padStart(8)}  ${String(metrics.rejectedBreaker).padStart(10)}  ${String(metrics.failed).padStart(6)}  ${redisPerOffer.toFixed(2).padStart(9)}  ${String(percentile(metrics.endToEnd, 0.95)).padStart(6)}  ${String(metrics.peakTracked).padStart(12)}  ${String(peakPhysical).padStart(13)}  ${String(overshootArea).padStart(14)}`,
+        )
+      }
+    }
+    console.log("")
+    console.log(
+      "tracked is what the delegated bulkhead accounts for locally; the strict bulkhead keeps its leases in Redis, so its column reads 0",
+    )
+  }
+
+  console.log(
+    "paired load: one digest of the offered schedule per cell and seed",
+  )
+  for (const cell of config.cells) {
+    for (const seed of config.seeds) {
+      const perProfile = PROFILES.map((profile) => {
+        const run = results.find(
+          (result) =>
+            result.cell === cell.name &&
+            result.profile === profile &&
+            result.seed === seed,
+        )
+        return `${profile} ${run?.metrics.scheduleDigest ?? 0}`
+      })
+      console.log(
+        `  ${cell.name.padEnd(18)} seed ${seed}: ${perProfile.join(" | ")}`,
+      )
+    }
+  }
+  console.log("")
+
+  const faulted = config.cells.filter(
+    (cell) => cell.mode === "failing" || cell.mode === "intermittent",
+  )
+  if (faulted.length > 0) {
+    console.log(
+      "fault cells: the breaker's state machine and the work the dependency received",
+    )
+    for (const cell of faulted) {
+      for (const profile of PROFILES) {
+        const bucket = groups.get(`${cell.name}|${profile}|1`) ?? []
+        const metrics = groupMetrics(bucket, profile)
+        const physical = bucket.reduce(
+          (sum, result) => ({
+            started: sum.started + result.physical.started,
+            failed: sum.failed + result.physical.failed,
+          }),
+          { started: 0, failed: 0 },
+        )
+        console.log(
+          `  ${cell.name.padEnd(24)}${profile.padEnd(16)} refused ${String(metrics.rejectedBreaker).padStart(3)} | opens ${String(metrics.breakerOpens).padStart(2)} half-opens ${String(metrics.breakerHalfOpens).padStart(2)} probes ${String(metrics.breakerProbes).padStart(2)} | dependency started ${String(physical.started).padStart(3)} failed ${String(physical.failed).padStart(3)}`,
+        )
+      }
+    }
+    console.log("")
+  }
+
+  console.log("paired differences against the unprotected reference")
+  for (const cell of config.cells) {
+    const reference = groupMetrics(
+      groups.get(`${cell.name}|unprotected|1`) ?? [],
+      "unprotected",
+    )
+    const serval = groupMetrics(
+      groups.get(`${cell.name}|serval|1`) ?? [],
+      "serval",
+    )
+    const strict = groupMetrics(
+      groups.get(`${cell.name}|strict|1`) ?? [],
+      "strict",
+    )
+    const share = (value: number, base: number): string =>
+      base === 0 ? "n/a" : `${Math.round((value / base) * 100)}%`
+    const perOffer = (metrics: Metrics): string =>
+      (metrics.offered === 0 ? 0 : metrics.redisOps / metrics.offered).toFixed(
+        2,
+      )
+    console.log(
+      `  ${cell.name.padEnd(18)} admitted ${serval.ok}/${reference.ok} (${share(serval.ok, reference.ok)}) vs strict ${strict.ok} | redis/offer ${perOffer(serval)} vs strict ${perOffer(strict)}`,
+    )
+  }
+
+  const directory = fileURLToPath(new URL("./results/", import.meta.url))
+  mkdirSync(directory, { recursive: true })
+  const file = `${directory}${new Date().toISOString().replace(/[:.]/g, "-")}.json`
+  writeFileSync(
+    file,
+    `${JSON.stringify(
+      { revision: revision(), config, node: process.version, results },
+      null,
+      2,
+    )}\n`,
+  )
+  console.log(`\nraw per-seed results written to ${file}\n`)
+}
+
+async function main(): Promise<void> {
+  const redisUrl = process.env.CARACAL_REDIS_URL ?? "redis://127.0.0.1:6379"
+  const replicaCounts = numbers("CARACAL_LAB_REPLICAS", [1, 4])
+  const seeds = numbers("CARACAL_LAB_SEEDS", [1])
+  const offers = Number(process.env.CARACAL_LAB_OFFERS ?? 24)
+  const intervalMs = Number(process.env.CARACAL_LAB_INTERVAL ?? 10)
+  const target = Number(process.env.CARACAL_LAB_TARGET ?? 4)
+  // A named subset, so one cell can be re-measured without paying for the whole sweep.
+  const requested = (process.env.CARACAL_LAB_CELLS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value !== "")
+  const cells =
+    requested.length === 0
+      ? CELLS
+      : CELLS.filter((cell) => requested.includes(cell.name))
+  if (cells.length === 0) {
+    throw new Error(
+      `CARACAL_LAB_CELLS matched no cell: ${requested.join(", ")}`,
+    )
+  }
+  const identity = { name: "lab-payments", operation: "charge" }
+
+  const downstream = await startDownstream({ target, latencyMs: 40 })
+  const results: RunResult[] = []
+  const runId = Date.now()
+
+  try {
+    for (const profile of PROFILES) {
+      for (const cell of cells) {
+        for (const replicas of replicaCounts) {
+          for (const seed of seeds) {
+            const namespace = `serval-lab-${profile}-${cell.name}-${replicas}-${seed}-${runId}`
+            console.log(
+              `running ${profile} / ${cell.name} / ${replicas} replica(s) / seed ${seed}`,
+            )
+            downstream.setMode(cell.mode, {
+              latencyMs: cell.mode === "slow" ? 40 : 0,
+              failureRate: cell.failureRate ?? 1 / 3,
+              seed,
+            })
+            downstream.reset()
+
+            const workers: { handle: WorkerHandle; redisUrl: string }[] = []
+            try {
+              for (let index = 0; index < replicas; index += 1) {
+                // A cold outage cell starts every replica against an unreachable authority; a
+                // warm one starts healthy and cuts its own connection mid-run. The partition
+                // cell isolates a subset and leaves the rest healthy.
+                const isolated =
+                  (cell.redisOutage && cell.warmUpOffers === undefined) ||
+                  (!cell.redisOutage && index < cell.partition)
+                const workerUrl = isolated ? "redis://127.0.0.1:1" : redisUrl
+                workers.push({
+                  handle: spawnWorker(workerUrl),
+                  redisUrl: workerUrl,
+                })
+              }
+
+              const settled = await Promise.all(
+                workers.map((worker) =>
+                  worker.handle
+                    .send({
+                      namespace,
+                      profile,
+                      offers: cell.offers ?? offers,
+                      intervalMs: cell.intervalMs ?? intervalMs,
+                      target,
+                      guardrailLimit: target,
+                      // The dependency ignores cancellation, so the lab measures the
+                      // physical work that outlives its admission.
+                      abort: "unsupported",
+                      timeoutMs: 60,
+                      redisUrl: worker.redisUrl,
+                      downstreamUrl: downstream.url,
+                      identity,
+                      seed,
+                      ...(cell.breaker === undefined
+                        ? {}
+                        : { breaker: cell.breaker }),
+                      ...(cell.warmUpOffers === undefined
+                        ? {}
+                        : { cutAfterOffers: cell.warmUpOffers }),
+                    })
+                    .then(
+                      (metrics) => ({ metrics }),
+                      (error: Error) => ({ error: error.message }),
+                    ),
+                ),
+              )
+
+              const usable = settled
+                .filter(
+                  (entry): entry is { metrics: Metrics } =>
+                    "metrics" in entry && entry.metrics !== undefined,
+                )
+                .map((entry) => entry.metrics)
+              const stats = downstream.stats()
+              const lost = workers.length - usable.length
+              results.push({
+                profile,
+                cell: cell.name,
+                replicas,
+                seed,
+                intervalMs: cell.intervalMs ?? intervalMs,
+                metrics: aggregate(usable, sharedAcross(profile)),
+                physical: {
+                  peak: stats.peakPhysical,
+                  overshootArea: stats.overshootArea,
+                  aboveTargetMs: stats.aboveTargetMs,
+                  started: stats.started,
+                  failed: stats.failed,
+                },
+                ...(lost === 0
+                  ? {}
+                  : { error: `${lost} replica(s) reported no metrics` }),
+              })
+            } finally {
+              for (const worker of workers) worker.handle.stop()
+            }
+          }
+        }
+      }
+    }
+  } finally {
+    await downstream.close()
+  }
+
+  report(results, {
+    redisUrl,
+    replicaCounts,
+    seeds,
+    offers,
+    intervalMs,
+    target,
+    cells,
+  })
+}
+
+await main()
