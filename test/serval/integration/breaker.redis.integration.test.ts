@@ -104,16 +104,20 @@ describe.skipIf(!url)("serval breaker against Redis", () => {
       policies: [policy],
     })
 
-    // The cold start has already read the verdict once, so the cache is warm.
+    // A fresh namespace has no verdict yet, so the first admission pays the read that
+    // establishes one. Measure from a cache that is warm rather than assuming it: the cold
+    // start reads an incarnation, not necessarily this scope's verdict.
+    await expect(op.execute(undefined)).resolves.toBe("ok")
     counted.calls.readState = 0
-    for (let index = 0; index < 25; index += 1) {
+    counted.calls.observe = 0
+    for (let index = 0; index < 24; index += 1) {
       await expect(op.execute(undefined)).resolves.toBe("ok")
     }
 
     // The gate's cost claim, measured against a real server: no admission reads,
     // and every settlement still went.
     expect(counted.calls.readState).toBe(0)
-    expect(counted.calls.observe).toBe(25)
+    expect(counted.calls.observe).toBe(24)
 
     await breaker.session.close()
   })
