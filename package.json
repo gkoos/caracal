@@ -1,6 +1,6 @@
 {
   "name": "@gkoos/caracal",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Scoped distributed resilience for asynchronous operations.",
   "keywords": [
     "resilience",
