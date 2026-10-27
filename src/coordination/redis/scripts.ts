@@ -775,10 +775,13 @@ local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'openedAt',
-                     'probeCount', 'probeSuccesses')
+                     'probeCount', 'probeSuccesses', 'windowProbes',
+                     'windowStartedAt')
 local state     = f[1] or 'closed'
 local gen       = tonumber(f[2]) or 0
 local openedAt  = tonumber(f[3]) or 0
+local windowProbes   = tonumber(f[6]) or 0
+local windowStartedAt = tonumber(f[7]) or 0
 local transitioned = 0
 if state == 'closed' then
   return {0, 0, gen, 0, 0}
@@ -789,7 +792,10 @@ if state == 'open' then
   end
   state = 'half-open'
   transitioned = 1
-  redis.call('HSET', KEYS[1], 'state', 'half-open', 'probeSuccesses', 0, 'probeCount', 0)
+  windowProbes = 0
+  windowStartedAt = now
+  redis.call('HSET', KEYS[1], 'state', 'half-open', 'probeSuccesses', 0,
+             'probeCount', 0, 'windowProbes', 0, 'windowStartedAt', now)
   -- OPEN/HALF_OPEN must never expire; PERSIST removes any prior cleanup TTL.
   redis.call('PERSIST', KEYS[1])
   -- Tokens from the superseded recovery window must not consume slots in this
@@ -797,14 +803,42 @@ if state == 'open' then
   -- same window are dropped by the epoch-scoped window instead.
   redis.call('DEL', KEYS[2])
 end
-redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+-- Prune expired tokens before judging the window: a token whose lease elapsed
+-- belongs to a probe that will never report, so its in-flight slot is recoverable
+-- and its window budget goes back with it. A crashed worker cannot consume the
+-- window for good.
+local expired = redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+if expired > 0 then
+  local live = redis.call('ZCARD', KEYS[2])
+  if windowProbes > 0 then
+    windowProbes = math.max(0, windowProbes - expired)
+    redis.call('HSET', KEYS[1], 'windowProbes', windowProbes)
+  end
+  -- probeCount is informational, but it is asserted to match the token set.
+  redis.call('HSET', KEYS[1], 'probeCount', live)
+end
 local activeProbes = redis.call('ZCARD', KEYS[2])
-if activeProbes >= maxProbes then
+-- The recovery window is a rolling budget: halfOpenProbes probes per openMs. It
+-- refills on time rather than on an outcome, because an inconclusive result
+-- releases its in-flight slot but does not return its window budget. Otherwise a
+-- fleet whose probes are refused locally (an ignored result: the bulkhead, the
+-- timeout, a cancellation) turns every arriving request into a probe, and the
+-- breaker never reaches the successes it needs to close.
+if now - windowStartedAt >= openMs then
+  windowProbes = 0
+  windowStartedAt = now
+  redis.call('HSET', KEYS[1], 'windowProbes', 0, 'windowStartedAt', now)
+end
+if activeProbes >= maxProbes or windowProbes >= maxProbes then
+  -- probeCount is informational, but the conformance suite asserts it matches the
+  -- token set, and a rejection is exactly when a prune may have changed the set.
+  redis.call('HSET', KEYS[1], 'probeCount', activeProbes)
   return {0, 2, gen, activeProbes, transitioned}
 end
 redis.call('ZADD', KEYS[2], 'NX', now + probeLeaseTtl, probeToken)
 activeProbes = activeProbes + 1
-redis.call('HSET', KEYS[1], 'probeCount', activeProbes)
+windowProbes = windowProbes + 1
+redis.call('HSET', KEYS[1], 'probeCount', activeProbes, 'windowProbes', windowProbes)
 -- State hash must not expire while recovery probes are in flight.
 redis.call('PERSIST', KEYS[1])
 -- Probes sorted set expires naturally once the last lease elapses.
@@ -870,11 +904,13 @@ end
 local function decide()
 local t   = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
-local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'probeSuccesses', 'probeCount')
+local f = redis.call('HMGET', KEYS[1], 'state', 'generation', 'probeSuccesses', 'probeCount',
+                     'windowProbes')
 local state     = f[1] or 'closed'
 local gen       = tonumber(f[2]) or 0
 local probeSucc = tonumber(f[3]) or 0
 local probeCnt  = tonumber(f[4]) or 0
+local windowProbes = tonumber(f[5]) or 0
 local sc = (state == 'open' and 1) or (state == 'half-open' and 2) or 0
 local deadline = redis.call('ZSCORE', KEYS[2], probeToken)
 if not deadline then
@@ -885,9 +921,11 @@ redis.call('ZREM', KEYS[2], probeToken)
 if tonumber(deadline) <= now then
   -- The lease elapsed while the probe was still running: its slot was
   -- recoverable, so the result cannot be counted.  Release the slot it still
-  -- occupied so the probe count keeps matching the token set.
+  -- occupied so the probe count keeps matching the token set, and return its
+  -- window budget - a probe that will never report is not evidence of anything.
   probeCnt = math.max(0, probeCnt - 1)
-  redis.call('HSET', KEYS[1], 'probeCount', probeCnt)
+  windowProbes = math.max(0, windowProbes - 1)
+  redis.call('HSET', KEYS[1], 'probeCount', probeCnt, 'windowProbes', windowProbes)
   return {0, sc, gen, 0}
 end
 if state ~= 'half-open' or gen ~= expectGen then
@@ -898,11 +936,12 @@ if state ~= 'half-open' or gen ~= expectGen then
 end
 probeCnt = math.max(0, probeCnt - 1)
 if outcome == 'ignored' then
-  -- The result was not recorded (the classifier ignored it), but the slot the
-  -- probe held must still be released: otherwise the recovery window stalls
-  -- until the probe lease elapses instead of letting the next probe through.
-  -- The local breaker releases its slot immediately, and this matches it: no
-  -- success counter advances and the state does not transition.
+  -- The result was not recorded (the classifier ignored it): no success counter
+  -- advances and the state does not transition. The in-flight slot is released,
+  -- but the window's probe budget is deliberately not returned to it. An
+  -- inconclusive result is not evidence that the dependency is reachable, and
+  -- recycling it would let the fleet turn every request into a probe - the
+  -- recovery window admits halfOpenProbes probes, not one per settlement.
   redis.call('HSET', KEYS[1], 'probeCount', probeCnt)
   -- Still HALF_OPEN: must not expire while recovery is in progress.
   redis.call('PERSIST', KEYS[1])
@@ -911,7 +950,8 @@ end
 if outcome == 'failure' then
   gen = gen + 1
   redis.call('HSET', KEYS[1], 'state', 'open', 'generation', gen,
-             'openedAt', now, 'probeCount', 0, 'probeSuccesses', 0)
+             'openedAt', now, 'probeCount', 0, 'probeSuccesses', 0,
+             'windowProbes', 0, 'windowStartedAt', 0)
   -- Re-opened: OPEN must not expire (see breakerObserveV1 TTL policy).
   redis.call('PERSIST', KEYS[1])
   -- In-flight probes belong to the dead generation; free their slots so the
@@ -923,13 +963,19 @@ probeSucc = probeSucc + 1
 if probeSucc >= halfOpenSucc then
   gen = gen + 1
   redis.call('HSET', KEYS[1], 'state', 'closed', 'generation', gen,
-             'probeCount', 0, 'probeSuccesses', 0)
+             'probeCount', 0, 'probeSuccesses', 0,
+             'windowProbes', 0, 'windowStartedAt', 0)
   -- Newly CLOSED: expire for cleanup, but never before the window it governs.
   redis.call('PEXPIRE', KEYS[1], math.max(closedCleanup, windowTtl))
   redis.call('DEL', KEYS[2])
   return {2, 0, gen, 0}
 end
-redis.call('HSET', KEYS[1], 'probeSuccesses', probeSucc, 'probeCount', probeCnt)
+-- A counting outcome returns its slot to the window: a success is evidence the
+-- dependency is reachable, so further probes are safe, and recovery has to be
+-- able to accumulate halfOpenSuccesses within the window.
+windowProbes = math.max(0, windowProbes - 1)
+redis.call('HSET', KEYS[1], 'probeSuccesses', probeSucc, 'probeCount', probeCnt,
+           'windowProbes', windowProbes)
 -- Still HALF_OPEN: must not expire while recovery is in progress.
 redis.call('PERSIST', KEYS[1])
 return {1, 2, gen, 0}

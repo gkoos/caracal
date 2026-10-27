@@ -37,6 +37,7 @@ Invariants verified by property tests:
 - Opening never fires before `minimumThroughput` observations.
 - A success-only trace never opens the breaker.
 - `probesInFlight ≤ halfOpenProbes` at all times.
+- At most `halfOpenProbes` probes are admitted per recovery window, and the window refills every `openMs`: the window, not the in-flight count, is the budget.
 
 ## Threshold resolution
 
@@ -200,8 +201,9 @@ coordinator stays conservative without it.
 
 ### Half-open probe arbitration
 
-- At most `halfOpenProbes` concurrent probes are admitted globally per scope. Enforced at the Redis level, not just per-process.
-- Each probe holds a token in Redis whose sorted-set score is its deadline. A dead worker's token expires automatically, and the probe slot recovers without coordinator intervention; a result that arrives after the deadline is dropped as stale. The settlement script checks the deadline atomically, so an expired probe can neither close nor re-open the breaker, and the slot it still occupied is released.
+- At most `halfOpenProbes` probes are admitted **per recovery window**, not merely concurrently. Enforced at the Redis level, not just per-process. The window is the budget: an inconclusive result releases its in-flight slot but does not return the budget, so a fleet whose probes are refused locally (an ignored result) cannot turn every arriving request into a probe. A counting result does return it - a success is evidence the dependency is reachable, so recovery accumulates `halfOpenSuccesses` within one window.
+- The window refills every `openMs`, so the ceiling is `halfOpenProbes` probes per cooldown. A window whose probes all reported nothing therefore probes again after the cooldown rather than spinning on freed slots, and a cancelled or refused probe costs one cooldown instead of re-opening a breaker that was recovering.
+- Each probe holds a token in Redis whose sorted-set score is its deadline. A dead worker's token expires automatically, and the probe slot recovers without coordinator intervention - its window budget comes back with it. A result that arrives after the deadline is dropped as stale. The settlement script checks the deadline atomically, so an expired probe can neither close nor re-open the breaker, and the slot it still occupied is released.
 - Leaving HALF_OPEN discards the probe tokens of that recovery window, so the next window starts with full capacity and a late settle from the superseded window is dropped rather than counted.
 - `probeSuccesses` accumulates across all concurrent probes. The first worker to reach `halfOpenSuccesses` closes the breaker.
 - Any probe failure takes priority: it re-opens the breaker and increments the generation.
