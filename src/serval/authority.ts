@@ -1,4 +1,4 @@
-import { coordinationKey } from "../redis/keys.js"
+import { coordinationKey } from "../coordination/redis/keys.js"
 
 /**
  * The shared authority vocabulary for Serval: scope identity, versioning,

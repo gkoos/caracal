@@ -14,7 +14,7 @@ Start with the [project README](../README.md) for installation and a first opera
 | [Postgres adapter](postgres.md) | statement execution as an operation |
 | [AWS SDK v3 adapter](aws-sdk.md) | per-command replay, cancellation, structured error classification |
 | [Redis coordination](redis.md) | scripts, topology, ACL grants, knob consistency |
-| [Serval: delegated coordination](serval/README.md) | the opt-in approximate coordination strategy, its guarantees and deviations |
+| [Serval: delegated coordination](serval/README.md) **(experimental)** | the opt-in approximate coordination strategy, its guarantees and deviations |
 | [Serval authority protocol](serval/authority.md) | grant lifecycle, send-time-anchored validity, fencing and freeze-before-return state machines |
 | [Serval fault lab](serval/benchmarks.md) | the measured trade-offs, operating envelopes and known limitations of the delegated strategies |
 | [Serval API](serval/api.md) | the opt-in entry point: configuration, lifecycle, guarantees, failure behaviour, metrics, guardrails and migration |

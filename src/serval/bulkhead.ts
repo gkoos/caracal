@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto"
-import type { BulkheadCoordinator } from "../../core/bulkhead.js"
+import type { BulkheadCoordinator } from "../core/bulkhead.js"
 import type {
   BulkheadAllocationAction,
   BulkheadAllocationIssuer,
   BulkheadAllocationReply,
-} from "../redis/bulkhead.js"
+} from "../coordination/redis/bulkhead.js"
 import {
   SERVAL_DEFAULT_SAFETY_MARGIN_MS,
   servalDeadline,

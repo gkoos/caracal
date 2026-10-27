@@ -9,8 +9,8 @@
 
 import * as fc from "fast-check"
 import { describe, expect, it } from "vitest"
-import { runRateLimitHistory } from "../support/serval/rate-limit-history.js"
-import { createGeneratedSuite } from "../support/seed.js"
+import { runRateLimitHistory } from "../../support/serval/rate-limit-history.js"
+import { createGeneratedSuite } from "../../support/seed.js"
 
 const suite = createGeneratedSuite({
   name: "serval-rate-limit",

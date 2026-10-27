@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import type { RateLimitCoordinator } from "../../core/rate-limit.js"
-import type { RateLimitGrantIssuer } from "../redis/rate-limit.js"
+import type { RateLimitCoordinator } from "../core/rate-limit.js"
+import type { RateLimitGrantIssuer } from "../coordination/redis/rate-limit.js"
 import { SERVAL_DEFAULT_SAFETY_MARGIN_MS, servalDeadline } from "./authority.js"
 import { ServalRegistryPressureError } from "./cache.js"
 

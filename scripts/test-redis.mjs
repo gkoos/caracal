@@ -26,11 +26,11 @@ await run(
     // The Serval suites exercise the same scripts through the delegated authorities, so
     // they belong in the same serialized run: the ACL suite's flush below would otherwise
     // be invisible to them.
-    "test/integration/serval-breaker.redis.integration.test.ts",
-    "test/integration/serval-bulkhead.redis.integration.test.ts",
-    "test/integration/serval-rate-limit.redis.integration.test.ts",
-    "test/integration/serval-composition.integration.test.ts",
-    "test/integration/serval-public-api.integration.test.ts",
+    "test/serval/integration/breaker.redis.integration.test.ts",
+    "test/serval/integration/bulkhead.redis.integration.test.ts",
+    "test/serval/integration/rate-limit.redis.integration.test.ts",
+    "test/serval/integration/composition.integration.test.ts",
+    "test/serval/integration/public-api.integration.test.ts",
     "test/integration/coordinator-conformance.integration.test.ts",
     "test/integration/redis-acl.integration.test.ts",
     "test/integration/coordinator-round-trips.integration.test.ts",

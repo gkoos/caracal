@@ -16,9 +16,9 @@
 
 import * as fc from "fast-check"
 import { describe, expect, it } from "vitest"
-import { runAdversarialHistories } from "../support/serval/histories.js"
-import { runSessionHistory } from "../support/serval/session-history.js"
-import { createGeneratedSuite } from "../support/seed.js"
+import { runAdversarialHistories } from "../../support/serval/histories.js"
+import { runSessionHistory } from "../../support/serval/session-history.js"
+import { createGeneratedSuite } from "../../support/seed.js"
 
 const suite = createGeneratedSuite({
   name: "serval-authority",

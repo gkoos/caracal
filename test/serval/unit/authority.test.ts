@@ -22,11 +22,11 @@ import {
   servalInvalidationChannel,
   servalRecordKey,
   servalScopeKey,
-} from "../../src/coordination/serval/authority.js"
+} from "../../../src/serval/authority.js"
 import type {
   BulkheadOperation,
   GrantReply,
-} from "../support/serval/reference-model.js"
+} from "../../support/serval/reference-model.js"
 import {
   AuthorityHistory,
   AuthorityRegistry,
@@ -38,11 +38,11 @@ import {
   MonotonicTime,
   OccupancyLedger,
   RateEnvelope,
-} from "../support/serval/reference-model.js"
+} from "../../support/serval/reference-model.js"
 import {
   TEST_IDENTITY,
   identityFor,
-} from "../support/serval/session-harness.js"
+} from "../../support/serval/session-harness.js"
 
 function grantReply(overrides: Partial<GrantReply> = {}): GrantReply {
   return {

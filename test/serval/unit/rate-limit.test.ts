@@ -13,18 +13,18 @@ import {
   operation,
   rateLimit,
   RateLimitExceededError,
-} from "../../src/index.js"
-import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
+} from "../../../src/index.js"
+import { ServalRegistryPressureError } from "../../../src/serval/cache.js"
 import {
   createServalRateLimitCoordinator,
   type ServalRateLimitCoordinatorOptions,
-} from "../../src/coordination/serval/rate-limit.js"
-import { createFakeGrantAuthority } from "../support/serval/fake-grant-authority.js"
+} from "../../../src/serval/rate-limit.js"
+import { createFakeGrantAuthority } from "../../support/serval/fake-grant-authority.js"
 import {
   TEST_RATE_IDENTITY,
   createRateLimitHarness,
   type RateLimitHarness,
-} from "../support/serval/rate-limit-harness.js"
+} from "../../support/serval/rate-limit-harness.js"
 
 function command(harness: RateLimitHarness) {
   return harness.coordinator.command(harness.identity, harness.params)

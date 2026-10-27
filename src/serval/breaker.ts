@@ -4,7 +4,7 @@ import type {
   BreakerIdentity,
   BreakerState,
   SettleProbeResult,
-} from "../../core/circuit-breaker.js"
+} from "../core/circuit-breaker.js"
 import {
   servalDeadline,
   servalScopeKey,
@@ -91,7 +91,7 @@ export interface ServalBreakerCoordinator extends BreakerCoordinator {
   cached(identity: BreakerIdentity): ServalBreakerPayload | undefined
 }
 
-import { CoordinatorRefusalError } from "../../core/circuit-breaker.js"
+import { CoordinatorRefusalError } from "../core/circuit-breaker.js"
 
 /**
  * Thrown when the delegated breaker refuses locally, because the authority it holds is no longer

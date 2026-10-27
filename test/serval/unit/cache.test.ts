@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest"
 import {
   ServalRegistryPressureError,
   createServalAuthorityCache,
-} from "../../src/coordination/serval/cache.js"
+} from "../../../src/serval/cache.js"
 
 describe("serval authority cache", () => {
   it("refuses a new key rather than evicting pinned accounting", () => {

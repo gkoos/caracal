@@ -18,9 +18,9 @@ import {
   type ServalInvalidation,
   type ServalSubscriptionClient,
   type ServalSubscriptionListener,
-} from "../../src/coordination/serval/notifications.js"
-import { createFakeTransport } from "../support/serval/notification-transport.js"
-import { TEST_IDENTITY } from "../support/serval/session-harness.js"
+} from "../../../src/serval/notifications.js"
+import { createFakeTransport } from "../../support/serval/notification-transport.js"
+import { TEST_IDENTITY } from "../../support/serval/session-harness.js"
 
 function invalidation(
   overrides: Partial<ServalInvalidation> = {},

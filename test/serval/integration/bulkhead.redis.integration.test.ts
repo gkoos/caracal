@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { coordinationKey } from "../../src/coordination/redis/keys.js"
-import { redisBulkheadAllocationIssuer } from "../../src/coordination/redis/bulkhead.js"
-import { createServalBulkheadCoordinator } from "../../src/coordination/serval/bulkhead.js"
-import { createCoordinationClient } from "../../src/redis.js"
+import { coordinationKey } from "../../../src/coordination/redis/keys.js"
+import { redisBulkheadAllocationIssuer } from "../../../src/coordination/redis/bulkhead.js"
+import { createServalBulkheadCoordinator } from "../../../src/serval/bulkhead.js"
+import { createCoordinationClient } from "../../../src/redis.js"
 
 /**
  * The delegated bulkhead against a real Redis.

@@ -8,24 +8,24 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
-import { createServalMetrics } from "../../src/coordination/serval/metrics.js"
-import { encodeServalInvalidation } from "../../src/coordination/serval/notifications.js"
+import { ServalRegistryPressureError } from "../../../src/serval/cache.js"
+import { createServalMetrics } from "../../../src/serval/metrics.js"
+import { encodeServalInvalidation } from "../../../src/serval/notifications.js"
 import {
   ServalSessionClosedError,
   createServalAuthoritySession,
-} from "../../src/coordination/serval/session.js"
-import { readSource } from "../support/package-surface.js"
-import { createDeterministicScheduler } from "../support/serval/deterministic-scheduler.js"
+} from "../../../src/serval/session.js"
+import { readSource } from "../../support/package-surface.js"
+import { createDeterministicScheduler } from "../../support/serval/deterministic-scheduler.js"
 import {
   createFakeAuthority,
   invalidationOf,
-} from "../support/serval/fake-authority.js"
+} from "../../support/serval/fake-authority.js"
 import {
   TEST_IDENTITY,
   createSessionHarness,
   identityFor,
-} from "../support/serval/session-harness.js"
+} from "../../support/serval/session-harness.js"
 
 describe("serval session identity", () => {
   it("keeps an explicit replica id and gives every session a fresh incarnation", () => {
@@ -744,7 +744,7 @@ describe("serval session diagnostics", () => {
     ]
 
     for (const file of shared) {
-      const source = readSource(`src/coordination/serval/${file}`)
+      const source = readSource(`src/serval/${file}`)
       expect(source, `${file} must not name a policy kind`).not.toMatch(
         /"(circuit-breaker|rate-limit|bulkhead)"/,
       )

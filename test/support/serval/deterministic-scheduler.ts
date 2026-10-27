@@ -1,4 +1,4 @@
-import type { ServalScheduler } from "../../../src/coordination/serval/scheduler.js"
+import type { ServalScheduler } from "../../../src/serval/scheduler.js"
 
 /**
  * A deterministic clock and task queue for Serval tests.

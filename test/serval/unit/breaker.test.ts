@@ -9,17 +9,21 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { circuitBreaker, CircuitOpenError, operation } from "../../src/index.js"
-import type { BreakerIdentity, OperationEvent } from "../../src/index.js"
-import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
-import { ServalAuthorityRefusalError } from "../../src/coordination/serval/breaker.js"
-import { createDeterministicScheduler } from "../support/serval/deterministic-scheduler.js"
-import { createFakeBreakerAuthority } from "../support/serval/fake-breaker-authority.js"
+import {
+  circuitBreaker,
+  CircuitOpenError,
+  operation,
+} from "../../../src/index.js"
+import type { BreakerIdentity, OperationEvent } from "../../../src/index.js"
+import { ServalRegistryPressureError } from "../../../src/serval/cache.js"
+import { ServalAuthorityRefusalError } from "../../../src/serval/breaker.js"
+import { createDeterministicScheduler } from "../../support/serval/deterministic-scheduler.js"
+import { createFakeBreakerAuthority } from "../../support/serval/fake-breaker-authority.js"
 import {
   TEST_BREAKER_IDENTITY,
   createBreakerHarness,
   type BreakerHarness,
-} from "../support/serval/session-harness.js"
+} from "../../support/serval/session-harness.js"
 
 const OPEN_MS = 5_000
 const PROBE_LEASE_MS = 1_000

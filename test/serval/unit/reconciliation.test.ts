@@ -10,14 +10,14 @@ import { describe, expect, it } from "vitest"
 import {
   ServalIncarnationTracker,
   type ServalAuthorityRecord,
-} from "../../src/coordination/serval/authority.js"
+} from "../../../src/serval/authority.js"
 import {
   createServalReconciler,
   type ServalReconcilerOptions,
   type ServalAuthoritySnapshot,
-} from "../../src/coordination/serval/reconciliation.js"
-import { createDeterministicScheduler } from "../support/serval/deterministic-scheduler.js"
-import { TEST_IDENTITY } from "../support/serval/session-harness.js"
+} from "../../../src/serval/reconciliation.js"
+import { createDeterministicScheduler } from "../../support/serval/deterministic-scheduler.js"
+import { TEST_IDENTITY } from "../../support/serval/session-harness.js"
 
 function record(
   version: number,

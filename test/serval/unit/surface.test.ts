@@ -15,11 +15,11 @@ import {
   CoordinatorRefusalError,
   operation,
   rateLimit,
-} from "../../src/index.js"
-import * as serval from "../../src/serval.js"
-import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
-import { ServalAuthorityRefusalError } from "../../src/coordination/serval/breaker.js"
-import { ServalSessionClosedError } from "../../src/coordination/serval/session.js"
+} from "../../../src/index.js"
+import * as serval from "../../../src/serval.js"
+import { ServalRegistryPressureError } from "../../../src/serval/cache.js"
+import { ServalAuthorityRefusalError } from "../../../src/serval/breaker.js"
+import { ServalSessionClosedError } from "../../../src/serval/session.js"
 
 const IDENTITY = { name: "payments", operation: "charge", scope: "tenant-a" }
 

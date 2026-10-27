@@ -3,16 +3,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type {
   BreakerCoordinator,
   BreakerIdentity,
-} from "../../src/core/circuit-breaker.js"
-import { circuitBreaker, operation } from "../../src/index.js"
+} from "../../../src/core/circuit-breaker.js"
+import { circuitBreaker, operation } from "../../../src/index.js"
 import {
   breakerScopeIdentity,
   createServalBreaker,
-} from "../../src/coordination/serval/breaker.js"
+} from "../../../src/serval/breaker.js"
 import {
   createCoordinationClient,
   redisCircuitBreakerCoordinator,
-} from "../../src/redis.js"
+} from "../../../src/redis.js"
 
 /**
  * The cached-verdict breaker against a real Redis.

@@ -25,14 +25,14 @@
 export {
   createServalAuthoritySession as createServalSession,
   ServalSessionClosedError,
-} from "./coordination/serval/session.js"
+} from "./serval/session.js"
 export {
   createServalBreaker,
   ServalAuthorityRefusalError,
-} from "./coordination/serval/breaker.js"
-export { createServalRateLimitCoordinator } from "./coordination/serval/rate-limit.js"
-export { createServalBulkheadCoordinator } from "./coordination/serval/bulkhead.js"
-export { ServalRegistryPressureError } from "./coordination/serval/cache.js"
+} from "./serval/breaker.js"
+export { createServalRateLimitCoordinator } from "./serval/rate-limit.js"
+export { createServalBulkheadCoordinator } from "./serval/bulkhead.js"
+export { ServalRegistryPressureError } from "./serval/cache.js"
 export { redisRateLimitGrantIssuer } from "./coordination/redis/rate-limit.js"
 export { redisBulkheadAllocationIssuer } from "./coordination/redis/bulkhead.js"
 
@@ -41,21 +41,21 @@ export type {
   ServalSessionOptions,
   ServalSessionState,
   ServalScopeRegistration,
-} from "./coordination/serval/session.js"
+} from "./serval/session.js"
 export type {
   ServalBreakerCoordinator,
   ServalBreakerCoordinatorOptions,
   ServalBreakerOptions,
   ServalBreakerPayload,
   ServalStaleClosedBehavior,
-} from "./coordination/serval/breaker.js"
+} from "./serval/breaker.js"
 export type {
   ServalRateGrantState,
   ServalRateLimitCoordinator,
   ServalRateLimitCoordinatorOptions,
   ServalRateLimitDiagnostics,
   ServalRateLimitMetrics,
-} from "./coordination/serval/rate-limit.js"
+} from "./serval/rate-limit.js"
 export type {
   ServalBulkheadCoordinator,
   ServalBulkheadCoordinatorOptions,
@@ -63,7 +63,7 @@ export type {
   ServalBulkheadMetrics,
   ServalBulkheadState,
   ServalRelinquishResult,
-} from "./coordination/serval/bulkhead.js"
+} from "./serval/bulkhead.js"
 export type {
   BulkheadAllocationIssuer,
   BulkheadAllocationReply,
@@ -74,9 +74,9 @@ export type {
   RateGrantRequest,
   RateLimitGrantIssuer,
 } from "./coordination/redis/rate-limit.js"
-export type { ServalAuthorityReader } from "./coordination/serval/reconciliation.js"
+export type { ServalAuthorityReader } from "./serval/reconciliation.js"
 export type {
   ServalInvalidationPublisher,
   ServalNotificationTransport,
-} from "./coordination/serval/notifications.js"
-export type { ServalMetricsSnapshot } from "./coordination/serval/metrics.js"
+} from "./serval/notifications.js"
+export type { ServalMetricsSnapshot } from "./serval/metrics.js"

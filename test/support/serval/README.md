@@ -2,7 +2,7 @@
 
 This directory holds Serval's executable test infrastructure. It is internal test support only: it
 is never reachable from a package export, and production coordination lives in
-`src/coordination/serval/`.
+`src/serval/`.
 
 | File | Role |
 |---|---|
@@ -23,7 +23,7 @@ is never reachable from a package export, and production coordination lives in
 | `bulkhead-history.ts` | The generated allocation history: no admission beyond the server's allocation, frozen capacity never spent, revisions monotone |
 
 The model is the specification's proof obligation, not the implementation. The unit suites
-(`test/unit/serval-*.test.ts`) drive one deterministic acceptance group per decision and per session
-concern, and the generated suites (`test/property/serval-authority.property.test.ts`) replay the
+(`test/serval/unit/*.test.ts`) drive one deterministic acceptance group per decision and per session
+concern, and the generated suites (`test/serval/property/authority.property.test.ts`) replay the
 same models and the session over adversarial histories, honouring `CARACAL_TEST_SEED`.
 

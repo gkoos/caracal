@@ -1,4 +1,4 @@
-import { ServalRegistryPressureError } from "../../../src/coordination/serval/cache.js"
+import { ServalRegistryPressureError } from "../../../src/serval/cache.js"
 import { mulberry32, randInt } from "../seed.js"
 import {
   TEST_RATE_IDENTITY,

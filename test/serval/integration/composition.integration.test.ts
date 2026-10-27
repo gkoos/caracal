@@ -9,17 +9,17 @@ import {
   RateLimitExceededError,
   retry,
   timeout,
-} from "../../src/index.js"
-import { redisBulkheadAllocationIssuer } from "../../src/coordination/redis/bulkhead.js"
-import { redisRateLimitGrantIssuer } from "../../src/coordination/redis/rate-limit.js"
-import { createServalBreaker } from "../../src/coordination/serval/breaker.js"
-import { createServalBulkheadCoordinator } from "../../src/coordination/serval/bulkhead.js"
-import { createServalRateLimitCoordinator } from "../../src/coordination/serval/rate-limit.js"
+} from "../../../src/index.js"
+import { redisBulkheadAllocationIssuer } from "../../../src/coordination/redis/bulkhead.js"
+import { redisRateLimitGrantIssuer } from "../../../src/coordination/redis/rate-limit.js"
+import { createServalBreaker } from "../../../src/serval/breaker.js"
+import { createServalBulkheadCoordinator } from "../../../src/serval/bulkhead.js"
+import { createServalRateLimitCoordinator } from "../../../src/serval/rate-limit.js"
 import {
   createCoordinationClient,
   redisCircuitBreakerCoordinator,
-} from "../../src/redis.js"
-import { redisProxy } from "../support/redis-proxy.js"
+} from "../../../src/redis.js"
+import { redisProxy } from "../../support/redis-proxy.js"
 
 /**
  * All three Serval policies composed in one operation, against a real Redis.

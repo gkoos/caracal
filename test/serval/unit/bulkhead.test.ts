@@ -9,15 +9,19 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { bulkhead, BulkheadRejectedError, operation } from "../../src/index.js"
-import { ServalRegistryPressureError } from "../../src/coordination/serval/cache.js"
-import { redisBulkheadAllocationIssuer } from "../../src/coordination/redis/bulkhead.js"
-import { createFakeAllocationAuthority } from "../support/serval/fake-allocation-authority.js"
+import {
+  bulkhead,
+  BulkheadRejectedError,
+  operation,
+} from "../../../src/index.js"
+import { ServalRegistryPressureError } from "../../../src/serval/cache.js"
+import { redisBulkheadAllocationIssuer } from "../../../src/coordination/redis/bulkhead.js"
+import { createFakeAllocationAuthority } from "../../support/serval/fake-allocation-authority.js"
 import {
   TEST_BULKHEAD_IDENTITY,
   createBulkheadHarness,
   createManualClock,
-} from "../support/serval/bulkhead-harness.js"
+} from "../../support/serval/bulkhead-harness.js"
 
 describe("serval bulkhead local allocation", () => {
   it("admits a whole allocation with one round trip", async () => {

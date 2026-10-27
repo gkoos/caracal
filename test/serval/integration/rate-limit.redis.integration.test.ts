@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { operation, rateLimit } from "../../src/index.js"
-import { coordinationKey } from "../../src/coordination/redis/keys.js"
-import { redisRateLimitGrantIssuer } from "../../src/coordination/redis/rate-limit.js"
-import { createServalRateLimitCoordinator } from "../../src/coordination/serval/rate-limit.js"
+import { operation, rateLimit } from "../../../src/index.js"
+import { coordinationKey } from "../../../src/coordination/redis/keys.js"
+import { redisRateLimitGrantIssuer } from "../../../src/coordination/redis/rate-limit.js"
+import { createServalRateLimitCoordinator } from "../../../src/serval/rate-limit.js"
 import {
   createCoordinationClient,
   redisRateLimitCoordinator,
-} from "../../src/redis.js"
+} from "../../../src/redis.js"
 
 /**
  * The delegated rate limiter against a real Redis.

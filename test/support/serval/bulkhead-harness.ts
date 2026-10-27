@@ -1,7 +1,7 @@
 import {
   createServalBulkheadCoordinator,
   type ServalBulkheadCoordinator,
-} from "../../../src/coordination/serval/bulkhead.js"
+} from "../../../src/serval/bulkhead.js"
 import {
   createFakeAllocationAuthority,
   type FakeAllocationAuthority,

@@ -222,7 +222,7 @@ The numbers worth alerting on:
 1. **Keep the strict coordinators.** They remain the right choice when approximation is
    unacceptable; nothing here deprecates them.
 2. **Add the delegated layers per policy**, one at a time, starting with the one whose
-   read cost dominates. The composition suite in `test/integration/` is the model:
+   read cost dominates. The composition suite in `test/serval/integration/` is the model:
    local guardrail plus delegated layer, then all three.
 3. **Do not mix paths for one identity.** A delegated rate limiter draws on the same
    bucket the strict one uses, so mixing is safe but not additive; a delegated bulkhead

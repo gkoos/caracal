@@ -13,7 +13,13 @@ const depth = process.env.CARACAL_TEST_RUNS ?? "10"
 await new Promise((resolve, reject) => {
   const child = spawn(
     process.execPath,
-    ["node_modules/vitest/vitest.mjs", "run", "test/property", "test/fuzz"],
+    [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "test/property",
+      "test/fuzz",
+      "test/serval/property",
+    ],
     {
       stdio: "inherit",
       env: { ...process.env, CARACAL_TEST_RUNS: depth },

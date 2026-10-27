@@ -1,10 +1,10 @@
-import type { ServalScopeIdentity } from "../../../src/coordination/serval/authority.js"
-import { encodeServalInvalidation } from "../../../src/coordination/serval/notifications.js"
-import { ServalRegistryPressureError } from "../../../src/coordination/serval/cache.js"
+import type { ServalScopeIdentity } from "../../../src/serval/authority.js"
+import { encodeServalInvalidation } from "../../../src/serval/notifications.js"
+import { ServalRegistryPressureError } from "../../../src/serval/cache.js"
 import {
   createServalAuthoritySession,
   type ServalScopeRegistration,
-} from "../../../src/coordination/serval/session.js"
+} from "../../../src/serval/session.js"
 import { mulberry32, randInt } from "../seed.js"
 import {
   createDeterministicScheduler,

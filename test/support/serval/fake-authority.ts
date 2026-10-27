@@ -2,15 +2,15 @@ import {
   servalScopeKey,
   type ServalAuthorityRecord,
   type ServalScopeIdentity,
-} from "../../../src/coordination/serval/authority.js"
+} from "../../../src/serval/authority.js"
 import type {
   ServalInvalidation,
   ServalInvalidationKind,
-} from "../../../src/coordination/serval/notifications.js"
+} from "../../../src/serval/notifications.js"
 import type {
   ServalAuthorityReader,
   ServalAuthoritySnapshot,
-} from "../../../src/coordination/serval/reconciliation.js"
+} from "../../../src/serval/reconciliation.js"
 
 /**
  * A scriptable stand-in for the authoritative Redis state.

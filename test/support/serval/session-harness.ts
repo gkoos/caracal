@@ -1,15 +1,15 @@
 import type { BreakerIdentity } from "../../../src/core/circuit-breaker.js"
-import type { ServalScopeIdentity } from "../../../src/coordination/serval/authority.js"
+import type { ServalScopeIdentity } from "../../../src/serval/authority.js"
 import {
   createServalBreaker,
   breakerScopeIdentity,
   type ServalBreakerCoordinator,
   type ServalStaleClosedBehavior,
-} from "../../../src/coordination/serval/breaker.js"
+} from "../../../src/serval/breaker.js"
 import {
   decodeServalInvalidation,
   type ServalInvalidation,
-} from "../../../src/coordination/serval/notifications.js"
+} from "../../../src/serval/notifications.js"
 import {
   createFakeBreakerAuthority,
   type FakeBreakerAuthority,
@@ -117,7 +117,7 @@ export function createBreakerHarness(
 import {
   createServalAuthoritySession,
   type ServalSession,
-} from "../../../src/coordination/serval/session.js"
+} from "../../../src/serval/session.js"
 import {
   createDeterministicScheduler,
   type DeterministicScheduler,

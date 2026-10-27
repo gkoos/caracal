@@ -2,7 +2,7 @@ import { resolveRateLimitKnobs } from "../../../src/core/rate-limit.js"
 import {
   createServalRateLimitCoordinator,
   type ServalRateLimitCoordinator,
-} from "../../../src/coordination/serval/rate-limit.js"
+} from "../../../src/serval/rate-limit.js"
 import {
   createFakeGrantAuthority,
   type FakeGrantAuthority,

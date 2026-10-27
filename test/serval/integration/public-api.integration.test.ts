@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { circuitBreaker, operation, rateLimit } from "../../src/index.js"
+import { circuitBreaker, operation, rateLimit } from "../../../src/index.js"
 import {
   createCoordinationClient,
   redisCircuitBreakerCoordinator,
-} from "../../src/redis.js"
+} from "../../../src/redis.js"
 import {
   createServalBreaker,
   createServalRateLimitCoordinator,
   redisRateLimitGrantIssuer,
-} from "../../src/serval.js"
+} from "../../../src/serval.js"
 
 /**
  * The public entry point, against a real Redis.

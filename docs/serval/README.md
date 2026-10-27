@@ -262,10 +262,10 @@ coordinator argument.
 
 ## Implementation status
 
-The session and the three delegated coordinators are reachable only through
-`@gkoos/caracal/serval`, so opting in is explicit and the strict coordinators stay the default. The
-session lives in `src/coordination/serval/`, beside the three coordinators that use it, and the
-measured trade-offs are in [the fault lab](benchmarks.md).
+The session and the three delegated coordinators live in `src/serval/`. Nothing else in `src/` imports
+that directory except the `@gkoos/caracal/serval` entry point, and it depends on `src/core` and the
+Redis key scheme rather than the other way round. The measured trade-offs are in
+[the fault lab](benchmarks.md).
 
 ## Prior art
 

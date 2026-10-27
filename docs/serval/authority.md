@@ -7,7 +7,7 @@ reference model implements.
 
 ## Contracts
 
-The contracts below are normative. Each names the acceptance case that exercises it: the deterministic scenarios in `test/unit/serval-authority.test.ts` and the generated histories in `test/property/serval-authority.property.test.ts`. The [contract-to-test map](#contract-to-test-map) lists them side by side.
+The contracts below are normative. Each names the acceptance case that exercises it: the deterministic scenarios in `test/serval/unit/authority.test.ts` and the generated histories in `test/serval/property/authority.property.test.ts`. The [contract-to-test map](#contract-to-test-map) lists them side by side.
 
 ### 1. Send-time anchoring, late and duplicate replies, conservative time
 

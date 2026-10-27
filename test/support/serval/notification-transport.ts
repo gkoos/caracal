@@ -3,7 +3,7 @@ import {
   type ServalInvalidation,
   type ServalNotificationHandlers,
   type ServalNotificationTransport,
-} from "../../../src/coordination/serval/notifications.js"
+} from "../../../src/serval/notifications.js"
 
 /**
  * A controllable notification transport.
