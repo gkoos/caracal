@@ -166,6 +166,54 @@ describe("serval breaker fast path", () => {
     ).toMatchObject({ type: "admitted" })
     expect(harness.authority.calls.admitProbe).toBe(2)
   })
+
+  it("adopts the reopen after a failed probe, so it stops probing until the cooldown", async () => {
+    const harness = createBreakerHarness({ freshnessMs: 1_000 })
+    await harness.start()
+
+    harness.authority.setState("open")
+    await harness.session.refresh("periodic")
+    await harness.scheduler.advanceBy(OPEN_MS + 100)
+    harness.authority.reset()
+
+    // One probe is admitted, which refines the cached verdict to HALF_OPEN.
+    const admitted = await harness.coordinator.admitProbe(
+      harness.identity,
+      probeParams(),
+    )
+    expect(admitted).toMatchObject({ type: "admitted" })
+    expect(harness.coordinator.cached(harness.identity)).toMatchObject({
+      state: "half-open",
+    })
+
+    // The probe fails, so the authority reopens the breaker in a new generation -
+    // the script does this with `gen = gen + 1` and discards the probe set.
+    harness.authority.setProbeOutcome("failure")
+    const settled = await harness.coordinator.settleProbe(harness.identity, {
+      probeToken: `probe-${probeSequence}`,
+      outcome: "failure",
+      generation: (admitted as { generation: number }).generation,
+      halfOpenSuccesses: 1,
+      openMs: OPEN_MS,
+      closedCleanupMs: 60_000,
+      windowTtlMs: 60_000,
+    })
+    expect(settled).toMatchObject({ type: "transitioned", newState: "open" })
+
+    // The replica must adopt the reopen. If it does not, the cached verdict stays
+    // HALF_OPEN, every later attempt is delegated, and a failing dependency mints a
+    // new generation per failed probe - which is a probe storm, not a recovery.
+    expect(harness.coordinator.cached(harness.identity)).toMatchObject({
+      state: "open",
+    })
+
+    // And with OPEN cached, the next attempt is refused locally.
+    harness.authority.reset()
+    expect(
+      await harness.coordinator.admitProbe(harness.identity, probeParams()),
+    ).toMatchObject({ type: "rejected", reason: "open" })
+    expect(harness.authority.calls.admitProbe).toBe(0)
+  })
 })
 
 describe("serval breaker recovery and convergence", () => {
