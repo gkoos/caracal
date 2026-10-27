@@ -31,6 +31,7 @@ await run(
     "test/serval/integration/rate-limit.redis.integration.test.ts",
     "test/serval/integration/composition.integration.test.ts",
     "test/serval/integration/public-api.integration.test.ts",
+    "test/serval/integration/authority-failover.integration.test.ts",
     "test/integration/coordinator-conformance.integration.test.ts",
     "test/integration/redis-acl.integration.test.ts",
     "test/integration/coordinator-round-trips.integration.test.ts",

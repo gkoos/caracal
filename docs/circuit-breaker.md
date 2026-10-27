@@ -39,6 +39,8 @@ Invariants verified by property tests:
 - `probesInFlight ≤ halfOpenProbes` at all times.
 - At most `halfOpenProbes` probes are admitted per recovery window, and the window refills every `openMs`: the window, not the in-flight count, is the budget.
 
+The window counts observations, not time, so how long it takes to fill depends on how fast they arrive. That matters whenever another policy is shedding load: a bulkhead or rate-limiter refusal is not recorded as evidence (see the admission-refusal rule above), so the breaker may hear about only a fraction of the offered calls - 100 observations is a tenth of a second at 1,000 calls/s and about twelve seconds at 8/s. Under a sustained failure the window then still holds successes from before it, the ratio stays below the threshold, and the breaker does not open even though most calls are failing. Match the window to the rate the breaker actually sees - a lower `windowSize` or `minimumThroughput` - or set `countAdmissionRejections: true` so that refusals are recorded as failures. [Redis coordination](redis.md#keeping-the-breaker-knobs-consistent) lists the related constraints.
+
 ## Threshold resolution
 
 `failureThreshold` is resolved to thousandths, because the distributed coordinator compares an integer numerator rather than a ratio:
@@ -146,7 +148,7 @@ Use stable, non-secret values, scope keys are observable in the Redis keyspace. 
 
 Three Redis key types are used per scope: the state hash, the observations sorted set, and the probe-token sorted set.
 
-**State hash** stores `state`, `generation`, `openedAt`, `probeCount`, `probeSuccesses`. It is created by the first observation of a scope, so the window's epoch is on record from the start. A missing key is treated as closed. All state transitions are atomic Lua scripts using server-side timestamps. `probeCount` is informational - every decision uses `ZCARD` on the probe token set instead - and the conformance suite asserts the two never drift apart.
+**State hash** stores `state`, `generation`, `openedAt`, `probeCount`, `probeSuccesses`, `windowProbes` and `windowStartedAt`. It is created by the first observation of a scope, so the window's epoch is on record from the start. A missing key is treated as closed. All state transitions are atomic Lua scripts using server-side timestamps. A decision reads the in-flight count from `ZCARD` on the probe token set and the recovery window's spent budget from `windowProbes`; `probeCount` is the informational mirror of `ZCARD`, and the conformance suite asserts the two never drift apart.
 
 TTL policy for the state hash:
 - **OPEN / HALF_OPEN**: no TTL (`PERSIST`). Because a missing key is treated as closed, expiring a non-closed hash would silently admit unrestricted traffic, reset the window epoch (breaking the stale-result guarantee), and orphan any in-flight probe lease tokens.
@@ -205,6 +207,8 @@ coordinator stays conservative without it.
 - The window refills every `openMs`, so the ceiling is `halfOpenProbes` probes per cooldown. A window whose probes all reported nothing therefore probes again after the cooldown rather than spinning on freed slots, and a cancelled or refused probe costs one cooldown instead of re-opening a breaker that was recovering.
 - Each probe holds a token in Redis whose sorted-set score is its deadline. A dead worker's token expires automatically, and the probe slot recovers without coordinator intervention - its window budget comes back with it. A result that arrives after the deadline is dropped as stale. The settlement script checks the deadline atomically, so an expired probe can neither close nor re-open the breaker, and the slot it still occupied is released.
 - Leaving HALF_OPEN discards the probe tokens of that recovery window, so the next window starts with full capacity and a late settle from the superseded window is dropped rather than counted.
+- The token set caps probes in flight, but the *observed* peak can be up to twice `halfOpenProbes`. A transition discards the superseded window's tokens while the probes they belong to are still running, so that work overlaps the next window's probes. With `probeLeaseTtlMs` at its default of twice `openMs`, at most two windows can overlap, which is why the ceiling on observed concurrency is `2 × halfOpenProbes` rather than `halfOpenProbes`.
+- `halfOpenProbes` means *probes per recovery window* in the distributed breaker and *probes in flight* in the in-process one. A process has only its own budget to spend, so an inconclusive result returns its slot immediately and the next attempt may probe; a fleet shares one budget between its replicas, so a result that reported nothing cannot be replaced by the next request that arrives.
 - `probeSuccesses` accumulates across all concurrent probes. The first worker to reach `halfOpenSuccesses` closes the breaker.
 - Any probe failure takes priority: it re-opens the breaker and increments the generation.
 - These dials interlock with the window counters (`minimumThroughput`, `failureThreshold`, `windowSize`, `windowTtlMs`); [Redis coordination](redis.md#keeping-the-breaker-knobs-consistent) lists the constraints and the symptoms of getting them wrong.
