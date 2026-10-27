@@ -180,6 +180,14 @@ describe.skipIf(!url)("serval composition", () => {
     const op = composedOperation({
       namespace,
       replica: replicaSet,
+      // Headroom on the burst, deliberately. The issuer's contract is that "a grant
+      // may be smaller, or refused": four calls against a burst of exactly four sit
+      // on the tolerance boundary, so the first grant can legitimately come back as
+      // three and a second issuance is then needed - which can be refused. That is
+      // correct behaviour, and the assertions below are about the composition rather
+      // than about that boundary. CI caught it; it did not reproduce on a faster
+      // local machine in twelve runs.
+      burst: 8,
       execute: async () => "ok",
     })
 
